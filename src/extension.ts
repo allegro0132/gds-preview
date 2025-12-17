@@ -71,7 +71,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             }
 
             const pythonScriptPath = this.context.asAbsolutePath(path.join('scripts', scriptName));
-            const pythonPath = 'python3';
+            const pythonPath = currentConfig.get<string>('pythonPath', 'python');
 
             const args = [pythonScriptPath, filePath, tempDir];
             if (cellName) {
@@ -91,15 +91,28 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 stderr += data.toString();
             });
 
+            process.on('error', (err) => {
+                console.error(`Failed to start python process: ${err}`);
+                vscode.window.showErrorMessage(`Failed to start Python process. Please check if Python is installed and configured in 'gdsPreview.pythonPath'. Error: ${err.message}`);
+            });
+
             process.on('close', (code) => {
                 console.log(`Python script exited with code ${code}`);
                 if (code !== 0) {
                     console.error(`Stderr: ${stderr}`);
-                    try {
-                        const errJson = JSON.parse(stderr);
-                        vscode.window.showErrorMessage(`Failed to convert GDS: ${errJson.error}`);
-                    } catch {
-                        vscode.window.showErrorMessage(`Failed to convert GDS. Exit code: ${code}. Stderr: ${stderr}`);
+                    if (stderr.includes("ModuleNotFoundError") && stderr.includes("gdstk")) {
+                        vscode.window.showErrorMessage("Python module 'gdstk' is missing.", "Install gdstk").then(selection => {
+                            if (selection === "Install gdstk") {
+                                installGdstk(pythonPath);
+                            }
+                        });
+                    } else {
+                        try {
+                            const errJson = JSON.parse(stderr);
+                            vscode.window.showErrorMessage(`Failed to convert GDS: ${errJson.error}`);
+                        } catch {
+                            vscode.window.showErrorMessage(`Failed to convert GDS. Exit code: ${code}. Stderr: ${stderr}`);
+                        }
                     }
                     return;
                 }
@@ -874,3 +887,25 @@ function getNonce() {
 
 // This method is called when your extension is deactivated
 export function deactivate() { }
+
+function installGdstk(pythonPath: string) {
+    vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Installing gdstk...",
+        cancellable: false
+    }, (progress, token) => {
+        return new Promise<void>((resolve, reject) => {
+            const command = `"${pythonPath}" -m pip install gdstk`;
+            cp.exec(command, (err, stdout, stderr) => {
+                if (err) {
+                    vscode.window.showErrorMessage(`Failed to install gdstk: ${err.message}`);
+                    console.error(stderr);
+                    reject(err);
+                } else {
+                    vscode.window.showInformationMessage("Successfully installed gdstk. Please reopen the GDS file to view it.");
+                    resolve();
+                }
+            });
+        });
+    });
+}

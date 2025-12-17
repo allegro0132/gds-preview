@@ -97,7 +97,7 @@ def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
             unique_layers_datatypes.add((poly.layer, poly.datatype))
         # Paths are already converted to polygons, so we don't need to iterate over them
         for label in flattened_cell.labels:
-            unique_layers_datatypes.add((label.layer, label.datatype))
+            unique_layers_datatypes.add((label.layer, label.texttype))
 
         # Sort layers for consistent ordering
         layers_datatypes_list = sorted(list(unique_layers_datatypes),

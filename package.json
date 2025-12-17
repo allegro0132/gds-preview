@@ -3,7 +3,7 @@
   "displayName": "GDSII Preview",
   "description": "A high-performance GDSII/OASIS file viewer for VS Code with WebGL acceleration.",
   "icon": "icon.png",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "AllegroMorphic",
   "repository": {
     "type": "git",
@@ -85,6 +85,11 @@
           "type": "number",
           "default": 10,
           "description": "Minimum pixel size for polygons to be rendered during interaction (pan/zoom). Higher values improve performance but reduce detail."
+        },
+        "gdsPreview.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Path to the Python executable. Ensure 'gdstk' is installed in this environment."
         }
       }
     }

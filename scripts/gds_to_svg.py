@@ -23,7 +23,8 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
             if c.name.startswith("$$$"):
                 continue
             bbox = c.bounding_box()
-            if bbox is not None and (bbox[1][0] > bbox[0][0] and bbox[1][1] > bbox[0][1]):
+            if bbox is not None and (bbox[1][0] > bbox[0][0] and
+                                     bbox[1][1] > bbox[0][1]):
                 valid_cells.append(c.name)
 
         all_cell_names = sorted(valid_cells)
@@ -37,8 +38,10 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
                     break
 
             if not main_cell:
-                 print(json.dumps({"error": f"Cell '{target_cell_name}' not found."}), file=sys.stderr)
-                 sys.exit(1)
+                print(json.dumps(
+                    {"error": f"Cell '{target_cell_name}' not found."}),
+                      file=sys.stderr)
+                sys.exit(1)
         else:
             top_cells = lib.top_level()
             if not top_cells:
@@ -46,11 +49,14 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
                 if lib.cells:
                     main_cell = lib.cells[0]
                 else:
-                    print(json.dumps({"error": "No cells found in GDS file."}), file=sys.stderr)
+                    print(json.dumps({"error": "No cells found in GDS file."}),
+                          file=sys.stderr)
                     sys.exit(1)
             else:
                 # Filter out cells starting with $$$ (KLayout metadata)
-                valid_top_cells = [c for c in top_cells if not c.name.startswith("$$$")]
+                valid_top_cells = [
+                    c for c in top_cells if not c.name.startswith("$$$")
+                ]
                 if valid_top_cells:
                     main_cell = valid_top_cells[0]
                 else:
@@ -84,7 +90,7 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
             unique_layers_datatypes.add((poly.layer, poly.datatype))
         # Paths are already converted to polygons, so we don't need to iterate over them
         for label in flattened_cell.labels:
-            unique_layers_datatypes.add((label.layer, label.datatype))
+            unique_layers_datatypes.add((label.layer, label.texttype))
 
         # Sort layers for consistent ordering
         layers_datatypes_list = sorted(list(unique_layers_datatypes),
@@ -108,7 +114,7 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
             # Paths are already converted to polygons
             labels_for_layer = [
                 l for l in flattened_cell.labels
-                if l.layer == layer and l.datatype == datatype
+                if l.layer == layer and l.texttype == datatype
             ]
 
             if not polygons_for_layer and not labels_for_layer:
