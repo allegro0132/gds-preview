@@ -58,8 +58,9 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const config = vscode.workspace.getConfiguration('gdsPreview');
         const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
         const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
+        const labelFontSize = config.get<number>('labelFontSize', 12);
 
-        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold);
+        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize);
 
         const updateWebview = (cellName?: string) => {
             // Kill existing process if any
@@ -196,9 +197,15 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
         // Listen for configuration changes
         vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('gdsPreview.fastModeThreshold')) {
-                const newThreshold = vscode.workspace.getConfiguration('gdsPreview').get<number>('fastModeThreshold', 10);
-                webviewPanel.webview.postMessage({ command: 'updateSettings', fastModeThreshold: newThreshold });
+            if (e.affectsConfiguration('gdsPreview.fastModeThreshold') || e.affectsConfiguration('gdsPreview.labelFontSize')) {
+                const config = vscode.workspace.getConfiguration('gdsPreview');
+                const newThreshold = config.get<number>('fastModeThreshold', 10);
+                const newFontSize = config.get<number>('labelFontSize', 12);
+                webviewPanel.webview.postMessage({
+                    command: 'updateSettings',
+                    fastModeThreshold: newThreshold,
+                    labelFontSize: newFontSize
+                });
             }
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {
                 updateWebview(currentCell);
@@ -207,7 +214,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
     }
 }
 
-function getWebviewContent(engine: string, fastModeThreshold: number): string {
+function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number): string {
     const nonce = getNonce();
     const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
     const earcutCdn = "https://unpkg.com/earcut@2.2.4/dist/earcut.min.js";
@@ -265,6 +272,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
 </head>
 <body>
     <div id="controls">
+        <h3>Cell Control</h3>
         <div class="control-group">
             <label for="cell-select">Select Cell:</label>
             <select id="cell-select" disabled>
@@ -272,10 +280,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
             </select>
             <div id="status-msg" style="font-size: 12px; color: #888; margin-top: 5px;">Initializing...</div>
         </div>
+        <hr style="width: 100%; border-color: #444; margin: 15px 0;">
         <h3>View Control</h3>
         <button id="recenter-btn">Center View</button>
         <hr style="width: 100%; border-color: #444; margin: 15px 0;">
-        <h3>Layers</h3>
+        <h3>Layer Control</h3>
+        <div style="margin-top: 10px;">
+            <input type="checkbox" id="show-labels-checkbox">
+            <label for="show-labels-checkbox">Show Labels</label>
+            <input type="range" min="0" max="1" step="0.1" value="0.5" id="label-brightness-slider" style="width: 80px; margin-left: 10px; vertical-align: middle;" title="Text Brightness">
+        </div>
         <div id="layers-list"></div>
     </div>
     <div id="view-container">
@@ -283,6 +297,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
         <canvas id="gds-canvas" style="display: none;"></canvas>
         <!-- WebGL Canvas -->
         <canvas id="gds-webgl-canvas" style="display: none;"></canvas>
+        <!-- Text Overlay Canvas -->
+        <canvas id="text-canvas" style="position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
         <!-- SVG container for 'svg' mode -->
         <div id="svg-container" style="display: none; width: 100%; height: 100%;"></div>
     </div>
@@ -299,8 +315,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
         let activeLayers = new Set();
         let layerColors = {};
         let layerOpacities = {};
+        let showLabels = false;
+        let labelBrightness = 0.5;
         let currentEngine = '${engine}';
         let fastModeThreshold = ${fastModeThreshold};
+        let labelFontSize = ${labelFontSize};
 
         // WebGL State
         let gl = null;
@@ -378,6 +397,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                     fastModeThreshold = message.fastModeThreshold;
                     console.log("Updated fastModeThreshold to:", fastModeThreshold);
                 }
+                if (message.labelFontSize !== undefined) {
+                    labelFontSize = message.labelFontSize;
+                    console.log("Updated labelFontSize to:", labelFontSize);
+                    requestAnimationFrame(drawLabels);
+                }
             } else if (message.command === 'status') {
                 updateStatus(message.message);
             }
@@ -393,6 +417,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
             activeLayers.clear();
             layerColors = {};
             layerOpacities = {};
+            layerTextBrightness = {};
             layerBuffers = {}; // Clear WebGL buffers
 
             // Update Cell Select
@@ -835,8 +860,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                 if (gl) gl.viewport(0, 0, glCanvas.width, glCanvas.height);
             }
 
+            const textCanvas = document.getElementById('text-canvas');
+            if (textCanvas) {
+                textCanvas.width = container.clientWidth;
+                textCanvas.height = container.clientHeight;
+            }
+
             if (currentEngine === 'canvas') draw();
             else if (currentEngine === 'webgl') drawWebGL();
+
+            drawLabels();
         }
 
         function fitView() {
@@ -873,6 +906,74 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
 
             if (currentEngine === 'canvas') draw();
             else if (currentEngine === 'webgl') drawWebGL();
+
+            drawLabels();
+        }
+
+        function drawLabels() {
+            const textCanvas = document.getElementById('text-canvas');
+            if (!textCanvas) return;
+            const ctx = textCanvas.getContext('2d');
+            ctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
+
+            if (!showLabels) return;
+
+            // Don't draw labels if zoomed out too far
+            if (scale < 0.001) {
+                return;
+            }
+
+            // Viewport culling for labels (in world coordinates)
+            // Screen: 0,0 -> W,H
+            // WorldX = (ScreenX - offsetX) / scale
+            // WorldY = (ScreenY - offsetY) / -scale
+            const viewMinX = (0 - offsetX) / scale;
+            const viewMaxX = (textCanvas.width - offsetX) / scale;
+            const viewMaxY = (0 - offsetY) / -scale;
+            const viewMinY = (textCanvas.height - offsetY) / -scale;
+
+            const vMinX = Math.min(viewMinX, viewMaxX);
+            const vMaxX = Math.max(viewMinX, viewMaxX);
+            const vMinY = Math.min(viewMinY, viewMaxY);
+            const vMaxY = Math.max(viewMinY, viewMaxY);
+
+            ctx.font = \`\${labelFontSize}px sans-serif\`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+
+            // Helper to darken color
+            const darken = (hex, factor) => {
+                let r = parseInt(hex.slice(1, 3), 16);
+                let g = parseInt(hex.slice(3, 5), 16);
+                let b = parseInt(hex.slice(5, 7), 16);
+                r = Math.floor(r * factor);
+                g = Math.floor(g * factor);
+                b = Math.floor(b * factor);
+                return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+            };
+
+            for (const layerKey in labels) {
+                if (!activeLayers.has(layerKey)) continue;
+
+                const layerLabels = labels[layerKey];
+                const baseColor = layerColors[layerKey] || '#ffffff';
+                ctx.fillStyle = darken(baseColor, labelBrightness);
+
+                for (const label of layerLabels) {
+                    // label: { text, x, y, ... }
+                    const x = label.x;
+                    const y = label.y;
+                    const text = label.text;
+
+                    if (x < vMinX || x > vMaxX || y < vMinY || y > vMaxY) continue;
+
+                    // Project to screen coordinates manually
+                    const screenX = x * scale + offsetX;
+                    const screenY = y * -scale + offsetY;
+
+                    ctx.fillText(text, screenX, screenY);
+                }
+            }
         }
 
         function draw() {
@@ -1005,6 +1106,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                 offsetY += dy;
                 if (currentEngine === 'canvas') requestAnimationFrame(draw);
                 else requestAnimationFrame(drawWebGL);
+                requestAnimationFrame(drawLabels);
             }
         });
 
@@ -1031,6 +1133,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
 
             if (currentEngine === 'canvas') requestAnimationFrame(draw);
             else requestAnimationFrame(drawWebGL);
+            requestAnimationFrame(drawLabels);
         });
 
         if (cellSelect) {
@@ -1048,6 +1151,18 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
             const target = event.target;
             if (target.id === 'cell-select') return;
 
+            if (target.id === 'show-labels-checkbox') {
+                showLabels = target.checked;
+                requestAnimationFrame(drawLabels);
+                return;
+            }
+
+            if (target.id === 'label-brightness-slider') {
+                labelBrightness = parseFloat(target.value);
+                requestAnimationFrame(drawLabels);
+                return;
+            }
+
             const layerId = target.getAttribute('data-layer-id');
 
             if (target.type === 'checkbox') {
@@ -1058,7 +1173,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                 }
                 if (currentEngine === 'canvas') draw();
                 else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
-                else {
+                requestAnimationFrame(drawLabels);
+                if (currentEngine === 'svg') {
                     const el = document.getElementById('layer-group-' + layerId);
                     if (el) el.style.display = target.checked ? 'block' : 'none';
                 }
@@ -1066,7 +1182,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                 layerColors[layerId] = target.value;
                 if (currentEngine === 'canvas') draw();
                 else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
-                else {
+                requestAnimationFrame(drawLabels);
+                if (currentEngine === 'svg') {
                     const el = document.getElementById('layer-group-' + layerId);
                     if (el) el.style.color = target.value;
                 }
@@ -1074,7 +1191,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                 layerOpacities[layerId] = parseFloat(target.value);
                 if (currentEngine === 'canvas') draw();
                 else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
-                else {
+                requestAnimationFrame(drawLabels);
+                if (currentEngine === 'svg') {
                     const el = document.getElementById('layer-group-' + layerId);
                     if (el) el.style.opacity = target.value;
                 }

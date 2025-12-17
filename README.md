@@ -64,9 +64,3 @@ This extension contributes the following settings:
 
 - WebGL mode requires a graphics-capable environment.
 - Very large files may take a moment to parse before the first render appears.
-
-## Release Notes
-
-### 0.0.1
-- Initial release with SVG, Canvas, and WebGL support.
-- Implemented Viewport Culling and Dynamic LOD.

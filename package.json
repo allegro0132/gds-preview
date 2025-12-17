@@ -3,7 +3,7 @@
   "displayName": "GDSII Preview",
   "description": "A high-performance GDSII/OASIS file viewer for VS Code with WebGL acceleration.",
   "icon": "icon.png",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "AllegroMorphic",
   "repository": {
     "type": "git",
@@ -14,9 +14,6 @@
   },
   "categories": [
     "Other"
-  ],
-  "activationEvents": [
-    "onCommand:gds-preview.previewGds"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -40,13 +37,6 @@
         ]
       }
     ],
-    "commands": [
-      {
-        "command": "gds-preview.previewGds",
-        "title": "Preview GDS File",
-        "icon": "$(file-media)"
-      }
-    ],
     "customEditors": [
       {
         "viewType": "gds-preview.gdsPreview",
@@ -59,15 +49,6 @@
         "priority": "default"
       }
     ],
-    "menus": {
-      "editor/title": [
-        {
-          "when": "resourceExtname == .gds || resourceExtname == .gdsii || resourceExtname == .GDS || resourceExtname == .oas || resourceExtname == .OAS",
-          "command": "gds-preview.previewGds",
-          "group": "navigation"
-        }
-      ]
-    },
     "configuration": {
       "title": "GDS Preview",
       "properties": {
@@ -85,6 +66,11 @@
           "type": "number",
           "default": 10,
           "description": "Minimum pixel size for polygons to be rendered during interaction (pan/zoom). Higher values improve performance but reduce detail."
+        },
+        "gdsPreview.labelFontSize": {
+          "type": "number",
+          "default": 12,
+          "description": "Font size for text labels in pixels."
         },
         "gdsPreview.pythonPath": {
           "type": "string",
