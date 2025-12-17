@@ -647,6 +647,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             // Redraw
             if (currentEngine === 'canvas') requestAnimationFrame(draw);
             else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
+            requestAnimationFrame(drawLabels);
         }
 
         function handleDataUpdate(data) {
