@@ -6,7 +6,7 @@ import re
 import shutil  # For rmtree
 
 
-def gds_to_layered_svgs(gds_path, output_dir):
+def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
     """
     Converts a GDSII file into multiple SVG fragments (inner <g> content), one for each layer.
     Outputs a JSON object to stdout with the results.
@@ -18,17 +18,54 @@ def gds_to_layered_svgs(gds_path, output_dir):
 
         lib = gdstk.read_gds(gds_path)
 
-        top_cells = lib.top_level()
-        if not top_cells:
-            print(json.dumps({"error": "No top-level cells found in GDS file."
-                             }),
-                  file=sys.stderr)
-            sys.exit(1)
+        valid_cells = []
+        for c in lib.cells:
+            if c.name.startswith("$$$"):
+                continue
+            bbox = c.bounding_box()
+            if bbox is not None and (bbox[1][0] > bbox[0][0] and bbox[1][1] > bbox[0][1]):
+                valid_cells.append(c.name)
 
-        main_cell = top_cells[0]
+        all_cell_names = sorted(valid_cells)
+
+        main_cell = None
+        if target_cell_name:
+            # Find the cell by name in the list of cells
+            for c in lib.cells:
+                if c.name == target_cell_name:
+                    main_cell = c
+                    break
+
+            if not main_cell:
+                 print(json.dumps({"error": f"Cell '{target_cell_name}' not found."}), file=sys.stderr)
+                 sys.exit(1)
+        else:
+            top_cells = lib.top_level()
+            if not top_cells:
+                # If no top level cells (e.g. circular references?), just pick the first one or error
+                if lib.cells:
+                    main_cell = lib.cells[0]
+                else:
+                    print(json.dumps({"error": "No cells found in GDS file."}), file=sys.stderr)
+                    sys.exit(1)
+            else:
+                # Filter out cells starting with $$$ (KLayout metadata)
+                valid_top_cells = [c for c in top_cells if not c.name.startswith("$$$")]
+                if valid_top_cells:
+                    main_cell = valid_top_cells[0]
+                else:
+                    main_cell = top_cells[0]
+
         # A deep copy is needed to avoid modifying the original library cell
         flattened_cell = main_cell.copy(f"{main_cell.name}_flat")
         flattened_cell.flatten()
+
+        # Convert all paths to polygons to handle FlexPath/RobustPath and multi-layer paths correctly
+        new_polygons = []
+        for path_obj in flattened_cell.paths:
+            new_polygons.extend(path_obj.to_polygons())
+        flattened_cell.polygons.extend(new_polygons)
+        flattened_cell.paths.clear()
 
         # Get bounding box of the whole cell to ensure all SVGs have the same viewport
         bbox = flattened_cell.bounding_box()
@@ -45,8 +82,7 @@ def gds_to_layered_svgs(gds_path, output_dir):
         unique_layers_datatypes = set()
         for poly in flattened_cell.polygons:
             unique_layers_datatypes.add((poly.layer, poly.datatype))
-        for path_obj in flattened_cell.paths:  # Renamed to path_obj to avoid conflict with path module
-            unique_layers_datatypes.add((path_obj.layer, path_obj.datatype))
+        # Paths are already converted to polygons, so we don't need to iterate over them
         for label in flattened_cell.labels:
             unique_layers_datatypes.add((label.layer, label.datatype))
 
@@ -54,10 +90,7 @@ def gds_to_layered_svgs(gds_path, output_dir):
         layers_datatypes_list = sorted(list(unique_layers_datatypes),
                                        key=lambda x: (x[0], x[1]))
 
-        if not layers_datatypes_list:
-            print(json.dumps({"error": "No layers with geometry found."}),
-                  file=sys.stderr)
-            sys.exit(1)
+        # Filter out empty layers if needed, but for now we keep them if they were in the geometry
 
         layer_svg_fragments = {}
 
@@ -72,20 +105,16 @@ def gds_to_layered_svgs(gds_path, output_dir):
                 p for p in flattened_cell.polygons
                 if p.layer == layer and p.datatype == datatype
             ]
-            paths_for_layer = [
-                p for p in flattened_cell.paths
-                if p.layer == layer and p.datatype == datatype
-            ]
+            # Paths are already converted to polygons
             labels_for_layer = [
                 l for l in flattened_cell.labels
                 if l.layer == layer and l.datatype == datatype
             ]
 
-            if not polygons_for_layer and not paths_for_layer and not labels_for_layer:
+            if not polygons_for_layer and not labels_for_layer:
                 continue
 
-            layer_cell.add(*polygons_for_layer, *paths_for_layer,
-                           *labels_for_layer)
+            layer_cell.add(*polygons_for_layer, *labels_for_layer)
 
             temp_full_svg_path = os.path.join(
                 output_dir, f"temp_full_layer_{layer_key}.svg")
@@ -131,6 +160,8 @@ def gds_to_layered_svgs(gds_path, output_dir):
 
         # Prepare the JSON output
         result = {
+            "cell_name": main_cell.name,
+            "all_cells": all_cell_names,
             "layers": [k for k in layer_svg_fragments.keys()],
             "svg_fragments":
                 layer_svg_fragments,  # Changed from 'files' to 'svg_fragments'
@@ -151,15 +182,16 @@ def gds_to_layered_svgs(gds_path, output_dir):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
+    if len(sys.argv) < 3:
         print(json.dumps({
             "error":
-                "Usage: python gds_to_svg.py <input_gds_path> <output_dir_path>"
+                "Usage: python gds_to_svg.py <input_gds_path> <output_dir_path> [cell_name]"
         }),
               file=sys.stderr)
         sys.exit(1)
 
     gds_input_path = sys.argv[1]
     output_dir_path = sys.argv[2]
+    target_cell = sys.argv[3] if len(sys.argv) > 3 else None
 
-    gds_to_layered_svgs(gds_input_path, output_dir_path)
+    gds_to_layered_svgs(gds_input_path, output_dir_path, target_cell)

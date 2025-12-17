@@ -41,6 +41,18 @@
         "icon": "$(file-media)"
       }
     ],
+    "customEditors": [
+      {
+        "viewType": "gds-preview.gdsPreview",
+        "displayName": "GDS Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.{gds,gdsii,GDS,oas,OAS}"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "menus": {
       "editor/title": [
         {
