@@ -412,6 +412,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
 
         function setupSvgMode(data) {
             canvas.style.display = 'none';
+            const glCanvas = document.getElementById('gds-webgl-canvas');
+            if (glCanvas) glCanvas.style.display = 'none';
             svgContainer.style.display = 'block';
 
             const bboxWidth = data.bbox.x_max - data.bbox.x_min;
