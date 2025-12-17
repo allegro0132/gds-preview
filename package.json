@@ -61,6 +61,26 @@
           "group": "navigation"
         }
       ]
+    },
+    "configuration": {
+      "title": "GDS Preview",
+      "properties": {
+        "gdsPreview.renderingEngine": {
+          "type": "string",
+          "enum": [
+            "canvas",
+            "svg",
+            "webgl"
+          ],
+          "default": "webgl",
+          "description": "Choose the rendering engine. 'webgl' provides GPU acceleration. 'canvas' is standard. 'svg' is legacy."
+        },
+        "gdsPreview.fastModeThreshold": {
+          "type": "number",
+          "default": 10,
+          "description": "Minimum pixel size for polygons to be rendered during interaction (pan/zoom). Higher values improve performance but reduce detail."
+        }
+      }
     }
   },
   "scripts": {

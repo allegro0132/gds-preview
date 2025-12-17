@@ -1,71 +1,66 @@
-# gds-preview README
+# GDSII Preview for VS Code
 
-This is the README for your extension "gds-preview". After writing up a brief description, we recommend including the following sections.
+A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU-accelerated rendering for handling large integrated circuit layouts.
 
 ## Features
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- **High-Performance Rendering**: View large GDSII layouts smoothly directly within VS Code.
+- **Multi-Engine Support**: Choose between WebGL (GPU), Canvas (CPU), or SVG rendering.
+- **Layer Management**: Toggle layer visibility and customize layer colors.
+- **Cell Navigation**: Inspect different cells within the GDS library.
+- **Interactive Controls**: Pan, zoom, and fit-to-screen capabilities.
+- **Performance Optimizations**:
+  - **Viewport Culling**: Only renders what is visible on screen.
+  - **Dynamic Level of Detail (LOD)**: Automatically reduces detail during fast interactions to maintain high frame rates.
 
-For example if there is an image subfolder under your extension project workspace:
+## Rendering Engines
 
-\!\[feature X\]\(images/feature-x.png\)
+This extension provides three rendering pipelines to suit different needs:
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+### 1. WebGL (Default & Recommended)
+- **Technology**: GPU-accelerated rendering using WebGL.
+- **Pros**: Extremely smooth Pan/Zoom performance ("Silky Smooth"). Handles millions of polygons with ease.
+- **Cons**: Slightly longer initial load time due to polygon triangulation.
+- **Best For**: Large, complex layouts (10MB+).
 
-## Requirements
+### 2. Canvas
+- **Technology**: HTML5 Canvas 2D Context (CPU-based).
+- **Pros**: Fast initial load. Good compatibility.
+- **Cons**: Performance drops significantly with high polygon counts.
+- **Best For**: Medium-sized layouts where WebGL might be overkill or incompatible.
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+### 3. SVG
+- **Technology**: Scalable Vector Graphics (DOM-based).
+- **Pros**: Perfect vector fidelity at any zoom level. Easy to inspect via DOM tools.
+- **Cons**: Very high memory usage and slow rendering for large files.
+- **Best For**: Small cells, debugging, or high-quality static screenshots.
 
 ## Extension Settings
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
 This extension contributes the following settings:
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+* `gdsPreview.renderingEngine`: Select the rendering backend.
+  * `webgl` (Default): GPU acceleration.
+  * `canvas`: Standard HTML5 Canvas.
+  * `svg`: Legacy vector rendering.
+
+* `gdsPreview.fastModeThreshold`: (Default: `10`)
+  * Controls the aggressiveness of the Dynamic LOD optimization.
+  * Specifies the minimum pixel size for polygons to be rendered during interaction (panning/zooming).
+  * Higher values (e.g., 20, 50) improve interaction fluidity but temporarily reduce detail.
+
+## Requirements
+
+- **Python 3**: Required for parsing GDSII files.
+- **gdstk**: Python library for GDSII manipulation (`pip install gdstk`).
 
 ## Known Issues
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
+- WebGL mode requires a graphics-capable environment.
+- Very large files may take a moment to parse before the first render appears.
 
 ## Release Notes
 
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+### 0.0.1
+- Initial release with SVG, Canvas, and WebGL support.
+- Implemented Viewport Culling and Dynamic LOD.
