@@ -4,6 +4,14 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.0.5] - 2025-12-18
+
+### Added
+- Added `gdsPreview.minLabelZoom` setting to control text visibility threshold.
+
+### Fixed
+- Fixed bugs in SVG mode.
+
 ## [0.0.4] - 2025-12-18
 
 ### Added

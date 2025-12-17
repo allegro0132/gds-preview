@@ -53,6 +53,9 @@ This extension contributes the following settings:
 * `gdsPreview.labelFontSize`: (Default: `12`)
   * Font size for text labels in pixels.
 
+* `gdsPreview.minLabelZoom`: (Default: `0.1`)
+  * Minimum zoom level at which text labels are visible.
+
 * `gdsPreview.pythonPath`: (Default: `python`)
   * Path to the Python executable used for parsing GDSII files.
   * Useful if you have multiple Python installations or use a virtual environment.
