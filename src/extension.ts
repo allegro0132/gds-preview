@@ -60,8 +60,9 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
         const labelFontSize = config.get<number>('labelFontSize', 12);
         const minLabelZoom = config.get<number>('minLabelZoom', 0.1);
+        const pythonPath = config.get<string>('pythonPath', 'python');
 
-        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, minLabelZoom);
+        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, minLabelZoom, pythonPath);
 
         const updateWebview = (cellName?: string) => {
             // Kill existing process if any
@@ -188,7 +189,13 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         updateWebview(message.cellName);
                         return;
                     case 'ready':
-                        updateWebview();
+                        updateWebview(currentCell);
+                        return;
+                    case 'updateConfig':
+                        const config = vscode.workspace.getConfiguration('gdsPreview');
+                        if (message.key && message.value !== undefined) {
+                            config.update(message.key, message.value, vscode.ConfigurationTarget.Global);
+                        }
                         return;
                 }
             },
@@ -219,7 +226,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
     }
 }
 
-function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, minLabelZoom: number): string {
+function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, minLabelZoom: number, pythonPath: string): string {
     const nonce = getNonce();
     const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
     const earcutCdn = "https://unpkg.com/earcut@2.2.4/dist/earcut.min.js";
@@ -266,13 +273,74 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         #layers-list { margin-top: 10px; flex-grow: 1; overflow-y: auto; }
         .control-group { margin-bottom: 15px; }
         .control-group label { display: block; margin-bottom: 5px; font-weight: bold; }
-        select {
+        select, input[type="number"], input[type="text"] {
             width: 100%; padding: 5px;
             background-color: var(--vscode-dropdown-background);
             color: var(--vscode-dropdown-foreground);
             border: 1px solid var(--vscode-dropdown-border);
+            box-sizing: border-box;
         }
         #status-msg { font-size: 12px; color: var(--vscode-descriptionForeground); margin-top: 5px; }
+        #toggle-controls-btn {
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 1000;
+            width: 20px;
+            height: 40px;
+            background-color: var(--vscode-sideBar-background);
+            border: 1px solid var(--vscode-sideBar-border);
+            border-left: none;
+            border-radius: 0 4px 4px 0;
+            color: var(--vscode-foreground);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            padding: 0;
+        }
+        #toggle-controls-btn:hover {
+            background-color: var(--vscode-list-hoverBackground);
+        }
+        #config-panel {
+            position: absolute;
+            right: 0;
+            top: 0;
+            height: 100%;
+            width: 250px;
+            background-color: var(--vscode-sideBar-background);
+            border-left: 1px solid var(--vscode-sideBar-border);
+            padding: 10px;
+            box-sizing: border-box;
+            overflow-y: auto;
+            z-index: 900;
+            display: none;
+        }
+        #toggle-config-btn {
+            position: absolute;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 1000;
+            width: 20px;
+            height: 40px;
+            background-color: var(--vscode-sideBar-background);
+            border: 1px solid var(--vscode-sideBar-border);
+            border-right: none;
+            border-radius: 4px 0 0 4px;
+            color: var(--vscode-foreground);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            padding: 0;
+        }
+        #toggle-config-btn:hover {
+            background-color: var(--vscode-list-hoverBackground);
+        }
     </style>
 </head>
 <body>
@@ -298,6 +366,37 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         <div id="layers-list"></div>
     </div>
     <div id="view-container">
+        <button id="toggle-controls-btn" title="Toggle Sidebar">❮</button>
+        <button id="toggle-config-btn" title="Toggle Configuration">⚙</button>
+
+        <div id="config-panel">
+            <h3>Configuration</h3>
+            <div class="control-group">
+                <label for="engine-select">Rendering Engine:</label>
+                <select id="engine-select">
+                    <option value="webgl">WebGL (GPU)</option>
+                    <option value="canvas">Canvas (CPU)</option>
+                    <option value="svg">SVG (Vector)</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="fast-mode-input">Fast Mode Threshold:</label>
+                <input type="number" id="fast-mode-input" value="${fastModeThreshold}" min="1" step="1">
+            </div>
+            <div class="control-group">
+                <label for="font-size-input">Label Font Size:</label>
+                <input type="number" id="font-size-input" value="${labelFontSize}" min="1" step="1">
+            </div>
+            <div class="control-group">
+                <label for="min-zoom-input">Min Label Zoom:</label>
+                <input type="number" id="min-zoom-input" value="${minLabelZoom}" min="0.001" step="0.001">
+            </div>
+            <div class="control-group">
+                <label for="python-path-input">Python Path:</label>
+                <input type="text" id="python-path-input" value="${pythonPath}">
+            </div>
+        </div>
+
         <!-- Canvas for 'canvas' mode -->
         <canvas id="gds-canvas" style="display: none;"></canvas>
         <!-- WebGL Canvas -->
@@ -363,6 +462,68 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         const cellSelect = document.getElementById('cell-select');
         const statusMsg = document.getElementById('status-msg');
         const layersList = document.getElementById('layers-list');
+        const toggleControlsBtn = document.getElementById('toggle-controls-btn');
+        const toggleConfigBtn = document.getElementById('toggle-config-btn');
+        const configPanel = document.getElementById('config-panel');
+
+        // Config Elements
+        const engineSelect = document.getElementById('engine-select');
+        const fastModeInput = document.getElementById('fast-mode-input');
+        const fontSizeInput = document.getElementById('font-size-input');
+        const minZoomInput = document.getElementById('min-zoom-input');
+        const pythonPathInput = document.getElementById('python-path-input');
+
+        // Initialize Engine Select
+        if (engineSelect) {
+            engineSelect.value = currentEngine;
+            engineSelect.addEventListener('change', (e) => {
+                vscode.postMessage({
+                    command: 'updateConfig',
+                    key: 'renderingEngine',
+                    value: e.target.value
+                });
+            });
+        }
+
+        if (fastModeInput) {
+            fastModeInput.addEventListener('change', (e) => {
+                vscode.postMessage({
+                    command: 'updateConfig',
+                    key: 'fastModeThreshold',
+                    value: parseFloat(e.target.value)
+                });
+            });
+        }
+
+        if (fontSizeInput) {
+            fontSizeInput.addEventListener('change', (e) => {
+                vscode.postMessage({
+                    command: 'updateConfig',
+                    key: 'labelFontSize',
+                    value: parseFloat(e.target.value)
+                });
+            });
+        }
+
+        if (minZoomInput) {
+            minZoomInput.addEventListener('change', (e) => {
+                vscode.postMessage({
+                    command: 'updateConfig',
+                    key: 'minLabelZoom',
+                    value: parseFloat(e.target.value)
+                });
+            });
+        }
+
+        if (pythonPathInput) {
+            pythonPathInput.addEventListener('change', (e) => {
+                vscode.postMessage({
+                    command: 'updateConfig',
+                    key: 'pythonPath',
+                    value: e.target.value
+                });
+            });
+        }
 
         function updateStatus(msg) {
             if (statusMsg) statusMsg.textContent = msg;
@@ -402,15 +563,18 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             } else if (message.command === 'updateSettings') {
                 if (message.fastModeThreshold !== undefined) {
                     fastModeThreshold = message.fastModeThreshold;
+                    if (fastModeInput) fastModeInput.value = fastModeThreshold;
                     console.log("Updated fastModeThreshold to:", fastModeThreshold);
                 }
                 if (message.labelFontSize !== undefined) {
                     labelFontSize = message.labelFontSize;
+                    if (fontSizeInput) fontSizeInput.value = labelFontSize;
                     console.log("Updated labelFontSize to:", labelFontSize);
                     requestAnimationFrame(drawLabels);
                 }
                 if (message.minLabelZoom !== undefined) {
                     minLabelZoom = message.minLabelZoom;
+                    if (minZoomInput) minZoomInput.value = minLabelZoom;
                     console.log("Updated minLabelZoom to:", minLabelZoom);
                     requestAnimationFrame(drawLabels);
                 }
@@ -1211,6 +1375,12 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             }
         });
 
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'F2') {
+                fitView();
+            }
+        });
+
         const viewContainer = document.getElementById('view-container');
 
         // Mouse interaction
@@ -1336,6 +1506,44 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         });
 
         recenterBtn.addEventListener('click', fitView);
+
+        if (toggleControlsBtn) {
+            toggleControlsBtn.addEventListener('click', () => {
+                const isCollapsed = controls.style.display === 'none';
+                if (isCollapsed) {
+                    controls.style.display = 'flex';
+                    toggleControlsBtn.textContent = '❮';
+                    toggleControlsBtn.style.left = '0';
+                } else {
+                    controls.style.display = 'none';
+                    toggleControlsBtn.textContent = '❯';
+                    toggleControlsBtn.style.left = '0'; // It's relative to view-container, which now starts at 0
+                }
+                // Trigger resize
+                if (currentEngine === 'canvas' || currentEngine === 'webgl') {
+                    requestAnimationFrame(resizeCanvas);
+                } else if (panZoomInstance) {
+                    panZoomInstance.resize();
+                    panZoomInstance.fit();
+                    panZoomInstance.center();
+                }
+            });
+        }
+
+        if (toggleConfigBtn && configPanel) {
+            toggleConfigBtn.addEventListener('click', () => {
+                const isHidden = configPanel.style.display === 'none' || configPanel.style.display === '';
+                if (isHidden) {
+                    configPanel.style.display = 'block';
+                    toggleConfigBtn.style.right = '250px';
+                    toggleConfigBtn.style.color = '#fff'; // Active state
+                } else {
+                    configPanel.style.display = 'none';
+                    toggleConfigBtn.style.right = '0';
+                    toggleConfigBtn.style.color = '#ccc'; // Inactive state
+                }
+            });
+        }
 
         // Signal ready
         vscode.postMessage({ command: 'ready' });
