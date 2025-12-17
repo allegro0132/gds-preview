@@ -5,7 +5,6 @@ import * as fs from 'fs';
 import * as os from 'os';
 
 export function activate(context: vscode.ExtensionContext) {
-
     console.log('Congratulations, your extension "gds-preview" is now active!');
 
     const disposable = vscode.commands.registerCommand('gds-preview.previewGds', () => {
@@ -31,44 +30,51 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.ViewColumn.Beside,
             {
                 enableScripts: true,
-                localResourceRoots: [vscode.Uri.file(path.dirname(filePath))]
+                localResourceRoots: [vscode.Uri.file(os.tmpdir())] // Allow access to temp dir
             }
         );
 
-        const tempDir = os.tmpdir();
-        const tempSvgPath = path.join(tempDir, `${path.basename(filePath)}.${Date.now()}.svg`);
+        const tempDir = path.join(os.tmpdir(), `gds_preview_data_${Date.now()}`);
         const pythonScriptPath = context.asAbsolutePath(path.join('scripts', 'gds_to_svg.py'));
+        const pythonPath = 'python3';
 
-        const pythonPath = 'python3'; 
+        const process = cp.spawn(pythonPath, [pythonScriptPath, filePath, tempDir]);
 
-        const process = cp.spawn(pythonPath, [pythonScriptPath, filePath, tempSvgPath]);
-
+        let stdout = '';
         let stderr = '';
+        process.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
         process.stderr.on('data', (data) => {
             stderr += data.toString();
         });
 
         process.on('close', (code) => {
             if (code !== 0) {
-                vscode.window.showErrorMessage(`Failed to convert GDS to SVG. Exit code: ${code}. Error: ${stderr}`);
+                try {
+                    const errJson = JSON.parse(stderr);
+                    vscode.window.showErrorMessage(`Failed to convert GDS: ${errJson.error}`);
+                } catch {
+                    vscode.window.showErrorMessage(`Failed to convert GDS. Exit code: ${code}. Stderr: ${stderr}`);
+                }
                 panel.dispose();
                 return;
             }
 
-            fs.readFile(tempSvgPath, 'utf8', (err, svgContent) => {
-                if (err) {
-                    vscode.window.showErrorMessage(`Failed to read temporary SVG file: ${err.message}`);
-                    panel.dispose();
-                    return;
-                }
-                panel.webview.html = getWebviewContent(svgContent);
-            });
+            try {
+                const result = JSON.parse(stdout);
+                panel.webview.html = getWebviewContent(result);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Failed to parse layer data: ${e.message}`);
+                panel.dispose();
+            }
         });
 
         panel.onDidDispose(() => {
-            fs.unlink(tempSvgPath, (err) => {
+            // Clean up the temporary directory using fs.rm for robustness
+            fs.rm(tempDir, { recursive: true, force: true }, (err) => {
                 if (err) {
-                    console.error(`Failed to delete temporary file: ${tempSvgPath}`, err);
+                    console.error(`Failed to delete temporary directory: ${tempDir}`, err);
                 }
             });
         });
@@ -77,45 +83,119 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(disposable);
 }
 
-function getWebviewContent(svgContent: string): string {
+function getWebviewContent(data: { layers: string[], svg_fragments: { [key: string]: string }, bbox: any }): string {
     const nonce = getNonce();
-    const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom/dist/svg-pan-zoom.min.js";
+    const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
+
+    const defaultColors: { [key: string]: string } = {
+        "0_0": "#C2185B", "1_0": "#512DA8", "2_0": "#00796B", "3_0": "#FBC02D", 
+        "4_0": "#E64A19", "5_0": "#303F9F", "6_0": "#D32F2F", "7_0": "#455A64",
+        "default": "#888888" // Fallback for undefined layers
+    };
+
+    let layersHtml = '';
+    for (const layerKey of data.layers) {
+        const defaultColor = defaultColors[layerKey] || defaultColors["default"];
+        layersHtml += `
+            <div class="layer-toggle">
+                <input type="checkbox" id="toggle-${layerKey}" data-layer-id="layer-group-${layerKey}" checked>
+                <label for="toggle-${layerKey}">Layer ${layerKey.replace('_', ' / ')}</label>
+                <input type="color" id="color-${layerKey}" data-layer-id="layer-group-${layerKey}" value="${defaultColor}">
+            </div>
+        `;
+    }
+
+    const bboxWidth = data.bbox.x_max - data.bbox.x_min;
+    const bboxHeight = data.bbox.y_max - data.bbox.y_min;
+    const viewBoxString = `${data.bbox.x_min} ${data.bbox.y_min} ${bboxWidth} ${bboxHeight}`;
+
+    let svgGroupsHtml = '';
+    for (const layerKey of data.layers) {
+        const fragment = data.svg_fragments[layerKey];
+        svgGroupsHtml += `<g id="layer-group-${layerKey}" class="gds-layer" style="color: ${defaultColors[layerKey] || defaultColors["default"]};">
+            ${fragment}
+        </g>`;
+    }
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' https://cdn.jsdelivr.net;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' https://cdn.jsdelivr.net; img-src data:;">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GDS Preview</title>
     <style>
-        html, body, #gds-container {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background-color: #1e1e1e;
-        }
-        svg {
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #1e1e1e; color: #ccc; display: flex; font-family: sans-serif; font-size: 14px;}
+        #view-container { flex-grow: 1; position: relative; height: 100%; }
+        #root-svg-for-panzoom {
             width: 100%;
             height: 100%;
             display: block;
         }
+        .gds-layer { /* Use CSS variable for fill/stroke within this group */ }
+        .gds-layer path, .gds-layer polygon, .gds-layer text {
+            fill: currentColor;
+            stroke: currentColor;
+            stroke-width: 0.1; 
+            vector-effect: non-scaling-stroke; /* Keep stroke width constant on zoom */
+        }
+        #controls { width: 250px; height: 100%; overflow-y: auto; background-color: #252526; padding: 10px; box-sizing: border-box;}
+        .layer-toggle { display: flex; align-items: center; margin-bottom: 5px; white-space: nowrap; }
+        .layer-toggle input[type="checkbox"] { margin-right: 5px; }
+        .layer-toggle input[type="color"] { margin-left: auto; width: 30px; height: 20px; padding: 0; border: none; background: none;}
     </style>
 </head>
 <body>
-    <div id="gds-container" style="width: 100%; height: 100%;">
-        ${svgContent}
+    <div id="controls">
+        <h3>Layers</h3>
+        ${layersHtml}
     </div>
+    <div id="view-container">
+        <svg id="root-svg-for-panzoom" viewBox="${viewBoxString}" width="100%" height="100%">
+            ${svgGroupsHtml}
+        </svg>
+    </div>
+    
     <script src="${svgPanZoomCdn}"></script>
     <script nonce="${nonce}">
+        // Function to set the color of a specific layer
+        function setLayerColor(layerId, color) {
+            const layerGroupElement = document.getElementById(layerId);
+            if (layerGroupElement) {
+                // Set the 'color' CSS property on the <g> element
+                // SVG shapes inside will inherit this via currentColor
+                layerGroupElement.style.color = color;
+            }
+        }
+
         window.addEventListener('load', function() {
-            // Using the official svg-pan-zoom library API
-            var panZoomInstance = svgPanZoom('#gds-container svg', {
+            // --- Layer Toggling Logic and Color Picker ---
+            const controls = document.getElementById('controls');
+            controls.addEventListener('change', function(event) {
+                const target = event.target;
+                const layerId = target.getAttribute('data-layer-id');
+                const layerGroupElement = document.getElementById(layerId);
+
+                if (layerGroupElement) {
+                    if (target.type === 'checkbox') {
+                        layerGroupElement.style.display = target.checked ? 'block' : 'none';
+                    } else if (target.type === 'color') {
+                        setLayerColor(layerId, target.value);
+                    }
+                }
+            });
+
+            // Initialize layer colors
+            document.querySelectorAll('#controls input[type="color"]').forEach(colorInput => {
+                const layerId = colorInput.getAttribute('data-layer-id');
+                setLayerColor(layerId, colorInput.value);
+            });
+
+            // --- Pan and Zoom Logic ---
+            const panZoomInstance = svgPanZoom('#root-svg-for-panzoom', {
                 panEnabled: true,
                 zoomEnabled: true,
-                controlIconsEnabled: false,
+                controlIconsEnabled: false, // Hide default controls
                 fit: true,
                 center: true,
                 minZoom: 0.1,
