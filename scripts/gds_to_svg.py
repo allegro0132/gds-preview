@@ -96,6 +96,7 @@ def gds_to_layered_svgs(gds_path, output_dir):
                 "vector-effect": "non-scaling-stroke"
             }
             layer_cell.write_svg(temp_full_svg_path,
+                                 scaling=1,
                                  pad=0,
                                  background="none",
                                  shape_style={(layer, datatype): style_dict})
