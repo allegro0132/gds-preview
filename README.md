@@ -10,6 +10,7 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
 - **Layer Management**: Toggle layer visibility and customize layer colors.
 - **Cell Navigation**: Inspect different cells within the GDS library.
 - **Interactive Controls**: Pan, zoom, and fit-to-screen capabilities.
+- **Configuration Panel**: Quick access to rendering settings and parameters directly within the viewer.
 - **Performance Optimizations**:
   - **Viewport Culling**: Only renders what is visible on screen.
   - **Dynamic Level of Detail (LOD)**: Automatically reduces detail during fast interactions to maintain high frame rates.

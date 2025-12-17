@@ -4,6 +4,14 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.0.6] - 2025-12-18
+
+### Added
+- Added configuration panel for quick settings adjustment.
+
+### Fixed
+- Fixed text rendering issue when changing cells.
+
 ## [0.0.5] - 2025-12-18
 
 ### Added
