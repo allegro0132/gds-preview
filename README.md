@@ -6,6 +6,7 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
 
 - **High-Performance Rendering**: View large GDSII layouts smoothly directly within VS Code.
 - **Multi-Engine Support**: Choose between WebGL (GPU), Canvas (CPU), or SVG rendering.
+- **Text Rendering**: Displays text labels and annotations within the GDSII layout.
 - **Layer Management**: Toggle layer visibility and customize layer colors.
 - **Cell Navigation**: Inspect different cells within the GDS library.
 - **Interactive Controls**: Pan, zoom, and fit-to-screen capabilities.
@@ -45,9 +46,12 @@ This extension contributes the following settings:
   * `svg`: Legacy vector rendering.
 
 * `gdsPreview.fastModeThreshold`: (Default: `10`)
-  * Controls the aggressiveness of the Dynamic LOD optimization.
+  * Controls the aggressiveness of the Dynamic LOD optimization (Only use for Canvas engine).
   * Specifies the minimum pixel size for polygons to be rendered during interaction (panning/zooming).
   * Higher values (e.g., 20, 50) improve interaction fluidity but temporarily reduce detail.
+
+* `gdsPreview.labelFontSize`: (Default: `12`)
+  * Font size for text labels in pixels.
 
 * `gdsPreview.pythonPath`: (Default: `python`)
   * Path to the Python executable used for parsing GDSII files.
