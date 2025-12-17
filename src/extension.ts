@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
+import * as readline from 'readline';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Congratulations, your extension "gds-preview" is now active!');
@@ -51,6 +52,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         };
 
         let currentCell: string | undefined;
+        let currentProcess: cp.ChildProcess | undefined;
 
         // Set initial HTML content
         const config = vscode.workspace.getConfiguration('gdsPreview');
@@ -60,6 +62,13 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold);
 
         const updateWebview = (cellName?: string) => {
+            // Kill existing process if any
+            if (currentProcess) {
+                console.log("Killing previous Python process...");
+                currentProcess.kill();
+                currentProcess = undefined;
+            }
+
             const currentConfig = vscode.workspace.getConfiguration('gdsPreview');
             const currentRenderingEngine = currentConfig.get<string>('renderingEngine', 'canvas');
 
@@ -81,14 +90,47 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             console.log(`Running python script: ${pythonPath} ${args.join(' ')}`);
 
             const process = cp.spawn(pythonPath, args);
+            currentProcess = process;
 
-            let stdout = '';
             let stderr = '';
-            process.stdout.on('data', (data) => {
-                stdout += data.toString();
-            });
             process.stderr.on('data', (data) => {
                 stderr += data.toString();
+            });
+
+            // Use readline to stream stdout line by line
+            const rl = readline.createInterface({
+                input: process.stdout,
+                crlfDelay: Infinity
+            });
+
+            let isFirstLine = true;
+
+            rl.on('line', (line) => {
+                try {
+                    if (!line.trim()) return;
+                    const data = JSON.parse(line);
+
+                    if (isFirstLine) {
+                        // Metadata
+                        webviewPanel.webview.postMessage({
+                            command: 'initialize',
+                            data: data,
+                            engine: currentRenderingEngine
+                        });
+                        isFirstLine = false;
+                    } else {
+                        // Layer data chunk
+                        // Python sends { layerKey, polygons, labels, chunkIndex, totalChunks }
+                        webviewPanel.webview.postMessage({
+                            command: 'addLayerChunk',
+                            layerKey: data.layerKey,
+                            data: data
+                        });
+                    }
+                } catch (e: any) {
+                    console.error(`Failed to parse line: ${e.message}`);
+                    // Don't show error message for every line, just log it
+                }
             });
 
             process.on('error', (err) => {
@@ -97,6 +139,11 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             });
 
             process.on('close', (code) => {
+                if (currentProcess !== process) {
+                    return;
+                }
+                currentProcess = undefined;
+
                 console.log(`Python script exited with code ${code}`);
                 if (code !== 0) {
                     console.error(`Stderr: ${stderr}`);
@@ -117,18 +164,10 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                     return;
                 }
 
-                try {
-                    const result = JSON.parse(stdout);
-                    console.log(`Parsed result for cell: ${result.cell_name}`);
-                    // Send data to webview via message instead of re-setting HTML
-                    webviewPanel.webview.postMessage({ command: 'updateData', data: result, engine: currentRenderingEngine });
-                } catch (e: any) {
-                    console.error(`Failed to parse stdout: ${e.message}`);
-                    console.error(`Stdout: ${stdout}`);
-                    vscode.window.showErrorMessage(`Failed to parse layer data: ${e.message}`);
-                }
+                // Send success message to webview
+                webviewPanel.webview.postMessage({ command: 'status', message: 'Loaded successfully' });
 
-                // Clean up temp dir
+                // Clean up temp dir (even though we didn't use it for files, we created it)
                 fs.rm(tempDir, { recursive: true, force: true }, (err) => {
                     if (err) {
                         console.error(`Failed to delete temporary directory: ${tempDir}`, err);
@@ -259,6 +298,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
         let bbox = { x_min: 0, x_max: 0, y_min: 0, y_max: 0 };
         let activeLayers = new Set();
         let layerColors = {};
+        let layerOpacities = {};
         let currentEngine = '${engine}';
         let fastModeThreshold = ${fastModeThreshold};
 
@@ -326,13 +366,161 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                 console.log("Received data update");
                 currentEngine = message.engine;
                 handleDataUpdate(message.data);
+            } else if (message.command === 'initialize') {
+                console.log("Received initialization");
+                currentEngine = message.engine;
+                handleInitialize(message.data);
+            } else if (message.command === 'addLayerChunk') {
+                // console.log("Received layer chunk", message.layerKey);
+                handleAddLayerChunk(message.layerKey, message.data);
             } else if (message.command === 'updateSettings') {
                 if (message.fastModeThreshold !== undefined) {
                     fastModeThreshold = message.fastModeThreshold;
                     console.log("Updated fastModeThreshold to:", fastModeThreshold);
                 }
+            } else if (message.command === 'status') {
+                updateStatus(message.message);
             }
         });
+
+        function handleInitialize(data) {
+            updateStatus("Initializing...");
+
+            // Reset state
+            geometry = {};
+            labels = {};
+            bbox = data.bbox;
+            activeLayers.clear();
+            layerColors = {};
+            layerOpacities = {};
+            layerBuffers = {}; // Clear WebGL buffers
+
+            // Update Cell Select
+            cellSelect.innerHTML = '';
+            cellSelect.disabled = false;
+            data.all_cells.forEach(cell => {
+                const option = document.createElement('option');
+                option.value = cell;
+                option.textContent = cell;
+                if (cell === data.cell_name) option.selected = true;
+                cellSelect.appendChild(option);
+            });
+
+            // Update Layers UI
+            layersList.innerHTML = '';
+            data.layers.forEach(layerKey => {
+                activeLayers.add(layerKey);
+
+                // Determine color
+                let color = "#888888";
+                const parts = layerKey.split('_');
+                if (parts.length >= 1) {
+                    const layerNum = parseInt(parts[0]);
+                    if (!isNaN(layerNum)) {
+                        color = palette[layerNum % palette.length];
+                    } else {
+                        let hash = 0;
+                        for (let i = 0; i < layerKey.length; i++) {
+                            hash = layerKey.charCodeAt(i) + ((hash << 5) - hash);
+                        }
+                        color = palette[Math.abs(hash) % palette.length];
+                    }
+                }
+                layerColors[layerKey] = color;
+                layerOpacities[layerKey] = 0.8;
+
+                // Create UI
+                const div = document.createElement('div');
+                div.className = 'layer-toggle';
+                div.innerHTML = \`
+                    <input type="checkbox" id="toggle-\${layerKey}" data-layer-id="\${layerKey}" checked>
+                    <label for="toggle-\${layerKey}">Layer \${layerKey.replace('_', ' / ')}</label>
+                    <input type="color" id="color-\${layerKey}" data-layer-id="\${layerKey}" value="\${color}">
+                    <input type="range" min="0" max="1" step="0.1" value="0.8" class="opacity-slider" data-layer-id="\${layerKey}" style="width: 50px; margin-left: 5px;" title="Opacity">
+                \`;
+                layersList.appendChild(div);
+            });
+
+            // Reset View
+            if (currentEngine === 'canvas') {
+                canvas.style.display = 'block';
+                document.getElementById('gds-webgl-canvas').style.display = 'none';
+                svgContainer.style.display = 'none';
+                svgContainer.innerHTML = '';
+                resizeCanvas();
+                fitView();
+            } else if (currentEngine === 'webgl') {
+                setupWebGLMode({ geometry: {}, bbox: data.bbox, layers: [] });
+            }
+
+            updateStatus("Loading layers...");
+        }
+
+        function handleAddLayerChunk(layerKey, data) {
+            const polys = data.polygons;
+
+            // 1. Handle Geometry Storage (Canvas Mode Only)
+            if (currentEngine === 'canvas') {
+                if (polys && polys.length > 0) {
+                    if (!geometry[layerKey]) geometry[layerKey] = [];
+
+                    // Pre-calculate bbox
+                    for (const poly of polys) {
+                        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                        for (const p of poly) {
+                            if (p[0] < minX) minX = p[0];
+                            if (p[0] > maxX) maxX = p[0];
+                            if (p[1] < minY) minY = p[1];
+                            if (p[1] > maxY) maxY = p[1];
+                        }
+                        poly.bbox = { minX, minY, maxX, maxY };
+                    }
+                    geometry[layerKey].push(...polys);
+                }
+            }
+
+            // 2. Handle Labels (Both Modes)
+            if (data.labels && data.labels.length > 0) {
+                if (!labels[layerKey]) labels[layerKey] = [];
+                labels[layerKey].push(...data.labels);
+            }
+
+            // 3. Handle WebGL Buffers (WebGL Mode Only)
+            // CRITICAL: We process and DISCARD the polygons immediately to save memory
+            if (currentEngine === 'webgl' && polys && polys.length > 0) {
+                const vertices = [];
+                for (const poly of polys) {
+                    const flat = [];
+                    for (const p of poly) {
+                        flat.push(p[0], p[1]);
+                    }
+                    const triangles = earcut(flat);
+                    for (let i = 0; i < triangles.length; i++) {
+                        const index = triangles[i];
+                        vertices.push(flat[index * 2], flat[index * 2 + 1]);
+                    }
+                }
+
+                if (vertices.length > 0) {
+                    const buffer = gl.createBuffer();
+                    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+
+                    if (!layerBuffers[layerKey]) layerBuffers[layerKey] = [];
+
+                    layerBuffers[layerKey].push({
+                        buffer: buffer,
+                        count: vertices.length / 2
+                    });
+                }
+            }
+
+            updateStatus(\`Loading \${layerKey} (\${data.chunkIndex + 1}/\${data.totalChunks || '?'})\`);
+
+            // Redraw
+            if (currentEngine === 'canvas') requestAnimationFrame(draw);
+            else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
+        }
 
         function handleDataUpdate(data) {
             updateStatus("Rendering...");
@@ -352,6 +540,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
             layersList.innerHTML = '';
             activeLayers.clear();
             layerColors = {};
+            layerOpacities = {};
 
             data.layers.forEach(layerKey => {
                 activeLayers.add(layerKey);
@@ -372,6 +561,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                     }
                 }
                 layerColors[layerKey] = color;
+                layerOpacities[layerKey] = 0.8;
 
                 // Create UI
                 const div = document.createElement('div');
@@ -380,6 +570,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                     <input type="checkbox" id="toggle-\${layerKey}" data-layer-id="\${layerKey}" checked>
                     <label for="toggle-\${layerKey}">Layer \${layerKey.replace('_', ' / ')}</label>
                     <input type="color" id="color-\${layerKey}" data-layer-id="\${layerKey}" value="\${color}">
+                    <input type="range" min="0" max="1" step="0.1" value="0.8" class="opacity-slider" data-layer-id="\${layerKey}" style="width: 50px; margin-left: 5px;" title="Opacity">
                 \`;
                 layersList.appendChild(div);
             });
@@ -437,7 +628,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
 
             for (const layerKey of data.layers) {
                 const fragment = data.svg_fragments[layerKey];
-                svgContent += \`<g id="layer-group-\${layerKey}" class="gds-layer" style="color: \${layerColors[layerKey]}; display: block;">
+                const opacity = layerOpacities[layerKey] !== undefined ? layerOpacities[layerKey] : 0.8;
+                svgContent += \`<g id="layer-group-\${layerKey}" class="gds-layer" style="color: \${layerColors[layerKey]}; opacity: \${opacity}; display: block;">
                     \${fragment}
                 </g>\`;
             }
@@ -474,6 +666,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                 updateStatus("WebGL not supported");
                 return;
             }
+
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
             // Shaders
             const vsSource = \`
@@ -512,10 +707,15 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
             glProgram = createProgram(gl, vertexShader, fragmentShader);
 
             // Process Geometry
+            // Note: In streaming mode, geometry might be empty if we are in WebGL mode
+            // because we discard it to save memory.
+            // But if we switch FROM Canvas TO WebGL, we need to process existing geometry.
             layerBuffers = {};
 
             for (const layerKey in geometry) {
                 const polys = geometry[layerKey];
+                if (!polys) continue;
+
                 const vertices = [];
 
                 for (const poly of polys) {
@@ -540,10 +740,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
                     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
 
-                    layerBuffers[layerKey] = {
+                    if (!layerBuffers[layerKey]) layerBuffers[layerKey] = [];
+                    layerBuffers[layerKey].push({
                         buffer: buffer,
                         count: vertices.length / 2
-                    };
+                    });
                 }
             }
 
@@ -600,19 +801,24 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
             for (const layerKey in layerBuffers) {
                 if (!activeLayers.has(layerKey)) continue;
 
-                const layerData = layerBuffers[layerKey];
-                gl.bindBuffer(gl.ARRAY_BUFFER, layerData.buffer);
-                gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+                const buffers = layerBuffers[layerKey];
+                // Support both single buffer (legacy/small files) and array of buffers (chunked)
+                const bufferList = Array.isArray(buffers) ? buffers : [buffers];
 
                 // Convert hex color to rgba
                 const hex = layerColors[layerKey] || '#888888';
                 const r = parseInt(hex.slice(1, 3), 16) / 255;
                 const g = parseInt(hex.slice(3, 5), 16) / 255;
                 const b = parseInt(hex.slice(5, 7), 16) / 255;
+                const a = layerOpacities[layerKey] !== undefined ? layerOpacities[layerKey] : 0.8;
 
-                gl.uniform4f(colorLocation, r, g, b, 1.0); // Alpha 1.0 for now
+                gl.uniform4f(colorLocation, r, g, b, a);
 
-                gl.drawArrays(gl.TRIANGLES, 0, layerData.count);
+                for (const layerData of bufferList) {
+                    gl.bindBuffer(gl.ARRAY_BUFFER, layerData.buffer);
+                    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+                    gl.drawArrays(gl.TRIANGLES, 0, layerData.count);
+                }
             }
         }
 
@@ -740,7 +946,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                         ctx.closePath();
                         polyCount++;
                     }
-                    ctx.globalAlpha = 0.5;
+                    ctx.globalAlpha = layerOpacities[layerKey] !== undefined ? layerOpacities[layerKey] : 0.8;
                     ctx.fill();
                     ctx.globalAlpha = 1.0;
                     ctx.lineWidth = 1 / scale;
@@ -863,6 +1069,14 @@ function getWebviewContent(engine: string, fastModeThreshold: number): string {
                 else {
                     const el = document.getElementById('layer-group-' + layerId);
                     if (el) el.style.color = target.value;
+                }
+            } else if (target.classList.contains('opacity-slider')) {
+                layerOpacities[layerId] = parseFloat(target.value);
+                if (currentEngine === 'canvas') draw();
+                else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
+                else {
+                    const el = document.getElementById('layer-group-' + layerId);
+                    if (el) el.style.opacity = target.value;
                 }
             }
         });

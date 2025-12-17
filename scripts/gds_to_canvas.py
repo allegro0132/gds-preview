@@ -103,36 +103,11 @@ def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
         layers_datatypes_list = sorted(list(unique_layers_datatypes),
                                        key=lambda x: (x[0], x[1]))
 
-        layer_geometry = {}
-
-        for layer, datatype in layers_datatypes_list:
-            layer_key = f"{layer}_{datatype}"
-
-            # Manually filter polygons for the current layer
-            polygons_for_layer = [
-                p for p in flattened_cell.polygons
-                if p.layer == layer and p.datatype == datatype
-            ]
-
-            # We skip labels for now in the canvas view for performance, or we could add them later
-            # labels_for_layer = ...
-
-            if not polygons_for_layer:
-                continue
-
-            # Extract points
-            polys = []
-            for p in polygons_for_layer:
-                polys.append(p.points)  # Will be handled by NumpyEncoder
-
-            layer_geometry[layer_key] = polys
-
-        # Prepare the JSON output
-        result = {
+        # Prepare metadata
+        metadata = {
             "cell_name": main_cell.name,
             "all_cells": all_cell_names,
-            "layers": [k for k in layer_geometry.keys()],
-            "geometry": layer_geometry,
+            "layers": [],
             "bbox": {
                 "x_min": bbox[0][0],
                 "x_max": bbox[1][0],
@@ -141,7 +116,71 @@ def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
             }
         }
 
-        print(json.dumps(result, cls=NumpyEncoder))
+        # First pass: collect valid layers for metadata
+        valid_layers = []
+        for layer, datatype in layers_datatypes_list:
+            layer_key = f"{layer}_{datatype}"
+
+            # Check if layer has content
+            has_polys = any(p.layer == layer and p.datatype == datatype for p in flattened_cell.polygons)
+            has_labels = any(l.layer == layer and l.texttype == datatype for l in flattened_cell.labels)
+
+            if has_polys or has_labels:
+                metadata["layers"].append(layer_key)
+                valid_layers.append((layer, datatype))
+
+        # Print metadata first
+        print(json.dumps(metadata, cls=NumpyEncoder))
+        sys.stdout.flush()
+
+        # Second pass: stream layer data
+        CHUNK_SIZE = 2000  # Number of polygons per chunk
+
+        for layer, datatype in valid_layers:
+            layer_key = f"{layer}_{datatype}"
+
+            polygons_for_layer = [
+                p for p in flattened_cell.polygons
+                if p.layer == layer and p.datatype == datatype
+            ]
+
+            labels_for_layer = [
+                l for l in flattened_cell.labels
+                if l.layer == layer and l.texttype == datatype
+            ]
+
+            # Stream labels (usually few, send all at once)
+            if labels_for_layer:
+                lbls = []
+                for l in labels_for_layer:
+                    lbls.append({
+                        "text": l.text,
+                        "x": l.origin[0],
+                        "y": l.origin[1],
+                        "rotation": l.rotation,
+                        "magnification": l.magnification,
+                        "anchor": l.anchor
+                    })
+                print(json.dumps({
+                    "layerKey": layer_key,
+                    "labels": lbls
+                }, cls=NumpyEncoder))
+                sys.stdout.flush()
+
+            # Stream polygons in chunks
+            total_polys = len(polygons_for_layer)
+            for i in range(0, total_polys, CHUNK_SIZE):
+                chunk_polys = polygons_for_layer[i:i + CHUNK_SIZE]
+                polys_data = [p.points for p in chunk_polys]
+
+                print(json.dumps({
+                    "layerKey": layer_key,
+                    "polygons": polys_data,
+                    "chunkIndex": i // CHUNK_SIZE,
+                    "totalChunks": (total_polys + CHUNK_SIZE - 1) // CHUNK_SIZE
+                }, cls=NumpyEncoder))
+                sys.stdout.flush()
+
         sys.exit(0)
 
     except Exception as e:
