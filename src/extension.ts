@@ -130,7 +130,7 @@ function getWebviewContent(data: { cell_name: string, all_cells: string[], layer
 
     // Extended palette for automatic color assignment
     const palette = [
-        "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#800000",
+        "#4363d8", "#3cb44b", "#ffe119", "#f58231", "#800000",
         "#911eb4", "#46f0f0", "#f032e6", "#bcf60c", "#fabebe",
         "#008080", "#e6beff", "#9a6324", "#e6194b", "#fffac8",
         "#aaffc3", "#808000", "#ffd8b1", "#000075", "#808080"
@@ -148,12 +148,12 @@ function getWebviewContent(data: { cell_name: string, all_cells: string[], layer
             if (!isNaN(layerNum)) {
                 color = palette[layerNum % palette.length];
             } else {
-                 // Hash string if not a number
-                 let hash = 0;
-                 for (let i = 0; i < layerKey.length; i++) {
+                // Hash string if not a number
+                let hash = 0;
+                for (let i = 0; i < layerKey.length; i++) {
                     hash = layerKey.charCodeAt(i) + ((hash << 5) - hash);
-                 }
-                 color = palette[Math.abs(hash) % palette.length];
+                }
+                color = palette[Math.abs(hash) % palette.length];
             }
         }
         layerColors[layerKey] = color;
@@ -200,22 +200,46 @@ function getWebviewContent(data: { cell_name: string, all_cells: string[], layer
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GDS Preview</title>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #1e1e1e; color: #ccc; display: flex; font-family: sans-serif; font-size: 14px;}
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+            background-color: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            display: flex;
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+        }
         #view-container { flex-grow: 1; position: relative; height: 100%; }
         #root-svg-for-panzoom { width: 100%; height: 100%; display: block; }
         .gds-layer path, .gds-layer polygon, .gds-layer text {
             fill: currentColor;
             stroke: currentColor;
         }
-        #controls { width: 250px; height: 100%; overflow-y: auto; background-color: #252526; padding: 10px; box-sizing: border-box; display: flex; flex-direction: column;}
+        #controls {
+            width: 250px; height: 100%; overflow-y: auto;
+            background-color: var(--vscode-sideBar-background);
+            padding: 10px; box-sizing: border-box; display: flex; flex-direction: column;
+            border-right: 1px solid var(--vscode-sideBar-border);
+        }
+        .layer-toggle { display: flex; align-items: center; margin-bottom: 5px; white-space: nowrap; }
         .layer-toggle input[type="checkbox"] { margin-right: 5px; }
         .layer-toggle input[type="color"] { margin-left: auto; width: 30px; height: 20px; padding: 0; border: none; background: none;}
-        #recenter-btn { margin-top: 10px; padding: 8px; background-color: #444; color: #fff; border: 1px solid #666; cursor: pointer; }
-        #recenter-btn:hover { background-color: #555; }
+        #recenter-btn {
+            margin-top: 10px; padding: 8px;
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none; cursor: pointer;
+        }
+        #recenter-btn:hover { background-color: var(--vscode-button-hoverBackground); }
         #layers-list { margin-top: 10px; flex-grow: 1; overflow-y: auto; }
         .control-group { margin-bottom: 15px; }
         .control-group label { display: block; margin-bottom: 5px; font-weight: bold; }
-        select { width: 100%; padding: 5px; background-color: #3c3c3c; color: #ccc; border: 1px solid #555; }
+        select {
+            width: 100%; padding: 5px;
+            background-color: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+            border: 1px solid var(--vscode-dropdown-border);
+        }
+        #status-msg { font-size: 12px; color: var(--vscode-descriptionForeground); margin-top: 5px; }
     </style>
 </head>
 <body>
@@ -341,4 +365,4 @@ function getNonce() {
 }
 
 // This method is called when your extension is deactivated
-export function deactivate() {}
+export function deactivate() { }
