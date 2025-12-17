@@ -6,6 +6,14 @@ import re
 import shutil  # For rmtree
 
 
+class NumpyEncoder(json.JSONEncoder):
+
+    def default(self, obj):
+        if hasattr(obj, "tolist"):
+            return obj.tolist()
+        return json.JSONEncoder.default(self, obj)
+
+
 def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
     """
     Converts a GDSII file into multiple SVG fragments (inner <g> content), one for each layer.
@@ -99,6 +107,8 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
         # Filter out empty layers if needed, but for now we keep them if they were in the geometry
 
         layer_svg_fragments = {}
+        all_labels = []
+        active_layer_keys = set()
 
         for layer, datatype in layers_datatypes_list:
             layer_key = f"{layer}_{datatype}"
@@ -117,10 +127,27 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
                 if l.layer == layer and l.texttype == datatype
             ]
 
-            if not polygons_for_layer and not labels_for_layer:
+            if polygons_for_layer or labels_for_layer:
+                active_layer_keys.add(layer_key)
+
+            # Collect labels for separate JSON output (for intelligent scaling in frontend)
+            if labels_for_layer:
+                for l in labels_for_layer:
+                    all_labels.append({
+                        "layerKey": layer_key,
+                        "text": l.text,
+                        "x": l.origin[0],
+                        "y": l.origin[1],
+                        "rotation": l.rotation,
+                        "magnification": l.magnification,
+                        "anchor": l.anchor
+                    })
+
+            if not polygons_for_layer:
                 continue
 
-            layer_cell.add(*polygons_for_layer, *labels_for_layer)
+            # Only add polygons to the SVG, NOT labels
+            layer_cell.add(*polygons_for_layer)
 
             temp_full_svg_path = os.path.join(
                 output_dir, f"temp_full_layer_{layer_key}.svg")
@@ -168,9 +195,10 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
         result = {
             "cell_name": main_cell.name,
             "all_cells": all_cell_names,
-            "layers": [k for k in layer_svg_fragments.keys()],
+            "layers": sorted(list(active_layer_keys)),
             "svg_fragments":
                 layer_svg_fragments,  # Changed from 'files' to 'svg_fragments'
+            "labels": all_labels,
             "bbox": {
                 "x_min": bbox[0][0],
                 "x_max": bbox[1][0],
@@ -179,7 +207,7 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
             }
         }
 
-        print(json.dumps(result))
+        print(json.dumps(result, cls=NumpyEncoder))
         sys.exit(0)
 
     except Exception as e:

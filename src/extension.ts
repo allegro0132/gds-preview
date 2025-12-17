@@ -59,8 +59,9 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
         const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
         const labelFontSize = config.get<number>('labelFontSize', 12);
+        const minLabelZoom = config.get<number>('minLabelZoom', 0.1);
 
-        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize);
+        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, minLabelZoom);
 
         const updateWebview = (cellName?: string) => {
             // Kill existing process if any
@@ -197,14 +198,18 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
         // Listen for configuration changes
         vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('gdsPreview.fastModeThreshold') || e.affectsConfiguration('gdsPreview.labelFontSize')) {
+            if (e.affectsConfiguration('gdsPreview.fastModeThreshold') ||
+                e.affectsConfiguration('gdsPreview.labelFontSize') ||
+                e.affectsConfiguration('gdsPreview.minLabelZoom')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
                 const newThreshold = config.get<number>('fastModeThreshold', 10);
                 const newFontSize = config.get<number>('labelFontSize', 12);
+                const newMinZoom = config.get<number>('minLabelZoom', 0.1);
                 webviewPanel.webview.postMessage({
                     command: 'updateSettings',
                     fastModeThreshold: newThreshold,
-                    labelFontSize: newFontSize
+                    labelFontSize: newFontSize,
+                    minLabelZoom: newMinZoom
                 });
             }
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {
@@ -214,7 +219,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
     }
 }
 
-function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number): string {
+function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, minLabelZoom: number): string {
     const nonce = getNonce();
     const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
     const earcutCdn = "https://unpkg.com/earcut@2.2.4/dist/earcut.min.js";
@@ -311,6 +316,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
         // State
         let geometry = {};
+        let labels = {};
         let bbox = { x_min: 0, x_max: 0, y_min: 0, y_max: 0 };
         let activeLayers = new Set();
         let layerColors = {};
@@ -320,6 +326,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let currentEngine = '${engine}';
         let fastModeThreshold = ${fastModeThreshold};
         let labelFontSize = ${labelFontSize};
+        let minLabelZoom = ${minLabelZoom};
 
         // WebGL State
         let gl = null;
@@ -402,6 +409,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     console.log("Updated labelFontSize to:", labelFontSize);
                     requestAnimationFrame(drawLabels);
                 }
+                if (message.minLabelZoom !== undefined) {
+                    minLabelZoom = message.minLabelZoom;
+                    console.log("Updated minLabelZoom to:", minLabelZoom);
+                    requestAnimationFrame(drawLabels);
+                }
             } else if (message.command === 'status') {
                 updateStatus(message.message);
             }
@@ -476,6 +488,96 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 fitView();
             } else if (currentEngine === 'webgl') {
                 setupWebGLMode({ geometry: {}, bbox: data.bbox, layers: [] });
+            } else if (currentEngine === 'svg') {
+                canvas.style.display = 'none';
+                document.getElementById('gds-webgl-canvas').style.display = 'none';
+                // Ensure text canvas is sized correctly
+                resizeCanvas();
+                // Clear text canvas when switching to SVG
+                const textCanvas = document.getElementById('text-canvas');
+                if (textCanvas) {
+                    const ctx = textCanvas.getContext('2d');
+                    ctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
+                }
+                svgContainer.style.display = 'block';
+                svgContainer.innerHTML = '';
+
+                if (data.svg_fragments) {
+                    const width = data.bbox.x_max - data.bbox.x_min;
+                    const height = data.bbox.y_max - data.bbox.y_min;
+                    // Note: GDS is Y-up, SVG is Y-down. We might need to flip, but let's stick to raw coordinates for now
+                    // or rely on svg-pan-zoom to handle orientation if the user rotates.
+                    // Actually, let's just render it. If it's flipped, we can fix it later.
+                    const viewBox = \`\${data.bbox.x_min} \${data.bbox.y_min} \${width} \${height}\`;
+
+                    let svgContent = '';
+                    for (const layerKey in data.svg_fragments) {
+                        const fragment = data.svg_fragments[layerKey];
+                        const color = layerColors[layerKey];
+                        // Wrap in group for color and opacity control
+                        svgContent += \`<g id="layer-group-\${layerKey}" fill="\${color}" stroke="\${color}" style="opacity: 0.8">\${fragment}</g>\`;
+                    }
+
+                    // Wrap for flip and viewport
+                    // Flip Y axis to match GDS (Y-up)
+                    const flippedContent = \`<g transform="scale(1, -1)">\${svgContent}</g>\`;
+                    const viewportContent = \`<g id="svg-viewport">\${flippedContent}</g>\`;
+
+                    // Create main SVG (No viewBox, let svg-pan-zoom handle it)
+                    svgContainer.innerHTML = \`<svg id="main-svg" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg" style="background-color: #000;">\${viewportContent}</svg>\`;
+
+                    // Initialize PanZoom
+                    try {
+                        // @ts-ignore
+                        panZoomInstance = svgPanZoom('#main-svg', {
+                            zoomEnabled: true,
+                            controlIconsEnabled: false,
+                            fit: true,
+                            center: true,
+                            minZoom: 0.001,
+                            maxZoom: 1000,
+                            viewportSelector: '#svg-viewport',
+                            onZoom: function(newZoom) {
+                                const pan = this.getPan();
+                                offsetX = pan.x;
+                                offsetY = pan.y;
+                                scale = newZoom;
+                                requestAnimationFrame(drawLabels);
+                            },
+                            onPan: function(newPan) {
+                                // svg-pan-zoom pan is in screen pixels
+                                // We need to sync this with our offsetX/offsetY
+                                // But wait, svg-pan-zoom applies transform to the viewport.
+                                // Our drawLabels uses offsetX/offsetY/scale to project world to screen.
+                                // If svg-pan-zoom handles the transform, we just need to know the current transform.
+                                const pan = this.getPan();
+                                offsetX = pan.x;
+                                offsetY = pan.y;
+                                scale = this.getSizes().realZoom;
+                                requestAnimationFrame(drawLabels);
+                            }
+                        });
+
+                        // Initial sync
+                        const pan = panZoomInstance.getPan();
+                        offsetX = pan.x;
+                        offsetY = pan.y;
+                        scale = panZoomInstance.getSizes().realZoom;
+                        requestAnimationFrame(drawLabels);
+
+                    } catch (e) {
+                        console.error("PanZoom init error:", e);
+                    }
+                }
+
+                // Handle Labels for SVG mode (from separate JSON list)
+                if (data.labels && data.labels.length > 0) {
+                    data.labels.forEach(l => {
+                        if (!labels[l.layerKey]) labels[l.layerKey] = [];
+                        labels[l.layerKey].push(l);
+                    });
+                    requestAnimationFrame(drawLabels);
+                }
             }
 
             updateStatus("Loading layers...");
@@ -642,7 +744,17 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         function setupSvgMode(data) {
             canvas.style.display = 'none';
             const glCanvas = document.getElementById('gds-webgl-canvas');
-            if (glCanvas) glCanvas.style.display = 'none';
+            if (glCanvas) {
+                glCanvas.style.display = 'none';
+            }
+            // Clear text canvas when switching to SVG
+            const textCanvas = document.getElementById('text-canvas');
+            if (textCanvas) {
+                const ctx = textCanvas.getContext('2d');
+                ctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
+            }
+            // Ensure text canvas is sized correctly
+            resizeCanvas();
             svgContainer.style.display = 'block';
 
             const bboxWidth = data.bbox.x_max - data.bbox.x_min;
@@ -673,7 +785,21 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 fit: true,
                 center: true,
                 minZoom: 0.1,
-                maxZoom: 100
+                maxZoom: 100,
+                onZoom: function(newZoom) {
+                    const pan = this.getPan();
+                    offsetX = pan.x;
+                    offsetY = pan.y;
+                    scale = newZoom;
+                    requestAnimationFrame(drawLabels);
+                },
+                onPan: function(newPan) {
+                    const pan = this.getPan();
+                    offsetX = pan.x;
+                    offsetY = pan.y;
+                    scale = this.getSizes().realZoom;
+                    requestAnimationFrame(drawLabels);
+                }
             });
         }
 
@@ -877,6 +1003,12 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 if (panZoomInstance) {
                     panZoomInstance.fit();
                     panZoomInstance.center();
+                    // Sync state for labels
+                    const pan = panZoomInstance.getPan();
+                    offsetX = pan.x;
+                    offsetY = pan.y;
+                    scale = panZoomInstance.getSizes().realZoom;
+                    requestAnimationFrame(drawLabels);
                 }
                 return;
             }
@@ -919,7 +1051,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             if (!showLabels) return;
 
             // Don't draw labels if zoomed out too far
-            if (scale < 0.001) {
+            if (scale < minLabelZoom) {
                 return;
             }
 
@@ -1185,7 +1317,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 requestAnimationFrame(drawLabels);
                 if (currentEngine === 'svg') {
                     const el = document.getElementById('layer-group-' + layerId);
-                    if (el) el.style.color = target.value;
+                    if (el) {
+                        el.setAttribute('fill', target.value);
+                        el.setAttribute('stroke', target.value);
+                    }
                 }
             } else if (target.classList.contains('opacity-slider')) {
                 layerOpacities[layerId] = parseFloat(target.value);
