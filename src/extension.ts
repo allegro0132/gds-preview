@@ -7,6 +7,7 @@ import * as readline from 'readline';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Congratulations, your extension "gds-preview" is now active!');
+    console.log(`Extension path: ${context.extensionPath}`);
 
     const provider = new GdsPreviewProvider(context);
     context.subscriptions.push(
@@ -69,6 +70,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         webviewPanel: vscode.WebviewPanel,
         token: vscode.CancellationToken
     ): void | Thenable<void> {
+        console.log(`resolveCustomEditor called for ${document.uri.fsPath}`);
         this.webviews.add(webviewPanel);
         webviewPanel.onDidDispose(() => {
             this.webviews.delete(webviewPanel);
@@ -78,8 +80,11 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
         webviewPanel.webview.options = {
             enableScripts: true,
-            localResourceRoots: [vscode.Uri.file(os.tmpdir())]
+            localResourceRoots: [vscode.Uri.file(os.tmpdir()), this.context.extensionUri]
         };
+
+        // Log options
+        console.log(`Webview options set. localResourceRoots: ${JSON.stringify(webviewPanel.webview.options.localResourceRoots)}`);
 
         let currentCell: string | undefined;
         let currentProcess: cp.ChildProcess | undefined;
@@ -92,10 +97,10 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const maxWorkers = config.get<number>('maxWorkers', -1);
         const chunkSize = config.get<number>('chunkSize', 2000);
         const pythonPath = config.get<string>('pythonPath', 'python');
-
-        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath);
+        const enableProfiling = config.get<boolean>('enableProfiling', false);
 
         const updateWebview = (cellName?: string) => {
+            // console.log(`updateWebview called with cellName: ${cellName}`);
             // Kill existing process if any
             if (currentProcess) {
                 console.log("Killing previous Python process...");
@@ -106,6 +111,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             const currentConfig = vscode.workspace.getConfiguration('gdsPreview');
             const currentRenderingEngine = currentConfig.get<string>('renderingEngine', 'canvas');
             const chunkSize = currentConfig.get<number>('chunkSize', 2000);
+            const enableProfiling = currentConfig.get<boolean>('enableProfiling', false);
 
             const tempDir = path.join(os.tmpdir(), `gds_preview_data_${Date.now()}`);
 
@@ -122,13 +128,23 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             args.push(chunkSize.toString());
 
             console.log(`Running python script: ${pythonPath} ${args.join(' ')}`);
+            if (enableProfiling) {
+                console.time("PythonProcess");
+            }
 
             const process = cp.spawn(pythonPath, args);
             currentProcess = process;
 
             let stderr = '';
             process.stderr.on('data', (data) => {
-                stderr += data.toString();
+                const msg = data.toString();
+                if (msg.startsWith("PROFILE:")) {
+                    if (enableProfiling) {
+                        console.log(msg.trim());
+                    }
+                } else {
+                    stderr += msg;
+                }
             });
 
             // Use readline to stream stdout line by line
@@ -142,38 +158,36 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             let currentChunkMeta: any = null;
 
             rl.on('line', (line) => {
+                if (isFirstLine) {
+                    console.log(`[PythonProcess] First byte received`);
+                }
                 // console.log(`Received line from Python: ${line.substring(0, 100)}...`);
                 try {
                     if (!line.trim()) return;
 
-                    if (line.startsWith("CHUNK_META|")) {
-                        currentChunkMeta = JSON.parse(line.substring(11));
-                    } else if (line.startsWith("CHUNK_DATA|")) {
-                        if (currentChunkMeta) {
-                            // Forward raw string to webview
-                            webviewPanel.webview.postMessage({
-                                command: 'addLayerChunkRaw',
-                                layerKey: currentChunkMeta.layerKey,
-                                chunkIndex: currentChunkMeta.chunkIndex,
-                                totalChunks: currentChunkMeta.totalChunks,
-                                polygonsString: line.substring(11)
-                            });
-                            currentChunkMeta = null;
-                        }
+                    if (line.startsWith("CHUNK_B64|")) {
+                        const chunkInfo = JSON.parse(line.substring(10));
+                        webviewPanel.webview.postMessage({
+                            command: 'addLayerChunkB64',
+                            layerKey: chunkInfo.layerKey,
+                            chunkIndex: chunkInfo.chunkIndex,
+                            totalChunks: chunkInfo.totalChunks,
+                            data: chunkInfo.data
+                        });
                     } else {
                         // Legacy/Metadata handling
                         const data = JSON.parse(line);
 
                         if (isFirstLine) {
-                            console.log("Sending initialize command to webview");
+                            console.log("[PythonProcess] Sending initialize command to webview");
                             // Metadata
                             webviewPanel.webview.postMessage({
                                 command: 'initialize',
                                 data: data,
                                 engine: currentRenderingEngine
                             }).then(
-                                (success) => console.log(`Initialize message delivery status: ${success}`),
-                                (err) => console.error(`Initialize message delivery failed: ${err}`)
+                                (success) => console.log(`[Webview Log] Initialize message delivery status: ${success}`),
+                                (err) => console.log(`[Webview Log] Initialize message delivery failed: ${err}`)
                             );
                             isFirstLine = false;
                         } else if (data.layerKey && data.labels) {
@@ -186,17 +200,18 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         }
                     }
                 } catch (e: any) {
-                    console.error(`Failed to parse line: ${e.message}`);
+                    console.log(`Failed to parse line: ${e.message}`);
                     // Don't show error message for every line, just log it
                 }
             });
 
             process.on('error', (err) => {
-                console.error(`Failed to start python process: ${err}`);
+                console.log(`Failed to start python process: ${err}`);
                 vscode.window.showErrorMessage(`Failed to start Python process. Please check if Python is installed and configured in 'gdsPreview.pythonPath'. Error: ${err.message}`);
             });
 
             process.on('close', (code) => {
+                console.log(`[PythonProcess] Finished`);
                 if (currentProcess !== process) {
                     return;
                 }
@@ -204,7 +219,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
                 console.log(`Python script exited with code ${code}`);
                 if (code !== 0) {
-                    console.error(`Stderr: ${stderr}`);
+                    console.log(`Stderr: ${stderr}`);
                     if (stderr.includes("ModuleNotFoundError") && stderr.includes("gdstk")) {
                         vscode.window.showErrorMessage("Python module 'gdstk' is missing.", "Install gdstk").then(selection => {
                             if (selection === "Install gdstk") {
@@ -228,7 +243,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 // Clean up temp dir (even though we didn't use it for files, we created it)
                 fs.rm(tempDir, { recursive: true, force: true }, (err) => {
                     if (err) {
-                        console.error(`Failed to delete temporary directory: ${tempDir}`, err);
+                        console.log(`Failed to delete temporary directory: ${tempDir} ${err}`);
                     }
                 });
             });
@@ -242,7 +257,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                     return;
                 }
                 if (message.command === 'error') {
-                    console.error(`[Webview Error]: ${message.message}`);
+                    console.log(`[Webview Error]: ${message.message}`);
                     return;
                 }
 
@@ -263,6 +278,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         }
                         return;
                     case 'ready':
+                        console.log("Received ready message from webview");
                         updateWebview(currentCell);
                         return;
                     case 'updateConfig':
@@ -276,6 +292,9 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             undefined,
             this.context.subscriptions
         );
+
+        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling);
+        console.log("Webview HTML set");
 
         // Listen for configuration changes
         vscode.workspace.onDidChangeConfiguration(e => {
@@ -301,14 +320,15 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 const maxWorkers = config.get<number>('maxWorkers', -1);
                 const chunkSize = config.get<number>('chunkSize', 2000);
                 const pythonPath = config.get<string>('pythonPath', 'python');
+                const enableProfiling = config.get<boolean>('enableProfiling', false);
 
-                webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath);
+                webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling);
             }
         }, null, this.context.subscriptions);
     }
 }
 
-function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string): string {
+function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string, enableProfiling: boolean): string {
     const nonce = getNonce();
     const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
     const earcutCdn = "https://unpkg.com/earcut@2.2.4/dist/earcut.min.js";
@@ -317,9 +337,34 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' https://cdn.jsdelivr.net https://unpkg.com; img-src data:; worker-src blob:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' https://cdn.jsdelivr.net https://unpkg.com; img-src data:; worker-src blob:; connect-src https://cdn.jsdelivr.net https://unpkg.com;">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GDS Preview</title>
+    <script nonce="${nonce}">
+        try {
+            const vscode = acquireVsCodeApi();
+            window.vscode = vscode;
+            window.onerror = function(message, source, lineno, colno, error) {
+                vscode.postMessage({ command: 'error', message: "Global Error: " + message + " at " + source + ":" + lineno });
+            };
+            // Override console.log and console.error to forward to extension
+            const originalLog = console.log;
+            console.log = (...args) => {
+                // originalLog(...args); // Can't see this anyway
+                vscode.postMessage({ command: 'log', message: args.map(a => String(a)).join(' ') });
+            };
+            const originalError = console.error;
+            console.error = (...args) => {
+                // originalError(...args);
+                vscode.postMessage({ command: 'error', message: args.map(a => String(a)).join(' ') });
+            };
+            console.log("Webview Head Script Running");
+        } catch (e) {
+            // If acquireVsCodeApi fails, we can't post message, but we can try to alert or something?
+            // Actually, if it fails, we are in trouble.
+            console.error("Failed to acquire vscode api: " + e);
+        }
+    </script>
     <style>
         body, html {
             margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
@@ -629,13 +674,20 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         <div id="svg-container" style="display: none; width: 100%; height: 100%;"></div>
     </div>
 
-    <script src="${svgPanZoomCdn}"></script>
-    <script src="${earcutCdn}"></script>
+    <script src="${svgPanZoomCdn}" onerror="console.error('Failed to load svg-pan-zoom')"></script>
+    <script src="${earcutCdn}" onerror="console.error('Failed to load earcut')"></script>
     <script nonce="${nonce}">
-        const vscode = acquireVsCodeApi();
+        // vscode is already acquired in head script
+        const vscode = window.vscode;
 
-        console.log("GDS Preview: Script initialized");
-        vscode.postMessage({ command: 'ready' });
+        console.log("GDS Preview: Main Script initialized");
+
+        // Profiling
+        const perfMetrics = {
+            workerTime: 0,
+            renderTime: 0,
+            mainThreadParseTime: 0
+        };
 
         // State
         let startTime = 0;
@@ -652,6 +704,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let currentEngine = '${engine}';
         let fastModeThreshold = ${fastModeThreshold};
         let labelFontSize = ${labelFontSize};
+        let enableProfiling = ${enableProfiling};
         let flipState = { x: 1, y: 1 };
         let rotationState = 0; // Degrees
         let expandedNodes = new Set(); // Persist tree expansion state
@@ -665,17 +718,39 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         const workerCode = \`
             try {
                 importScripts('${earcutCdn}');
-                console.log("Worker: Earcut loaded successfully");
+                // console.log("Worker: Earcut loaded successfully");
             } catch (e) {
                 console.error("Worker: Failed to load earcut", e);
                 self.postMessage({ type: 'log', message: "Worker failed to load earcut: " + e });
             }
 
             self.onmessage = function(e) {
-                // console.log("Worker: Received task", e.data.id);
+                const t0 = performance.now();
                 try {
                     let polygons;
-                    if (e.data.isRaw) {
+                    if (e.data.isBinary) {
+                        // Parse binary buffer
+                        const buffer = e.data.buffer;
+                        const dataView = new DataView(buffer);
+                        let offset = 0;
+
+                        // First 4 bytes is total polygons count
+                        const totalPolys = dataView.getUint32(offset, true); // Little endian
+                        offset += 4;
+
+                        polygons = [];
+                        for(let i=0; i<totalPolys; i++) {
+                            const nPoints = dataView.getUint32(offset, true);
+                            offset += 4;
+
+                            // Create Float32Array view for points
+                            // nPoints * 2 floats * 4 bytes
+                            const byteLen = nPoints * 2 * 4;
+                            const points = new Float32Array(buffer, offset, nPoints * 2);
+                            polygons.push(points);
+                            offset += byteLen;
+                        }
+                    } else if (e.data.isRaw) {
                         polygons = JSON.parse(e.data.polygonsString);
                     } else {
                         polygons = e.data.polygons;
@@ -687,19 +762,20 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     }
 
                     const vertices = [];
-                    for (const poly of polygons) {
-                        const flat = [];
-                        for (const p of poly) {
-                            flat.push(p[0], p[1]);
-                        }
+                    let triCount = 0;
+                    for (const flat of polygons) {
+                        // Polygons are already flat [x,y,x,y...] from Python
                         const triangles = earcut(flat);
+                        triCount += triangles.length / 3;
                         for (let i = 0; i < triangles.length; i++) {
                             const index = triangles[i];
                             vertices.push(flat[index * 2], flat[index * 2 + 1]);
                         }
                     }
+
                     const floatArray = new Float32Array(vertices);
-                    self.postMessage({ id, vertices: floatArray }, [floatArray.buffer]);
+                    const t1 = performance.now();
+                    self.postMessage({ id, vertices: floatArray, duration: t1 - t0, triCount }, [floatArray.buffer]);
                 } catch (err) {
                     console.error("Worker processing error:", err);
                     self.postMessage({ type: 'error', id: e.data.id, error: err.toString() });
@@ -741,7 +817,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 return;
             }
 
-            const { id, vertices } = e.data;
+            const { id, vertices, duration } = e.data;
+            if (duration) perfMetrics.workerTime += duration;
+
             // id is { layerKey, chunkIndex }
             const layerKey = id.layerKey;
 
@@ -884,6 +962,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             if (pythonFinished && pendingTasks === 0) {
                 const elapsed = (performance.now() - startTime).toFixed(0);
                 updateStatus(\`Loaded successfully in \${elapsed}ms\`);
+                if (enableProfiling) {
+                    console.log("PROFILE: Total Load Time:", elapsed, "ms");
+                    console.log("PROFILE: Total Worker Time (Cumulative):", perfMetrics.workerTime.toFixed(0), "ms");
+                    console.log("PROFILE: Main Thread Parse Time:", perfMetrics.mainThreadParseTime.toFixed(0), "ms");
+                }
             }
         }
 
@@ -915,8 +998,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             } else if (message.command === 'addLayerChunk') {
                 // console.log("Received layer chunk", message.layerKey);
                 handleAddLayerChunk(message.layerKey, message.data);
-            } else if (message.command === 'addLayerChunkRaw') {
-                handleAddLayerChunkRaw(message.layerKey, message.chunkIndex, message.totalChunks, message.polygonsString);
+            } else if (message.command === 'addLayerChunkB64') {
+                handleAddLayerChunkB64(message.layerKey, message.chunkIndex, message.totalChunks, message.data);
             } else if (message.command === 'updateSettings') {
                 if (message.fastModeThreshold !== undefined) {
                     fastModeThreshold = message.fastModeThreshold;
@@ -1153,24 +1236,28 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             updateStatus("Loading layers...");
         }
 
-        function handleAddLayerChunkRaw(layerKey, chunkIndex, totalChunks, polygonsString) {
-            // 3. Handle WebGL Buffers (WebGL Mode Only)
-            if (currentEngine === 'webgl') {
-                pendingTasks++;
-                // Dispatch to worker
-                const worker = workerPool[workerRoundRobin];
-                workerRoundRobin = (workerRoundRobin + 1) % workerPool.length;
+        function handleAddLayerChunkB64(layerKey, chunkIndex, totalChunks, b64Data) {
+            // console.log("Received B64 chunk for", layerKey, "size:", b64Data.length);
+            pendingTasks++;
 
-                worker.postMessage({
-                    id: { layerKey, chunkIndex },
-                    polygonsString: polygonsString, // Send raw string
-                    isRaw: true
-                });
-            } else {
-                // Fallback for Canvas mode (must parse on main thread)
-                const polygons = JSON.parse(polygonsString);
-                handleAddLayerChunk(layerKey, { polygons, chunkIndex, totalChunks });
+            // Decode Base64 to ArrayBuffer
+            const binaryString = window.atob(b64Data);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
             }
+            const buffer = bytes.buffer;
+
+            // Dispatch to worker
+            const worker = workerPool[workerRoundRobin];
+            workerRoundRobin = (workerRoundRobin + 1) % workerPool.length;
+
+            worker.postMessage({
+                id: { layerKey, chunkIndex },
+                buffer: buffer,
+                isBinary: true
+            }, [buffer]); // Transfer buffer ownership
 
             updateStatus(\`Loading \${layerKey} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
         }
@@ -1217,7 +1304,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 });
             }
 
-            updateStatus(\`Loading \${layerKey} (\${data.chunkIndex + 1}/\${data.totalChunks || '?'})\`);
+            if (data.chunkIndex !== undefined) {
+                updateStatus(\`Loading \${layerKey} (\${data.chunkIndex + 1}/\${data.totalChunks || '?'})\`);
+            } else {
+                updateStatus(\`Loading \${layerKey} (Labels)\`);
+            }
 
             // Redraw
             if (currentEngine === 'canvas') requestAnimationFrame(draw);
@@ -1595,7 +1686,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             }
 
             if (currentEngine === 'canvas') draw();
-            else if (currentEngine === 'webgl') drawWebGL();
+            else if (currentEngine === 'webgl') {
+                const t0 = performance.now();
+                drawWebGL();
+                perfMetrics.renderTime += (performance.now() - t0);
+            }
 
             drawLabels();
         }
@@ -2088,7 +2183,12 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         }
 
         // Signal ready
-        vscode.postMessage({ command: 'ready' });
+        console.log("Sending ready message from webview script (end of script)");
+        if (vscode) {
+            vscode.postMessage({ command: 'ready' });
+        } else {
+            console.error("vscode API not found!");
+        }
     </script>
 </body>
 </html>`;

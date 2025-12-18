@@ -1,8 +1,12 @@
 import sys
 import os
 import json
+import time
 import gdstk
-import shutil  # For rmtree
+import shutil
+import struct
+import numpy as np
+import base64
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -22,11 +26,14 @@ def gds_to_geometry(gds_path,
     Outputs a JSON object to stdout with the results.
     """
     try:
+        t_start = time.time()
         if os.path.exists(output_dir):
             shutil.rmtree(output_dir)  # Clean up previous run
         os.makedirs(output_dir)
 
         lib = gdstk.read_gds(gds_path)
+        t_read = time.time()
+        print(f"PROFILE: GDS Read: {t_read - t_start:.4f}s", file=sys.stderr)
 
         valid_cells = []
         for c in lib.cells:
@@ -89,6 +96,8 @@ def gds_to_geometry(gds_path,
         # Log selected cell for debugging
         print(f"Final selected cell: {main_cell.name}", file=sys.stderr)
 
+        t_select = time.time()
+
         # A deep copy is needed to avoid modifying the original library cell
         flattened_cell = main_cell.copy(f"{main_cell.name}_flat")
         flattened_cell.flatten()
@@ -99,6 +108,9 @@ def gds_to_geometry(gds_path,
             new_polygons.extend(path_obj.to_polygons())
         flattened_cell.polygons.extend(new_polygons)
         flattened_cell.paths.clear()
+
+        t_flatten = time.time()
+        print(f"PROFILE: Flatten & Path Conv: {t_flatten - t_select:.4f}s", file=sys.stderr)
 
         # Get bounding box of the whole cell to ensure all SVGs have the same viewport
         bbox = flattened_cell.bounding_box()
@@ -157,6 +169,9 @@ def gds_to_geometry(gds_path,
         print(json.dumps(metadata, cls=NumpyEncoder))
         sys.stdout.flush()
 
+        t_meta = time.time()
+        print(f"PROFILE: Metadata Prep: {t_meta - t_flatten:.4f}s", file=sys.stderr)
+
         # Second pass: stream layer data
 
         for layer, datatype in valid_layers:
@@ -194,26 +209,44 @@ def gds_to_geometry(gds_path,
 
             # Stream polygons in chunks
             total_polys = len(polygons_for_layer)
+            print(f"PROFILE: Layer {layer_key} has {total_polys} polygons", file=sys.stderr)
+
             for i in range(0, total_polys, chunk_size):
                 chunk_polys = polygons_for_layer[i:i + chunk_size]
-                polys_data = [p.points for p in chunk_polys]
 
-                # Send Metadata Line
-                print("CHUNK_META|" + json.dumps(
+                # In-Memory Binary Buffer Construction
+                # We build the byte array in memory
+                buffer_parts = []
+
+                # 1. Number of polygons (uint32)
+                buffer_parts.append(struct.pack('<I', len(chunk_polys)))
+
+                for p in chunk_polys:
+                    points = p.points # Nx2 numpy array
+                    n_points = len(points)
+                    # 2. Point count (uint32)
+                    buffer_parts.append(struct.pack('<I', n_points))
+                    # 3. Points (float32)
+                    buffer_parts.append(points.astype(np.float32).tobytes())
+
+                full_binary = b''.join(buffer_parts)
+                b64_data = base64.b64encode(full_binary).decode('ascii')
+
+                # Send Base64 Data Line
+                # Format: CHUNK_B64|{"layerKey":..., "data": "..."}
+                print("CHUNK_B64|" + json.dumps(
                     {
-                        "layerKey":
-                            layer_key,
-                        "chunkIndex":
-                            i // chunk_size,
-                        "totalChunks": (total_polys + chunk_size - 1) //
-                                       chunk_size
+                        "layerKey": layer_key,
+                        "chunkIndex": i // chunk_size,
+                        "totalChunks": (total_polys + chunk_size - 1) // chunk_size,
+                        "data": b64_data
                     },
-                    cls=NumpyEncoder))
+                    separators=(',', ':')))
                 sys.stdout.flush()
 
-                # Send Data Line
-                print("CHUNK_DATA|" + json.dumps(polys_data, cls=NumpyEncoder))
-                sys.stdout.flush()
+        t_end = time.time()
+        print(f"PROFILE: Streaming: {t_end - t_meta:.4f}s", file=sys.stderr)
+        print(f"PROFILE: Total Python Time: {t_end - t_start:.4f}s", file=sys.stderr)
 
         sys.exit(0)
 
