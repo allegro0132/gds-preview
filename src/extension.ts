@@ -697,6 +697,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let labels = {};
         let bbox = { x_min: 0, x_max: 0, y_min: 0, y_max: 0 };
         let activeLayers = new Set();
+        let allLayers = [];
         let layerColors = {};
         let layerOpacities = {};
         let showLabels = false;
@@ -708,6 +709,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let flipState = { x: 1, y: 1 };
         let rotationState = 0; // Degrees
         let expandedNodes = new Set(); // Persist tree expansion state
+        let isViewFitted = false;
 
         // WebGL State
         let gl = null;
@@ -1018,11 +1020,19 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
         window.addEventListener('message', event => {
             const message = event.data;
+
+            const handleEngineChange = (newEngine) => {
+                if (currentEngine === 'svg' && newEngine !== 'svg') {
+                    flipState.y *= -1;
+                }
+                currentEngine = newEngine;
+            };
+
             if (message.command === 'updateData') {
-                currentEngine = message.engine;
+                handleEngineChange(message.engine);
                 handleDataUpdate(message.data);
             } else if (message.command === 'initialize') {
-                currentEngine = message.engine;
+                handleEngineChange(message.engine);
                 handleInitialize(message.data);
             } else if (message.command === 'addLayerChunk') {
                 // console.log("Received layer chunk", message.layerKey);
@@ -1047,7 +1057,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     pythonFinished = true;
                     checkCompletion();
                 }
-                if (message.message === 'Loaded successfully' && currentEngine === 'svg') {
+                    if (message.message === 'Loaded successfully' && currentEngine === 'svg') {
                     // Apply initial transform for SVG mode to fix orientation
                     flipState.y *= -1;
                     updateTransform();
@@ -1188,6 +1198,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             startTime = performance.now();
             pendingTasks = 0;
             pythonFinished = false;
+            isViewFitted = false;
             updateStatus("Initializing...");
 
             // Reset state
@@ -1205,9 +1216,12 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             // Update Cell Tree
             buildTree(data.hierarchy, data.top_level_cells, data.all_cells, data.cell_name);
 
+            // Sort layers for consistent display and rendering
+            allLayers = (data.layers || []).sort();
+
             // Update Layers UI
             layersList.innerHTML = '';
-            data.layers.forEach(layerKey => {
+            allLayers.forEach(layerKey => {
                 activeLayers.add(layerKey);
 
                 // Determine color
@@ -1252,6 +1266,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 setupWebGLMode({ geometry: {}, bbox: data.bbox, layers: [] });
             } else if (currentEngine === 'svg') {
                 setupSvgMode(data);
+                updateTransform();
 
                 // Handle Labels for SVG mode (from separate JSON list)
                 if (data.labels && data.labels.length > 0) {
@@ -1359,7 +1374,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             layerColors = {};
             layerOpacities = {};
 
-            data.layers.forEach(layerKey => {
+            allLayers = (data.layers || []).sort();
+
+            allLayers.forEach(layerKey => {
                 activeLayers.add(layerKey);
 
                 // Determine color
@@ -1398,6 +1415,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 setupWebGLMode(data);
             } else {
                 setupSvgMode(data);
+                updateTransform();
             }
 
             updateStatus("Ready");
@@ -1468,7 +1486,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             // Initial transform will be set by updateTransform, but we default to identity here
             svgContent += \`<g id="gds-user-transform-group">\`;
 
-            for (const layerKey of data.layers) {
+            // Render in reverse dictionary order (Z -> A) so A is last in DOM (on top)
+            const renderOrder = [...allLayers].reverse();
+
+            for (const layerKey of renderOrder) {
                 const fragment = data.svg_fragments[layerKey];
                 const opacity = layerOpacities[layerKey] !== undefined ? layerOpacities[layerKey] : 0.8;
                 svgContent += \`<g id="layer-group-\${layerKey}" class="gds-layer" style="color: \${layerColors[layerKey]}; opacity: \${opacity}; display: block;">
@@ -1673,7 +1694,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
             gl.enableVertexAttribArray(positionLocation);
 
-            for (const layerKey in layerBuffers) {
+            // Render in reverse dictionary order (Z -> A) so A is drawn last (on top)
+            const renderOrder = [...allLayers].reverse();
+
+            for (const layerKey of renderOrder) {
                 if (!activeLayers.has(layerKey)) continue;
 
                 const buffers = layerBuffers[layerKey];
@@ -1716,14 +1740,17 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 textCanvas.height = container.clientHeight;
             }
 
-            if (currentEngine === 'canvas') draw();
-            else if (currentEngine === 'webgl') {
-                const t0 = performance.now();
-                drawWebGL();
-                perfMetrics.renderTime += (performance.now() - t0);
+            if (!isViewFitted && (currentEngine === 'canvas' || currentEngine === 'webgl')) {
+                fitView();
+            } else {
+                if (currentEngine === 'canvas') draw();
+                else if (currentEngine === 'webgl') {
+                    const t0 = performance.now();
+                    drawWebGL();
+                    perfMetrics.renderTime += (performance.now() - t0);
+                }
+                drawLabels();
             }
-
-            drawLabels();
         }
 
         function fitView() {
@@ -1750,6 +1777,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             }
 
             const container = document.getElementById('view-container');
+            if (!container || container.clientWidth === 0 || container.clientHeight === 0) {
+                return;
+            }
             const canvasWidth = container.clientWidth;
             const canvasHeight = container.clientHeight;
             const padding = 20;
@@ -1763,6 +1793,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
             offsetX = canvasWidth / 2 - gcx * scale;
             offsetY = canvasHeight / 2 + gcy * scale;
+
+            isViewFitted = true;
 
             if (currentEngine === 'canvas') draw();
             else if (currentEngine === 'webgl') drawWebGL();
@@ -1890,7 +1922,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 // If static, skip very small items (e.g. < 0.5px)
                 const lodThreshold = isInteracting ? fastModeThreshold : 0.5;
 
-                for (const layerKey in geometry) {
+                // Render in reverse dictionary order (Z -> A) so A is drawn last (on top)
+                const renderOrder = [...allLayers].reverse();
+
+                for (const layerKey of renderOrder) {
                     if (!activeLayers.has(layerKey)) continue;
 
                     const polys = geometry[layerKey];
