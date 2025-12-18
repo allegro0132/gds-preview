@@ -1049,6 +1049,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 }
                 if (message.message === 'Loaded successfully' && currentEngine === 'svg') {
                     // Apply initial transform for SVG mode to fix orientation
+                    flipState.y *= -1;
                     updateTransform();
                 }
             } else if (message.command === 'reset') {
