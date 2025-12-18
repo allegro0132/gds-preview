@@ -771,15 +771,18 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 return;
             }
 
-            // Pre-process roots to hide $$$ nodes
+            // Pre-process roots to hide $$$ nodes and TEXT* nodes
+            const validCellSet = new Set(allCells);
             let effectiveRoots = [];
             const processRoots = (roots) => {
                 roots.forEach(root => {
-                    if (root.startsWith('$$$')) {
+                    if (root.startsWith('$$$') || root.startsWith('TEXT')) {
                         const children = hierarchy[root] || [];
                         processRoots(children);
                     } else {
-                        effectiveRoots.push(root);
+                        if (validCellSet.has(root)) {
+                            effectiveRoots.push(root);
+                        }
                     }
                 });
             };
@@ -801,7 +804,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 if (cellName === currentCellName) content.classList.add('selected');
 
                 const children = hierarchy[cellName] || [];
-                const hasChildren = children.length > 0;
+                const validChildren = children.filter(c => validCellSet.has(c));
+                const hasChildren = validChildren.length > 0;
 
                 const toggle = document.createElement('span');
                 toggle.className = 'tree-toggle' + (hasChildren ? '' : ' empty');
@@ -838,7 +842,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     if (!visited.has(cellName)) {
                         const newVisited = new Set(visited);
                         newVisited.add(cellName);
-                        children.forEach(childName => {
+                        validChildren.forEach(childName => {
                             childrenContainer.appendChild(createNode(childName, newVisited));
                         });
                     } else {
