@@ -16,6 +16,7 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
   - **Fit View**: Quickly center and fit the layout to the screen.
 - **Configuration Panel**: Quick access to rendering settings and parameters directly within the viewer.
 - **Performance Optimizations**:
+  - **Parallel Loading**: Uses Web Workers to parse and process geometry off the main thread.
   - **Viewport Culling**: Only renders what is visible on screen.
   - **Dynamic Level of Detail (LOD)**: Automatically reduces detail during fast interactions to maintain high frame rates.
 
@@ -57,6 +58,14 @@ This extension contributes the following settings:
 
 * `gdsPreview.labelFontSize`: (Default: `12`)
   * Font size for text labels in pixels.
+
+* `gdsPreview.maxWorkers`: (Default: `-1`)
+  * Number of Web Workers to use for parallel processing.
+  * Set to `-1` to automatically use all available CPU cores.
+
+* `gdsPreview.chunkSize`: (Default: `2000`)
+  * Number of polygons per data chunk streamed from Python.
+  * Adjusting this can help balance memory usage and throughput.
 
 * `gdsPreview.pythonPath`: (Default: `python`)
   * Path to the Python executable used for parsing GDSII files.

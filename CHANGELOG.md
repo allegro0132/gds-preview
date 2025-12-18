@@ -4,6 +4,19 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.1] - 2025-12-18
+
+### Added
+- **Parallel Loading**: Implemented multi-threaded processing using Web Workers for parsing and triangulating geometry. This significantly improves UI responsiveness during loading.
+- **Configuration**:
+  - Added `gdsPreview.maxWorkers` setting to control the number of parallel workers.
+  - Added `gdsPreview.chunkSize` setting to tune data streaming performance.
+  - Added UI controls for these settings in the configuration panel.
+- **Performance Metrics**: Added a timer to display the total loading time upon completion.
+
+### Changed
+- Optimized data transfer between Python and Webview by streaming raw strings directly to workers.
+
 ## [0.1.0] - 2025-12-18
 
 ### Added
