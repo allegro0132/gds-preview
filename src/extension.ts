@@ -59,10 +59,9 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
         const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
         const labelFontSize = config.get<number>('labelFontSize', 12);
-        const minLabelZoom = config.get<number>('minLabelZoom', 0.1);
         const pythonPath = config.get<string>('pythonPath', 'python');
 
-        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, minLabelZoom, pythonPath);
+        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, pythonPath);
 
         const updateWebview = (cellName?: string) => {
             // Kill existing process if any
@@ -216,17 +215,14 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         // Listen for configuration changes
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('gdsPreview.fastModeThreshold') ||
-                e.affectsConfiguration('gdsPreview.labelFontSize') ||
-                e.affectsConfiguration('gdsPreview.minLabelZoom')) {
+                e.affectsConfiguration('gdsPreview.labelFontSize')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
                 const newThreshold = config.get<number>('fastModeThreshold', 10);
                 const newFontSize = config.get<number>('labelFontSize', 12);
-                const newMinZoom = config.get<number>('minLabelZoom', 0.1);
                 webviewPanel.webview.postMessage({
                     command: 'updateSettings',
                     fastModeThreshold: newThreshold,
                     labelFontSize: newFontSize,
-                    minLabelZoom: newMinZoom
                 });
             }
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {
@@ -236,7 +232,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
     }
 }
 
-function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, minLabelZoom: number, pythonPath: string): string {
+function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, pythonPath: string): string {
     const nonce = getNonce();
     const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
     const earcutCdn = "https://unpkg.com/earcut@2.2.4/dist/earcut.min.js";
@@ -538,10 +534,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 <input type="number" id="font-size-input" value="${labelFontSize}" min="1" step="1">
             </div>
             <div class="control-group">
-                <label for="min-zoom-input">Min Label Zoom:</label>
-                <input type="number" id="min-zoom-input" value="${minLabelZoom}" min="0.001" step="0.001">
-            </div>
-            <div class="control-group">
                 <label for="python-path-input">Python Path:</label>
                 <input type="text" id="python-path-input" value="${pythonPath}">
             </div>
@@ -575,7 +567,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let currentEngine = '${engine}';
         let fastModeThreshold = ${fastModeThreshold};
         let labelFontSize = ${labelFontSize};
-        let minLabelZoom = ${minLabelZoom};
         let flipState = { x: 1, y: 1 };
         let rotationState = 0; // Degrees
         let expandedNodes = new Set(); // Persist tree expansion state
@@ -665,16 +656,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             });
         }
 
-        if (minZoomInput) {
-            minZoomInput.addEventListener('change', (e) => {
-                vscode.postMessage({
-                    command: 'updateConfig',
-                    key: 'minLabelZoom',
-                    value: parseFloat(e.target.value)
-                });
-            });
-        }
-
         if (pythonPathInput) {
             pythonPathInput.addEventListener('change', (e) => {
                 vscode.postMessage({
@@ -730,12 +711,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     labelFontSize = message.labelFontSize;
                     if (fontSizeInput) fontSizeInput.value = labelFontSize;
                     console.log("Updated labelFontSize to:", labelFontSize);
-                    requestAnimationFrame(drawLabels);
-                }
-                if (message.minLabelZoom !== undefined) {
-                    minLabelZoom = message.minLabelZoom;
-                    if (minZoomInput) minZoomInput.value = minLabelZoom;
-                    console.log("Updated minLabelZoom to:", minLabelZoom);
                     requestAnimationFrame(drawLabels);
                 }
             } else if (message.command === 'status') {
@@ -1510,11 +1485,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             ctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
 
             if (!showLabels) return;
-
-            // Don't draw labels if zoomed out too far
-            if (scale < minLabelZoom) {
-                return;
-            }
 
             // Viewport culling for labels (in world coordinates)
             // Screen: 0,0 -> W,H
