@@ -273,14 +273,13 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         .layer-toggle { display: flex; align-items: center; margin-bottom: 5px; white-space: nowrap; }
         .layer-toggle input[type="checkbox"] { margin-right: 5px; }
         .layer-toggle input[type="color"] { margin-left: auto; width: 30px; height: 20px; padding: 0; border: none; background: none;}
-        #recenter-btn, .action-btn {
+        .action-btn {
             padding: 8px;
             background-color: var(--vscode-button-background);
             color: var(--vscode-button-foreground);
             border: none; cursor: pointer;
         }
-        #recenter-btn { margin-top: 10px; }
-        .action-btn:hover, #recenter-btn:hover { background-color: var(--vscode-button-hoverBackground); }
+        .action-btn:hover { background-color: var(--vscode-button-hoverBackground); }
         #layers-list { margin-top: 10px; flex-grow: 1; overflow-y: auto; }
         .control-group { margin-bottom: 15px; }
         .control-group label { display: block; margin-bottom: 5px; font-weight: bold; }
@@ -288,7 +287,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             border: 1px solid var(--vscode-dropdown-border);
             background-color: var(--vscode-dropdown-background);
             color: var(--vscode-dropdown-foreground);
-            height: 150px;
+            height: 300px;
             overflow-y: auto;
             padding: 5px;
             font-size: 12px;
@@ -404,32 +403,76 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         #toggle-config-btn:hover {
             background-color: var(--vscode-list-hoverBackground);
         }
+        #toolbar {
+            position: absolute;
+            top: 20px;
+            left: 20px; /* Initial position relative to view-container */
+            background-color: var(--vscode-editor-background);
+            border: 1px solid var(--vscode-widget-border);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            border-radius: 4px;
+            padding: 4px;
+            display: flex;
+            flex-direction: row;
+            gap: 4px;
+            z-index: 1000;
+            height: 40px;
+            align-items: center;
+            cursor: move;
+        }
+        .toolbar-btn {
+            width: 32px;
+            height: 32px;
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            color: var(--vscode-icon-foreground);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+        }
+        .toolbar-btn:hover {
+            background-color: var(--vscode-toolbar-hoverBackground);
+        }
+        .toolbar-btn:active {
+            background-color: var(--vscode-toolbar-activeBackground);
+        }
+        .toolbar-btn svg {
+            width: 20px;
+            height: 20px;
+            fill: currentColor;
+        }
+        .toolbar-separator {
+            width: 1px;
+            height: 80%;
+            background-color: var(--vscode-widget-border);
+            margin: 0 2px;
+        }
+        #rot-angle-input-toolbar {
+            width: 32px;
+            padding: 2px;
+            text-align: center;
+            font-size: 10px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            margin-right: 2px;
+        }
     </style>
 </head>
 <body>
     <div id="controls">
+        <div style="display: flex; gap: 5px; margin-top: 10px;">
+            <button id="reset-btn" class="action-btn" style="flex: 1;">Reset</button>
+            <button id="stop-btn" class="action-btn" style="flex: 1;">Stop</button>
+        </div>
         <h3>Cell Control</h3>
         <div class="control-group">
             <label>Select Cell:</label>
             <div id="cell-tree" class="tree-view">Loading...</div>
             <div id="status-msg" style="font-size: 12px; color: #888; margin-top: 5px;">Initializing...</div>
-            <div style="display: flex; gap: 5px; margin-top: 10px;">
-                <button id="reset-btn" class="action-btn" style="flex: 1;">Reset</button>
-                <button id="stop-btn" class="action-btn" style="flex: 1;">Stop</button>
-            </div>
-        </div>
-        <hr style="width: 100%; border-color: #444; margin: 15px 0;">
-        <h3>View Control</h3>
-        <button id="recenter-btn">Center View</button>
-        <div style="display: flex; gap: 5px; margin-top: 5px;">
-            <button id="flip-h-btn" class="action-btn" style="flex: 1;">Flip H</button>
-            <button id="flip-v-btn" class="action-btn" style="flex: 1;">Flip V</button>
-        </div>
-        <div style="display: flex; gap: 5px; margin-top: 5px; align-items: center;">
-            <input type="number" id="rot-angle-input" value="90" style="width: 50px;">
-            <span style="font-size: 12px;">deg</span>
-            <button id="rot-cw-btn" class="action-btn" style="flex: 1;">CW</button>
-            <button id="rot-ccw-btn" class="action-btn" style="flex: 1;">CCW</button>
         </div>
         <hr style="width: 100%; border-color: #444; margin: 15px 0;">
         <h3>Layer Control</h3>
@@ -441,6 +484,38 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         <div id="layers-list"></div>
     </div>
     <div id="view-container">
+        <div id="toolbar" title="Drag to move">
+            <!-- Center View -->
+            <button id="recenter-btn" class="toolbar-btn" title="Center View">
+                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/><path d="M0 0h24v24H0z" fill="none"/><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm0 6c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+            </button>
+
+            <div class="toolbar-separator"></div>
+
+            <!-- Flip H -->
+            <button id="flip-h-btn" class="toolbar-btn" title="Flip Horizontal">
+                <svg viewBox="0 0 24 24"><path d="M15 21h2v-2h-2v2zm4-12h2V7h-2v2zM3 5v14c0 1.1.9 2 2 2h4v-2H5V5h4V3H5c-1.1 0-2 .9-2 2zm16-2v2h2c0-1.1-.9-2-2-2zm-8 20h2V1h-2v22zm8-6h2v-2h-2v2zM15 5h2V3h-2v2zm4 8h2v-2h-2v2zm0 8c1.1 0 2-.9 2-2h-2v2z"/></svg>
+            </button>
+            <!-- Flip V -->
+            <button id="flip-v-btn" class="toolbar-btn" title="Flip Vertical">
+                <svg viewBox="0 0 24 24"><path d="M3 15v2h2v-2H3zm10 4h2v-2h-2v2zm2-16H5c-1.1 0-2 .9-2 2v4h2V5h14v4h2V5c0-1.1-.9-2-2-2zm2 16h2v-2h-2v2zM1 11v2h22v-2H1zm4 8h2v-2H5v2zm4 0h2v-2H9v2zm8 0h2v-2h-2v2z"/></svg>
+            </button>
+
+            <div class="toolbar-separator"></div>
+
+            <!-- Rotation Input -->
+            <input type="number" id="rot-angle-input" value="90" id="rot-angle-input-toolbar" style="width: 32px; padding: 2px; text-align: center; font-size: 10px; margin-right: 2px;" title="Rotation Angle">
+
+            <!-- Rotate CW -->
+            <button id="rot-cw-btn" class="toolbar-btn" title="Rotate CW">
+                <svg viewBox="0 0 24 24"><path d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.48z"/></svg>
+            </button>
+            <!-- Rotate CCW -->
+            <button id="rot-ccw-btn" class="toolbar-btn" title="Rotate CCW">
+                <svg viewBox="0 0 24 24"><path d="M8.45 5.55L13 1v3.07c3.94.49 7 3.85 7 7.93s-3.05 7.44-7 7.93v-2.02c2.84-.48 5-2.94 5-5.91s-2.16-5.43-5-5.91V10l-4.55-4.45zM4.07 11c.17-1.39.72-2.73 1.62-3.89l1.42 1.42c-.54.75-.88 1.6-1.02 2.47H4.07zm6.93 6.9v2.02c-1.39-.17-2.74-.71-3.9-1.61l1.44-1.44c.75.54 1.59.89 2.46 1.03zm-3.89-2.42l-1.42 1.41c-.9-1.16-1.45-2.5-1.62-3.89h2.02c.14.87.48 1.72 1.02 2.48z"/></svg>
+            </button>
+        </div>
+
         <button id="toggle-controls-btn" title="Toggle Sidebar">❮</button>
         <button id="toggle-config-btn" title="Toggle Configuration">⚙</button>
 
@@ -1795,6 +1870,12 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 flipState = { x: 1, y: 1 };
                 rotationState = 0;
                 updateTransform();
+                // Reset toolbar position
+                const toolbar = document.getElementById('toolbar');
+                if (toolbar) {
+                    toolbar.style.top = '20px';
+                    toolbar.style.left = '20px';
+                }
                 vscode.postMessage({ command: 'reset' });
             });
         }
@@ -1840,6 +1921,46 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     toggleConfigBtn.style.right = '0';
                     toggleConfigBtn.style.color = '#ccc'; // Inactive state
                 }
+            });
+        }
+
+        // Toolbar Dragging Logic
+        const toolbar = document.getElementById('toolbar');
+        let isDraggingToolbar = false;
+        let toolbarOffsetX = 0;
+        let toolbarOffsetY = 0;
+
+        if (toolbar) {
+            toolbar.addEventListener('mousedown', (e) => {
+                // Only drag if clicking on the toolbar background, not buttons/inputs
+                if (e.target === toolbar || e.target.classList.contains('toolbar-separator')) {
+                    isDraggingToolbar = true;
+                    toolbarOffsetX = e.clientX - toolbar.offsetLeft;
+                    toolbarOffsetY = e.clientY - toolbar.offsetTop;
+                    e.preventDefault(); // Prevent text selection
+                    e.stopPropagation(); // Prevent underlying elements from receiving the event
+                }
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (isDraggingToolbar) {
+                    let newLeft = e.clientX - toolbarOffsetX;
+                    let newTop = e.clientY - toolbarOffsetY;
+
+                    // Boundary checks
+                    const maxX = window.innerWidth - toolbar.offsetWidth;
+                    const maxY = window.innerHeight - toolbar.offsetHeight;
+
+                    newLeft = Math.max(0, Math.min(newLeft, maxX));
+                    newTop = Math.max(0, Math.min(newTop, maxY));
+
+                    toolbar.style.left = newLeft + 'px';
+                    toolbar.style.top = newTop + 'px';
+                }
+            });
+
+            window.addEventListener('mouseup', () => {
+                isDraggingToolbar = false;
             });
         }
 
