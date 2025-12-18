@@ -757,6 +757,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     }
 
                     const { id } = e.data;
+
+                    if (e.data.returnPolygons) {
+                        const t1 = performance.now();
+                        // Return raw polygons (Float32Arrays)
+                        // If binary, we can transfer the buffer back to save memory
+                        const transfer = e.data.isBinary ? [e.data.buffer] : [];
+                        self.postMessage({ id, polygons, duration: t1 - t0 }, transfer);
+                        return;
+                    }
+
                     if (!self.earcut) {
                         throw new Error("Earcut library not loaded");
                     }
@@ -817,13 +827,32 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 return;
             }
 
-            const { id, vertices, duration } = e.data;
+            const { id, vertices, polygons, duration } = e.data;
             if (duration) perfMetrics.workerTime += duration;
 
             // id is { layerKey, chunkIndex }
             const layerKey = id.layerKey;
 
-            if (vertices.length > 0 && gl) {
+            if (polygons && currentEngine === 'canvas') {
+                if (!geometry[layerKey]) geometry[layerKey] = [];
+
+                // Pre-calculate bbox for flat polygons
+                for (const poly of polygons) {
+                    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                    // poly is Float32Array [x, y, x, y...]
+                    for (let i = 0; i < poly.length; i += 2) {
+                        const x = poly[i];
+                        const y = poly[i+1];
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                    }
+                    poly.bbox = { minX, minY, maxX, maxY };
+                }
+                geometry[layerKey].push(...polygons);
+                requestAnimationFrame(draw);
+            } else if (vertices && vertices.length > 0 && gl) {
                 const buffer = gl.createBuffer();
                 gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
                 gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
@@ -1256,7 +1285,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             worker.postMessage({
                 id: { layerKey, chunkIndex },
                 buffer: buffer,
-                isBinary: true
+                isBinary: true,
+                returnPolygons: currentEngine === 'canvas'
             }, [buffer]); // Transfer buffer ownership
 
             updateStatus(\`Loading \${layerKey} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
@@ -1887,10 +1917,22 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                             }
                         }
 
-                        if (poly.length < 2) continue;
-                        ctx.moveTo(poly[0][0], poly[0][1]);
-                        for (let i = 1; i < poly.length; i++) {
-                            ctx.lineTo(poly[i][0], poly[i][1]);
+                        // Check if poly is Float32Array (flat) or Array of Arrays (legacy)
+                        const isFlat = poly instanceof Float32Array;
+                        const len = isFlat ? poly.length / 2 : poly.length;
+
+                        if (len < 2) continue;
+
+                        if (isFlat) {
+                            ctx.moveTo(poly[0], poly[1]);
+                            for (let i = 1; i < len; i++) {
+                                ctx.lineTo(poly[i * 2], poly[i * 2 + 1]);
+                            }
+                        } else {
+                            ctx.moveTo(poly[0][0], poly[0][1]);
+                            for (let i = 1; i < poly.length; i++) {
+                                ctx.lineTo(poly[i][0], poly[i][1]);
+                            }
                         }
                         ctx.closePath();
                         polyCount++;
