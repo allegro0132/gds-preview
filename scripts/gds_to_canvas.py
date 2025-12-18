@@ -13,7 +13,10 @@ class NumpyEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
+def gds_to_geometry(gds_path,
+                    output_dir,
+                    target_cell_name=None,
+                    chunk_size=2000):
     """
     Converts a GDSII file into geometry data (polygons), one for each layer.
     Outputs a JSON object to stdout with the results.
@@ -155,7 +158,6 @@ def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
         sys.stdout.flush()
 
         # Second pass: stream layer data
-        CHUNK_SIZE = 2000  # Number of polygons per chunk
 
         for layer, datatype in valid_layers:
             layer_key = f"{layer}_{datatype}"
@@ -192,23 +194,25 @@ def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
 
             # Stream polygons in chunks
             total_polys = len(polygons_for_layer)
-            for i in range(0, total_polys, CHUNK_SIZE):
-                chunk_polys = polygons_for_layer[i:i + CHUNK_SIZE]
+            for i in range(0, total_polys, chunk_size):
+                chunk_polys = polygons_for_layer[i:i + chunk_size]
                 polys_data = [p.points for p in chunk_polys]
 
-                print(
-                    json.dumps(
-                        {
-                            "layerKey":
-                                layer_key,
-                            "polygons":
-                                polys_data,
-                            "chunkIndex":
-                                i // CHUNK_SIZE,
-                            "totalChunks":
-                                (total_polys + CHUNK_SIZE - 1) // CHUNK_SIZE
-                        },
-                        cls=NumpyEncoder))
+                # Send Metadata Line
+                print("CHUNK_META|" + json.dumps(
+                    {
+                        "layerKey":
+                            layer_key,
+                        "chunkIndex":
+                            i // chunk_size,
+                        "totalChunks": (total_polys + chunk_size - 1) //
+                                       chunk_size
+                    },
+                    cls=NumpyEncoder))
+                sys.stdout.flush()
+
+                # Send Data Line
+                print("CHUNK_DATA|" + json.dumps(polys_data, cls=NumpyEncoder))
                 sys.stdout.flush()
 
         sys.exit(0)
@@ -222,7 +226,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 3:
         print(json.dumps({
             "error":
-                "Usage: python gds_to_canvas.py <input_gds_path> <output_dir_path> [cell_name]"
+                "Usage: python gds_to_canvas.py <input_gds_path> <output_dir_path> [cell_name] [chunk_size]"
         }),
               file=sys.stderr)
         sys.exit(1)
@@ -230,5 +234,9 @@ if __name__ == "__main__":
     gds_input_path = sys.argv[1]
     output_dir_path = sys.argv[2]
     target_cell = sys.argv[3] if len(sys.argv) > 3 else None
+    if target_cell == "":
+        target_cell = None
 
-    gds_to_geometry(gds_input_path, output_dir_path, target_cell)
+    chunk_size = int(sys.argv[4]) if len(sys.argv) > 4 else 2000
+
+    gds_to_geometry(gds_input_path, output_dir_path, target_cell, chunk_size)

@@ -72,6 +72,16 @@
           "default": 12,
           "description": "Font size for text labels in pixels."
         },
+        "gdsPreview.maxWorkers": {
+          "type": "number",
+          "default": -1,
+          "description": "Number of Web Workers to use for parallel processing. Set to -1 to use all available cores."
+        },
+        "gdsPreview.chunkSize": {
+          "type": "number",
+          "default": 2000,
+          "description": "Number of polygons per chunk for streaming data from Python to the extension."
+        },
         "gdsPreview.pythonPath": {
           "type": "string",
           "default": "python",

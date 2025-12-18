@@ -89,9 +89,11 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
         const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
         const labelFontSize = config.get<number>('labelFontSize', 12);
+        const maxWorkers = config.get<number>('maxWorkers', -1);
+        const chunkSize = config.get<number>('chunkSize', 2000);
         const pythonPath = config.get<string>('pythonPath', 'python');
 
-        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, pythonPath);
+        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath);
 
         const updateWebview = (cellName?: string) => {
             // Kill existing process if any
@@ -103,6 +105,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
             const currentConfig = vscode.workspace.getConfiguration('gdsPreview');
             const currentRenderingEngine = currentConfig.get<string>('renderingEngine', 'canvas');
+            const chunkSize = currentConfig.get<number>('chunkSize', 2000);
 
             const tempDir = path.join(os.tmpdir(), `gds_preview_data_${Date.now()}`);
 
@@ -115,9 +118,8 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             const pythonPath = currentConfig.get<string>('pythonPath', 'python');
 
             const args = [pythonScriptPath, filePath, tempDir];
-            if (cellName) {
-                args.push(cellName);
-            }
+            args.push(cellName || "");
+            args.push(chunkSize.toString());
 
             console.log(`Running python script: ${pythonPath} ${args.join(' ')}`);
 
@@ -137,27 +139,51 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
             let isFirstLine = true;
 
+            let currentChunkMeta: any = null;
+
             rl.on('line', (line) => {
+                // console.log(`Received line from Python: ${line.substring(0, 100)}...`);
                 try {
                     if (!line.trim()) return;
-                    const data = JSON.parse(line);
 
-                    if (isFirstLine) {
-                        // Metadata
-                        webviewPanel.webview.postMessage({
-                            command: 'initialize',
-                            data: data,
-                            engine: currentRenderingEngine
-                        });
-                        isFirstLine = false;
+                    if (line.startsWith("CHUNK_META|")) {
+                        currentChunkMeta = JSON.parse(line.substring(11));
+                    } else if (line.startsWith("CHUNK_DATA|")) {
+                        if (currentChunkMeta) {
+                            // Forward raw string to webview
+                            webviewPanel.webview.postMessage({
+                                command: 'addLayerChunkRaw',
+                                layerKey: currentChunkMeta.layerKey,
+                                chunkIndex: currentChunkMeta.chunkIndex,
+                                totalChunks: currentChunkMeta.totalChunks,
+                                polygonsString: line.substring(11)
+                            });
+                            currentChunkMeta = null;
+                        }
                     } else {
-                        // Layer data chunk
-                        // Python sends { layerKey, polygons, labels, chunkIndex, totalChunks }
-                        webviewPanel.webview.postMessage({
-                            command: 'addLayerChunk',
-                            layerKey: data.layerKey,
-                            data: data
-                        });
+                        // Legacy/Metadata handling
+                        const data = JSON.parse(line);
+
+                        if (isFirstLine) {
+                            console.log("Sending initialize command to webview");
+                            // Metadata
+                            webviewPanel.webview.postMessage({
+                                command: 'initialize',
+                                data: data,
+                                engine: currentRenderingEngine
+                            }).then(
+                                (success) => console.log(`Initialize message delivery status: ${success}`),
+                                (err) => console.error(`Initialize message delivery failed: ${err}`)
+                            );
+                            isFirstLine = false;
+                        } else if (data.layerKey && data.labels) {
+                            // Label chunk (still JSON)
+                            webviewPanel.webview.postMessage({
+                                command: 'addLayerChunk',
+                                layerKey: data.layerKey,
+                                data: data
+                            });
+                        }
                     }
                 } catch (e: any) {
                     console.error(`Failed to parse line: ${e.message}`);
@@ -211,6 +237,15 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         // Handle messages from the webview
         webviewPanel.webview.onDidReceiveMessage(
             message => {
+                if (message.command === 'log') {
+                    console.log(`[Webview Log]: ${message.message}`);
+                    return;
+                }
+                if (message.command === 'error') {
+                    console.error(`[Webview Error]: ${message.message}`);
+                    return;
+                }
+
                 console.log(`Received message: ${JSON.stringify(message)}`);
                 switch (message.command) {
                     case 'changeCell':
@@ -258,11 +293,22 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {
                 updateWebview(currentCell);
             }
+            if (e.affectsConfiguration('gdsPreview.maxWorkers') || e.affectsConfiguration('gdsPreview.chunkSize')) {
+                const config = vscode.workspace.getConfiguration('gdsPreview');
+                const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
+                const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
+                const labelFontSize = config.get<number>('labelFontSize', 12);
+                const maxWorkers = config.get<number>('maxWorkers', -1);
+                const chunkSize = config.get<number>('chunkSize', 2000);
+                const pythonPath = config.get<string>('pythonPath', 'python');
+
+                webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath);
+            }
         }, null, this.context.subscriptions);
     }
 }
 
-function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, pythonPath: string): string {
+function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string): string {
     const nonce = getNonce();
     const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
     const earcutCdn = "https://unpkg.com/earcut@2.2.4/dist/earcut.min.js";
@@ -271,7 +317,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' https://cdn.jsdelivr.net https://unpkg.com; img-src data:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' https://cdn.jsdelivr.net https://unpkg.com; img-src data:; worker-src blob:;">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GDS Preview</title>
     <style>
@@ -556,6 +602,14 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 <input type="number" id="fast-mode-input" value="${fastModeThreshold}" min="1" step="1">
             </div>
             <div class="control-group">
+                <label for="max-workers-input">Max Workers:</label>
+                <input type="number" id="max-workers-input" value="${maxWorkersConfig}" min="-1" step="1" title="-1 for auto">
+            </div>
+            <div class="control-group">
+                <label for="chunk-size-input">Chunk Size:</label>
+                <input type="number" id="chunk-size-input" value="${chunkSize}" min="100" step="100">
+            </div>
+            <div class="control-group">
                 <label for="font-size-input">Label Font Size:</label>
                 <input type="number" id="font-size-input" value="${labelFontSize}" min="1" step="1">
             </div>
@@ -579,9 +633,14 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
     <script src="${earcutCdn}"></script>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
+
         console.log("GDS Preview: Script initialized");
+        vscode.postMessage({ command: 'ready' });
 
         // State
+        let startTime = 0;
+        let pendingTasks = 0;
+        let pythonFinished = false;
         let geometry = {};
         let labels = {};
         let bbox = { x_min: 0, x_max: 0, y_min: 0, y_max: 0 };
@@ -601,6 +660,110 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let gl = null;
         let glProgram = null;
         let layerBuffers = {}; // { layerKey: { vertexBuffer, vertexCount, colorLocation, matrixLocation } }
+
+        // Worker Pool for Triangulation
+        const workerCode = \`
+            try {
+                importScripts('${earcutCdn}');
+                console.log("Worker: Earcut loaded successfully");
+            } catch (e) {
+                console.error("Worker: Failed to load earcut", e);
+                self.postMessage({ type: 'log', message: "Worker failed to load earcut: " + e });
+            }
+
+            self.onmessage = function(e) {
+                // console.log("Worker: Received task", e.data.id);
+                try {
+                    let polygons;
+                    if (e.data.isRaw) {
+                        polygons = JSON.parse(e.data.polygonsString);
+                    } else {
+                        polygons = e.data.polygons;
+                    }
+
+                    const { id } = e.data;
+                    if (!self.earcut) {
+                        throw new Error("Earcut library not loaded");
+                    }
+
+                    const vertices = [];
+                    for (const poly of polygons) {
+                        const flat = [];
+                        for (const p of poly) {
+                            flat.push(p[0], p[1]);
+                        }
+                        const triangles = earcut(flat);
+                        for (let i = 0; i < triangles.length; i++) {
+                            const index = triangles[i];
+                            vertices.push(flat[index * 2], flat[index * 2 + 1]);
+                        }
+                    }
+                    const floatArray = new Float32Array(vertices);
+                    self.postMessage({ id, vertices: floatArray }, [floatArray.buffer]);
+                } catch (err) {
+                    console.error("Worker processing error:", err);
+                    self.postMessage({ type: 'error', id: e.data.id, error: err.toString() });
+                }
+            };
+        \`;
+
+        const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(workerBlob);
+        const workerPool = [];
+
+        let maxWorkers = ${maxWorkersConfig};
+        if (maxWorkers === -1) {
+            maxWorkers = navigator.hardwareConcurrency || 4;
+        }
+
+        let workerRoundRobin = 0;
+
+        console.log(\`Initializing worker pool with \${maxWorkers} workers\`);
+
+        for (let i = 0; i < maxWorkers; i++) {
+            const worker = new Worker(workerUrl);
+            worker.onmessage = (e) => handleWorkerMessage(e, i);
+            worker.onerror = (e) => {
+                console.error(\`Worker \${i} error:\`, e);
+                updateStatus(\`Worker error: \${e.message}\`);
+            };
+            workerPool.push(worker);
+        }
+
+        function handleWorkerMessage(e, workerIndex) {
+            if (e.data.type === 'log') {
+                // console.log(\`Worker \${workerIndex} Log:\`, e.data.message);
+                return;
+            }
+            if (e.data.type === 'error') {
+                console.error(\`Worker \${workerIndex} Error:\`, e.data.error);
+                updateStatus(\`Worker \${workerIndex} error: \${e.data.error}\`);
+                return;
+            }
+
+            const { id, vertices } = e.data;
+            // id is { layerKey, chunkIndex }
+            const layerKey = id.layerKey;
+
+            if (vertices.length > 0 && gl) {
+                const buffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+                if (!layerBuffers[layerKey]) layerBuffers[layerKey] = [];
+
+                layerBuffers[layerKey].push({
+                    buffer: buffer,
+                    count: vertices.length / 2
+                });
+
+                requestAnimationFrame(drawWebGL);
+            }
+
+            // updateStatus(\`Processed chunk for \${layerKey}\`);
+            pendingTasks--;
+            checkCompletion();
+        }
 
         // Palette
         const palette = [
@@ -644,6 +807,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         // Config Elements
         const engineSelect = document.getElementById('engine-select');
         const fastModeInput = document.getElementById('fast-mode-input');
+        const maxWorkersInput = document.getElementById('max-workers-input');
+        const chunkSizeInput = document.getElementById('chunk-size-input');
         const fontSizeInput = document.getElementById('font-size-input');
         const minZoomInput = document.getElementById('min-zoom-input');
         const pythonPathInput = document.getElementById('python-path-input');
@@ -666,6 +831,26 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     command: 'updateConfig',
                     key: 'fastModeThreshold',
                     value: parseFloat(e.target.value)
+                });
+            });
+        }
+
+        if (maxWorkersInput) {
+            maxWorkersInput.addEventListener('change', (e) => {
+                vscode.postMessage({
+                    command: 'updateConfig',
+                    key: 'maxWorkers',
+                    value: parseInt(e.target.value)
+                });
+            });
+        }
+
+        if (chunkSizeInput) {
+            chunkSizeInput.addEventListener('change', (e) => {
+                vscode.postMessage({
+                    command: 'updateConfig',
+                    key: 'chunkSize',
+                    value: parseInt(e.target.value)
                 });
             });
         }
@@ -695,6 +880,13 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             console.log("Status:", msg);
         }
 
+        function checkCompletion() {
+            if (pythonFinished && pendingTasks === 0) {
+                const elapsed = (performance.now() - startTime).toFixed(0);
+                updateStatus(\`Loaded successfully in \${elapsed}ms\`);
+            }
+        }
+
         function onInteraction() {
             if (!isInteracting) {
                 isInteracting = true;
@@ -715,16 +907,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         window.addEventListener('message', event => {
             const message = event.data;
             if (message.command === 'updateData') {
-                console.log("Received data update");
                 currentEngine = message.engine;
                 handleDataUpdate(message.data);
             } else if (message.command === 'initialize') {
-                console.log("Received initialization");
                 currentEngine = message.engine;
                 handleInitialize(message.data);
             } else if (message.command === 'addLayerChunk') {
                 // console.log("Received layer chunk", message.layerKey);
                 handleAddLayerChunk(message.layerKey, message.data);
+            } else if (message.command === 'addLayerChunkRaw') {
+                handleAddLayerChunkRaw(message.layerKey, message.chunkIndex, message.totalChunks, message.polygonsString);
             } else if (message.command === 'updateSettings') {
                 if (message.fastModeThreshold !== undefined) {
                     fastModeThreshold = message.fastModeThreshold;
@@ -739,6 +931,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 }
             } else if (message.command === 'status') {
                 updateStatus(message.message);
+                if (message.message === 'Loaded successfully') {
+                    pythonFinished = true;
+                    checkCompletion();
+                }
                 if (message.message === 'Loaded successfully' && currentEngine === 'svg') {
                     // Apply initial transform for SVG mode to fix orientation
                     updateTransform();
@@ -876,6 +1072,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         }
 
         function handleInitialize(data) {
+            startTime = performance.now();
+            pendingTasks = 0;
+            pythonFinished = false;
             updateStatus("Initializing...");
 
             // Reset state
@@ -885,8 +1084,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             activeLayers.clear();
             layerColors = {};
             layerOpacities = {};
-            layerTextBrightness = {};
             layerBuffers = {}; // Clear WebGL buffers
+
+            // Clear worker queue/state if needed?
+            // Workers are stateless in our design, they just process what they get.
 
             // Update Cell Tree
             buildTree(data.hierarchy, data.top_level_cells, data.all_cells, data.cell_name);
@@ -952,6 +1153,28 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             updateStatus("Loading layers...");
         }
 
+        function handleAddLayerChunkRaw(layerKey, chunkIndex, totalChunks, polygonsString) {
+            // 3. Handle WebGL Buffers (WebGL Mode Only)
+            if (currentEngine === 'webgl') {
+                pendingTasks++;
+                // Dispatch to worker
+                const worker = workerPool[workerRoundRobin];
+                workerRoundRobin = (workerRoundRobin + 1) % workerPool.length;
+
+                worker.postMessage({
+                    id: { layerKey, chunkIndex },
+                    polygonsString: polygonsString, // Send raw string
+                    isRaw: true
+                });
+            } else {
+                // Fallback for Canvas mode (must parse on main thread)
+                const polygons = JSON.parse(polygonsString);
+                handleAddLayerChunk(layerKey, { polygons, chunkIndex, totalChunks });
+            }
+
+            updateStatus(\`Loading \${layerKey} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
+        }
+
         function handleAddLayerChunk(layerKey, data) {
             const polys = data.polygons;
 
@@ -984,38 +1207,21 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             // 3. Handle WebGL Buffers (WebGL Mode Only)
             // CRITICAL: We process and DISCARD the polygons immediately to save memory
             if (currentEngine === 'webgl' && polys && polys.length > 0) {
-                const vertices = [];
-                for (const poly of polys) {
-                    const flat = [];
-                    for (const p of poly) {
-                        flat.push(p[0], p[1]);
-                    }
-                    const triangles = earcut(flat);
-                    for (let i = 0; i < triangles.length; i++) {
-                        const index = triangles[i];
-                        vertices.push(flat[index * 2], flat[index * 2 + 1]);
-                    }
-                }
+                // Dispatch to worker
+                const worker = workerPool[workerRoundRobin];
+                workerRoundRobin = (workerRoundRobin + 1) % workerPool.length;
 
-                if (vertices.length > 0) {
-                    const buffer = gl.createBuffer();
-                    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
-
-                    if (!layerBuffers[layerKey]) layerBuffers[layerKey] = [];
-
-                    layerBuffers[layerKey].push({
-                        buffer: buffer,
-                        count: vertices.length / 2
-                    });
-                }
+                worker.postMessage({
+                    id: { layerKey, chunkIndex: data.chunkIndex },
+                    polygons: polys
+                });
             }
 
             updateStatus(\`Loading \${layerKey} (\${data.chunkIndex + 1}/\${data.totalChunks || '?'})\`);
 
             // Redraw
             if (currentEngine === 'canvas') requestAnimationFrame(draw);
-            else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
+            // WebGL redraw is triggered by worker callback
             requestAnimationFrame(drawLabels);
         }
 
