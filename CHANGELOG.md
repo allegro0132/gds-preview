@@ -4,6 +4,21 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.4] - 2025-12-19
+
+### Added
+- **Binary Data Transfer**: Implemented a custom binary protocol (Base64 encoded buffers) for transferring geometry data from Python to the extension.
+  - Reduces memory overhead by avoiding JSON serialization for large geometry arrays.
+  - Web Workers now parse binary data directly.
+
+### Changed
+- **WebGL Optimization**: Optimize performance and robustness.
+- **Canvas Optimization**: Updated Canvas rendering to use flat `Float32Array` structures for polygons, reducing memory usage and garbage collection overhead.
+- **Status Logging**: Improved status messages to clearly distinguish between geometry chunks and label chunks.
+
+### Fixed
+- **Canvas Rendering**: Fixed an issue where Canvas mode would load data but fail to render due to incorrect worker return types.
+
 ## [0.1.1] - 2025-12-18
 
 ### Added

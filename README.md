@@ -17,6 +17,8 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
 - **Configuration Panel**: Quick access to rendering settings and parameters directly within the viewer.
 - **Performance Optimizations**:
   - **Parallel Loading**: Uses Web Workers to parse and process geometry off the main thread.
+  - **Binary Streaming**: Uses efficient binary data transfer (Base64 encoded buffers) to minimize overhead between Python and VS Code.
+  - **Incremental Rendering**: Streams data for all modes (WebGL, Canvas) to provide immediate visual feedback.
   - **Viewport Culling**: Only renders what is visible on screen.
   - **Dynamic Level of Detail (LOD)**: Automatically reduces detail during fast interactions to maintain high frame rates.
 
@@ -33,8 +35,8 @@ This extension provides three rendering pipelines to suit different needs:
 ### 2. SVG
 - **Technology**: Scalable Vector Graphics (DOM-based).
 - **Pros**: Perfect vector fidelity at any zoom level. Easy to inspect via DOM tools.
-- **Cons**: Very high memory usage and slow rendering for large files.
-- **Best For**:  Medium-sized layouts, high-quality static screenshots or where WebGL might be overkill or incompatible.
+- **Cons**: High memory usage for very large files (though improved with streaming).
+- **Best For**: Medium-sized layouts, high-quality static screenshots.
 
 ### 3. Canvas
 - **Technology**: HTML5 Canvas 2D Context (CPU-based).
