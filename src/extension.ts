@@ -188,6 +188,16 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         currentCell = message.cellName;
                         updateWebview(message.cellName);
                         return;
+                    case 'reset':
+                        updateWebview(currentCell);
+                        return;
+                    case 'stop':
+                        if (currentProcess) {
+                            currentProcess.kill();
+                            currentProcess = undefined;
+                            webviewPanel.webview.postMessage({ command: 'status', message: 'Stopped by user' });
+                        }
+                        return;
                     case 'ready':
                         updateWebview(currentCell);
                         return;
@@ -263,13 +273,14 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         .layer-toggle { display: flex; align-items: center; margin-bottom: 5px; white-space: nowrap; }
         .layer-toggle input[type="checkbox"] { margin-right: 5px; }
         .layer-toggle input[type="color"] { margin-left: auto; width: 30px; height: 20px; padding: 0; border: none; background: none;}
-        #recenter-btn {
-            margin-top: 10px; padding: 8px;
+        #recenter-btn, .action-btn {
+            padding: 8px;
             background-color: var(--vscode-button-background);
             color: var(--vscode-button-foreground);
             border: none; cursor: pointer;
         }
-        #recenter-btn:hover { background-color: var(--vscode-button-hoverBackground); }
+        #recenter-btn { margin-top: 10px; }
+        .action-btn:hover, #recenter-btn:hover { background-color: var(--vscode-button-hoverBackground); }
         #layers-list { margin-top: 10px; flex-grow: 1; overflow-y: auto; }
         .control-group { margin-bottom: 15px; }
         .control-group label { display: block; margin-bottom: 5px; font-weight: bold; }
@@ -352,6 +363,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 <option>Loading...</option>
             </select>
             <div id="status-msg" style="font-size: 12px; color: #888; margin-top: 5px;">Initializing...</div>
+            <div style="display: flex; gap: 5px; margin-top: 10px;">
+                <button id="reset-btn" class="action-btn" style="flex: 1;">Reset</button>
+                <button id="stop-btn" class="action-btn" style="flex: 1;">Stop</button>
+            </div>
         </div>
         <hr style="width: 100%; border-color: #444; margin: 15px 0;">
         <h3>View Control</h3>
@@ -459,6 +474,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         const ctx = canvas.getContext('2d');
         const controls = document.getElementById('controls');
         const recenterBtn = document.getElementById('recenter-btn');
+        const resetBtn = document.getElementById('reset-btn');
+        const stopBtn = document.getElementById('stop-btn');
         const cellSelect = document.getElementById('cell-select');
         const statusMsg = document.getElementById('status-msg');
         const layersList = document.getElementById('layers-list');
@@ -1506,6 +1523,18 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         });
 
         recenterBtn.addEventListener('click', fitView);
+
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                vscode.postMessage({ command: 'reset' });
+            });
+        }
+
+        if (stopBtn) {
+            stopBtn.addEventListener('click', () => {
+                vscode.postMessage({ command: 'stop' });
+            });
+        }
 
         if (toggleControlsBtn) {
             toggleControlsBtn.addEventListener('click', () => {
