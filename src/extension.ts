@@ -371,6 +371,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         <hr style="width: 100%; border-color: #444; margin: 15px 0;">
         <h3>View Control</h3>
         <button id="recenter-btn">Center View</button>
+        <div style="display: flex; gap: 5px; margin-top: 5px;">
+            <button id="flip-h-btn" class="action-btn" style="flex: 1;">Flip H</button>
+            <button id="flip-v-btn" class="action-btn" style="flex: 1;">Flip V</button>
+        </div>
+        <div style="display: flex; gap: 5px; margin-top: 5px; align-items: center;">
+            <input type="number" id="rot-angle-input" value="90" style="width: 50px;">
+            <span style="font-size: 12px;">deg</span>
+            <button id="rot-cw-btn" class="action-btn" style="flex: 1;">CW</button>
+            <button id="rot-ccw-btn" class="action-btn" style="flex: 1;">CCW</button>
+        </div>
         <hr style="width: 100%; border-color: #444; margin: 15px 0;">
         <h3>Layer Control</h3>
         <div style="margin-top: 10px;">
@@ -441,6 +451,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let fastModeThreshold = ${fastModeThreshold};
         let labelFontSize = ${labelFontSize};
         let minLabelZoom = ${minLabelZoom};
+        let flipState = { x: 1, y: 1 };
+        let rotationState = 0; // Degrees
 
         // WebGL State
         let gl = null;
@@ -474,6 +486,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         const ctx = canvas.getContext('2d');
         const controls = document.getElementById('controls');
         const recenterBtn = document.getElementById('recenter-btn');
+        const flipHBtn = document.getElementById('flip-h-btn');
+        const flipVBtn = document.getElementById('flip-v-btn');
+        const rotCWBtn = document.getElementById('rot-cw-btn');
+        const rotCCWBtn = document.getElementById('rot-ccw-btn');
+        const rotAngleInput = document.getElementById('rot-angle-input');
         const resetBtn = document.getElementById('reset-btn');
         const stopBtn = document.getElementById('stop-btn');
         const cellSelect = document.getElementById('cell-select');
@@ -597,6 +614,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 }
             } else if (message.command === 'status') {
                 updateStatus(message.message);
+                if (message.message === 'Loaded successfully' && currentEngine === 'svg') {
+                    // Apply initial transform for SVG mode to fix orientation
+                    updateTransform();
+                }
             }
         });
 
@@ -939,11 +960,23 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             resizeCanvas();
             svgContainer.style.display = 'block';
 
+            bbox = data.bbox; // Update global bbox for transform calculations
+
             const bboxWidth = data.bbox.x_max - data.bbox.x_min;
             const bboxHeight = data.bbox.y_max - data.bbox.y_min;
+            // GDS is Y-up, SVG is Y-down.
+            // We use a nested group structure:
+            // SVG -> Viewport (controlled by pan-zoom) -> FlipGroup (controlled by us) -> Layers
             const viewBoxString = \`\${data.bbox.x_min} \${-data.bbox.y_max} \${bboxWidth} \${bboxHeight}\`;
 
             let svgContent = \`<svg id="root-svg-for-panzoom" viewBox="\${viewBoxString}" width="100%" height="100%">\`;
+
+            // 1. Viewport Group (for svg-pan-zoom)
+            svgContent += \`<g id="svg-pan-zoom-viewport">\`;
+
+            // 2. Flip Group (for orientation control)
+            // Initial transform - Identity (we use CSS on container now)
+            svgContent += \`<g id="gds-flip-group">\`;
 
             for (const layerKey of data.layers) {
                 const fragment = data.svg_fragments[layerKey];
@@ -952,6 +985,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     \${fragment}
                 </g>\`;
             }
+            svgContent += \`</g>\`; // Close flip group
+            svgContent += \`</g>\`; // Close viewport group
             svgContent += '</svg>';
 
             svgContainer.innerHTML = svgContent;
@@ -961,6 +996,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 panZoomInstance.destroy();
             }
             panZoomInstance = svgPanZoom('#root-svg-for-panzoom', {
+                viewportSelector: '#svg-pan-zoom-viewport',
                 panEnabled: true,
                 zoomEnabled: true,
                 controlIconsEnabled: false,
@@ -983,6 +1019,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     requestAnimationFrame(drawLabels);
                 }
             });
+            flipState.y *= -1;
+            updateTransform();
         }
 
         function setupWebGLMode(data) {
@@ -1009,10 +1047,21 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 uniform vec2 u_resolution;
                 uniform vec2 u_offset;
                 uniform float u_scale;
+                uniform vec2 u_flip;
+                uniform float u_rotation;
 
                 void main() {
-                    // Apply scale and offset
-                    vec2 position = (a_position * vec2(1, -1) * u_scale) + u_offset;
+                    // Apply User Rotation (First)
+                    float c = cos(u_rotation);
+                    float s = sin(u_rotation);
+                    vec2 rotated = vec2(a_position.x * c - a_position.y * s, a_position.x * s + a_position.y * c);
+
+                    // Apply User Flip (Second)
+                    vec2 flipped = rotated * u_flip;
+
+                    // Apply Base Transform (Scale + Y-Flip + Offset)
+                    // Note: u_scale is uniform scale. Base Y-flip is vec2(1, -1).
+                    vec2 position = (flipped * vec2(1, -1) * u_scale) + u_offset;
 
                     // Convert from pixels to 0.0->1.0
                     vec2 zeroToOne = position / u_resolution;
@@ -1122,12 +1171,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             const resolutionLocation = gl.getUniformLocation(glProgram, "u_resolution");
             const offsetLocation = gl.getUniformLocation(glProgram, "u_offset");
             const scaleLocation = gl.getUniformLocation(glProgram, "u_scale");
+            const flipLocation = gl.getUniformLocation(glProgram, "u_flip");
+            const rotationLocation = gl.getUniformLocation(glProgram, "u_rotation");
             const colorLocation = gl.getUniformLocation(glProgram, "u_color");
             const positionLocation = gl.getAttribLocation(glProgram, "a_position");
 
             gl.uniform2f(resolutionLocation, gl.canvas.width, gl.canvas.height);
             gl.uniform2f(offsetLocation, offsetX, offsetY);
             gl.uniform1f(scaleLocation, scale);
+            gl.uniform2f(flipLocation, flipState.x, flipState.y);
+            gl.uniform1f(rotationLocation, rotationState * Math.PI / 180);
 
             gl.enableVertexAttribArray(positionLocation);
 
@@ -1282,8 +1335,24 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     if (x < vMinX || x > vMaxX || y < vMinY || y > vMaxY) continue;
 
                     // Project to screen coordinates manually
-                    const screenX = x * scale + offsetX;
-                    const screenY = y * -scale + offsetY;
+                    // World -> Rotation -> UserFlip -> BaseFlip -> Scale -> Offset
+
+                    // 1. User Rotation
+                    const rad = rotationState * Math.PI / 180;
+                    const c = Math.cos(rad);
+                    const s = Math.sin(rad);
+                    const rx = x * c - y * s;
+                    const ry = x * s + y * c;
+
+                    // 2. User Flip
+                    let wx = rx * flipState.x;
+                    let wy = ry * flipState.y;
+
+                    // 3. Base Flip (Y-up to Y-down) + Scale + Offset
+                    // ScreenX = wx * scale + offsetX
+                    // ScreenY = wy * -scale + offsetY
+                    const screenX = wx * scale + offsetX;
+                    const screenY = wy * -scale + offsetY;
 
                     ctx.fillText(text, screenX, screenY);
                 }
@@ -1297,7 +1366,15 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 ctx.save();
                 ctx.translate(offsetX, offsetY);
-                ctx.scale(scale, -scale);
+                ctx.scale(scale, -scale); // Base view transform
+
+                // Apply user rotation and flip
+                // Canvas transforms are applied in reverse order of code execution for the coordinate system
+                // We want: Screen <- Pan <- Zoom <- BaseFlip <- Flip <- Rotation <- World
+                // So code order: Pan, Zoom, BaseFlip, Flip, Rotation
+
+                ctx.scale(flipState.x, flipState.y);
+                ctx.rotate(rotationState * Math.PI / 180);
 
                 // Viewport culling
                 // Visible world bounds
@@ -1524,8 +1601,64 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
         recenterBtn.addEventListener('click', fitView);
 
+        if (flipHBtn) {
+            flipHBtn.addEventListener('click', () => {
+                flipState.x *= -1;
+                updateTransform();
+            });
+        }
+
+        if (flipVBtn) {
+            flipVBtn.addEventListener('click', () => {
+                flipState.y *= -1;
+                updateTransform();
+            });
+        }
+
+        if (rotCWBtn && rotAngleInput) {
+            rotCWBtn.addEventListener('click', () => {
+                const angle = parseFloat(rotAngleInput.value) || 0;
+                // If coordinate system is flipped (handedness changed), reverse rotation direction
+                const dir = flipState.x * flipState.y;
+                rotationState = (rotationState - (angle * dir)) % 360;
+                updateTransform();
+            });
+        }
+
+        if (rotCCWBtn && rotAngleInput) {
+            rotCCWBtn.addEventListener('click', () => {
+                const angle = parseFloat(rotAngleInput.value) || 0;
+                // If coordinate system is flipped (handedness changed), reverse rotation direction
+                const dir = flipState.x * flipState.y;
+                rotationState = (rotationState + (angle * dir)) % 360;
+                updateTransform();
+            });
+        }
+
+        function updateTransform() {
+            if (currentEngine === 'canvas') {
+                draw();
+            } else if (currentEngine === 'webgl') {
+                drawWebGL();
+            } else if (currentEngine === 'svg') {
+                // Apply transform via CSS to the container
+                // This ensures "View Transform" behavior (Flip Screen, Rotate Screen)
+                // and avoids interfering with svg-pan-zoom's internal coordinate system.
+                if (svgContainer) {
+                    // Apply Base Flip (Y-up to Y-down) by negating flipState.y
+                    svgContainer.style.transform = \`scale(\${flipState.x}, \${-flipState.y}) rotate(\${rotationState}deg)\`;
+                    // Ensure origin is center
+                    svgContainer.style.transformOrigin = 'center center';
+                }
+            }
+            requestAnimationFrame(drawLabels);
+        }
+
         if (resetBtn) {
             resetBtn.addEventListener('click', () => {
+                flipState = { x: 1, y: 1 };
+                rotationState = 0;
+                updateTransform();
                 vscode.postMessage({ command: 'reset' });
             });
         }
