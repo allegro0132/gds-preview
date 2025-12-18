@@ -51,24 +51,31 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
                       file=sys.stderr)
                 sys.exit(1)
         else:
-            top_cells = lib.top_level()
-            if not top_cells:
-                # If no top level cells (e.g. circular references?), just pick the first one or error
+            # 1. Filter out invalid cells (starting with $$$)
+            valid_cells = [c for c in lib.cells if not c.name.startswith("$$$")]
+
+            if not valid_cells:
+                # Fallback if only $$$ cells exist
                 if lib.cells:
+                    lib.cells.sort(key=lambda x: x.name)
                     main_cell = lib.cells[0]
+                    print(
+                        f"Warning: Only metadata cells found. Selected: {main_cell.name}",
+                        file=sys.stderr)
                 else:
                     print(json.dumps({"error": "No cells found in GDS file."}),
                           file=sys.stderr)
                     sys.exit(1)
             else:
-                # Filter out cells starting with $$$ (KLayout metadata)
-                valid_top_cells = [
-                    c for c in top_cells if not c.name.startswith("$$$")
-                ]
-                if valid_top_cells:
-                    main_cell = valid_top_cells[0]
-                else:
-                    main_cell = top_cells[0]
+                # Use alphabetical order (dictionary sort)
+                valid_cells.sort(key=lambda x: x.name)
+                main_cell = valid_cells[0]
+                print(
+                    f"Selected first alphabetical valid cell: {main_cell.name}",
+                    file=sys.stderr)
+
+        # Log selected cell for debugging
+        print(f"Final selected cell: {main_cell.name}", file=sys.stderr)
 
         # A deep copy is needed to avoid modifying the original library cell
         flattened_cell = main_cell.copy(f"{main_cell.name}_flat")
@@ -191,11 +198,16 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
             if inner_svg_content:
                 layer_svg_fragments[layer_key] = inner_svg_content
 
-        # Prepare the JSON output
+        # Sort layers for consistent ordering
+        # We need to sort the keys numerically (layer, datatype), not lexicographically ("10" comes before "2")
+        def layer_key_sort(key):
+            parts = key.split('_')
+            return (int(parts[0]), int(parts[1]))
+
         result = {
             "cell_name": main_cell.name,
             "all_cells": all_cell_names,
-            "layers": sorted(list(active_layer_keys)),
+            "layers": sorted(list(active_layer_keys), key=layer_key_sort),
             "svg_fragments":
                 layer_svg_fragments,  # Changed from 'files' to 'svg_fragments'
             "labels": all_labels,

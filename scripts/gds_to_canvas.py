@@ -50,24 +50,31 @@ def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
                       file=sys.stderr)
                 sys.exit(1)
         else:
-            top_cells = lib.top_level()
-            if not top_cells:
-                # If no top level cells (e.g. circular references?), just pick the first one or error
+            # 1. Filter out invalid cells (starting with $$$)
+            valid_cells = [c for c in lib.cells if not c.name.startswith("$$$")]
+
+            if not valid_cells:
+                # Fallback if only $$$ cells exist
                 if lib.cells:
+                    lib.cells.sort(key=lambda x: x.name)
                     main_cell = lib.cells[0]
+                    print(
+                        f"Warning: Only metadata cells found. Selected: {main_cell.name}",
+                        file=sys.stderr)
                 else:
                     print(json.dumps({"error": "No cells found in GDS file."}),
                           file=sys.stderr)
                     sys.exit(1)
             else:
-                # Filter out cells starting with $$$ (KLayout metadata)
-                valid_top_cells = [
-                    c for c in top_cells if not c.name.startswith("$$$")
-                ]
-                if valid_top_cells:
-                    main_cell = valid_top_cells[0]
-                else:
-                    main_cell = top_cells[0]
+                # Use alphabetical order (dictionary sort)
+                valid_cells.sort(key=lambda x: x.name)
+                main_cell = valid_cells[0]
+                print(
+                    f"Selected first alphabetical valid cell: {main_cell.name}",
+                    file=sys.stderr)
+
+        # Log selected cell for debugging
+        print(f"Final selected cell: {main_cell.name}", file=sys.stderr)
 
         # A deep copy is needed to avoid modifying the original library cell
         flattened_cell = main_cell.copy(f"{main_cell.name}_flat")
@@ -122,8 +129,10 @@ def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
             layer_key = f"{layer}_{datatype}"
 
             # Check if layer has content
-            has_polys = any(p.layer == layer and p.datatype == datatype for p in flattened_cell.polygons)
-            has_labels = any(l.layer == layer and l.texttype == datatype for l in flattened_cell.labels)
+            has_polys = any(p.layer == layer and p.datatype == datatype
+                            for p in flattened_cell.polygons)
+            has_labels = any(l.layer == layer and l.texttype == datatype
+                             for l in flattened_cell.labels)
 
             if has_polys or has_labels:
                 metadata["layers"].append(layer_key)
@@ -161,10 +170,12 @@ def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
                         "magnification": l.magnification,
                         "anchor": l.anchor
                     })
-                print(json.dumps({
-                    "layerKey": layer_key,
-                    "labels": lbls
-                }, cls=NumpyEncoder))
+                print(
+                    json.dumps({
+                        "layerKey": layer_key,
+                        "labels": lbls
+                    },
+                               cls=NumpyEncoder))
                 sys.stdout.flush()
 
             # Stream polygons in chunks
@@ -173,12 +184,19 @@ def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
                 chunk_polys = polygons_for_layer[i:i + CHUNK_SIZE]
                 polys_data = [p.points for p in chunk_polys]
 
-                print(json.dumps({
-                    "layerKey": layer_key,
-                    "polygons": polys_data,
-                    "chunkIndex": i // CHUNK_SIZE,
-                    "totalChunks": (total_polys + CHUNK_SIZE - 1) // CHUNK_SIZE
-                }, cls=NumpyEncoder))
+                print(
+                    json.dumps(
+                        {
+                            "layerKey":
+                                layer_key,
+                            "polygons":
+                                polys_data,
+                            "chunkIndex":
+                                i // CHUNK_SIZE,
+                            "totalChunks":
+                                (total_polys + CHUNK_SIZE - 1) // CHUNK_SIZE
+                        },
+                        cls=NumpyEncoder))
                 sys.stdout.flush()
 
         sys.exit(0)
