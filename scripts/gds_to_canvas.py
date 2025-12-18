@@ -36,6 +36,16 @@ def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
 
         all_cell_names = sorted(valid_cells)
 
+        # Build hierarchy
+        hierarchy = {}
+        for c in lib.cells:
+            # Get direct dependencies (child cells)
+            deps = c.dependencies(recursive=False)
+            # Store names
+            hierarchy[c.name] = sorted([d.name for d in deps])
+
+        top_level_cells = sorted([c.name for c in lib.top_level()])
+
         main_cell = None
         if target_cell_name:
             # Find the cell by name in the list of cells
@@ -114,6 +124,8 @@ def gds_to_geometry(gds_path, output_dir, target_cell_name=None):
         metadata = {
             "cell_name": main_cell.name,
             "all_cells": all_cell_names,
+            "top_level_cells": top_level_cells,
+            "hierarchy": hierarchy,
             "layers": [],
             "bbox": {
                 "x_min": bbox[0][0],

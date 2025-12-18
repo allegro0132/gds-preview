@@ -37,6 +37,16 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
 
         all_cell_names = sorted(valid_cells)
 
+        # Build hierarchy
+        hierarchy = {}
+        for c in lib.cells:
+            # Get direct dependencies (child cells)
+            deps = c.dependencies(recursive=False)
+            # Store names
+            hierarchy[c.name] = sorted([d.name for d in deps])
+
+        top_level_cells = sorted([c.name for c in lib.top_level()])
+
         main_cell = None
         if target_cell_name:
             # Find the cell by name in the list of cells
@@ -207,6 +217,8 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
         result = {
             "cell_name": main_cell.name,
             "all_cells": all_cell_names,
+            "top_level_cells": top_level_cells,
+            "hierarchy": hierarchy,
             "layers": sorted(list(active_layer_keys), key=layer_key_sort),
             "svg_fragments":
                 layer_svg_fragments,  # Changed from 'files' to 'svg_fragments'

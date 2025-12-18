@@ -284,6 +284,58 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         #layers-list { margin-top: 10px; flex-grow: 1; overflow-y: auto; }
         .control-group { margin-bottom: 15px; }
         .control-group label { display: block; margin-bottom: 5px; font-weight: bold; }
+        .tree-view {
+            border: 1px solid var(--vscode-dropdown-border);
+            background-color: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+            height: 150px;
+            overflow-y: auto;
+            padding: 5px;
+            font-size: 12px;
+        }
+        .tree-item {
+            margin-left: 12px;
+        }
+        .tree-content {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            padding: 2px 0;
+        }
+        .tree-content:hover {
+            background-color: var(--vscode-list-hoverBackground);
+        }
+        .tree-content.selected {
+            background-color: var(--vscode-list-activeSelectionBackground);
+            color: var(--vscode-list-activeSelectionForeground);
+        }
+        .tree-toggle {
+            width: 16px;
+            height: 16px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 2px;
+            user-select: none;
+            cursor: pointer;
+        }
+        .tree-toggle.empty {
+            visibility: hidden;
+        }
+        .tree-toggle::after {
+            content: '▶';
+            font-size: 8px;
+            transition: transform 0.1s;
+        }
+        .tree-item.expanded > .tree-content > .tree-toggle::after {
+            transform: rotate(90deg);
+        }
+        .tree-children {
+            display: none;
+        }
+        .tree-item.expanded > .tree-children {
+            display: block;
+        }
         select, input[type="number"], input[type="text"] {
             width: 100%; padding: 5px;
             background-color: var(--vscode-dropdown-background);
@@ -358,10 +410,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
     <div id="controls">
         <h3>Cell Control</h3>
         <div class="control-group">
-            <label for="cell-select">Select Cell:</label>
-            <select id="cell-select" disabled>
-                <option>Loading...</option>
-            </select>
+            <label>Select Cell:</label>
+            <div id="cell-tree" class="tree-view">Loading...</div>
             <div id="status-msg" style="font-size: 12px; color: #888; margin-top: 5px;">Initializing...</div>
             <div style="display: flex; gap: 5px; margin-top: 10px;">
                 <button id="reset-btn" class="action-btn" style="flex: 1;">Reset</button>
@@ -453,6 +503,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let minLabelZoom = ${minLabelZoom};
         let flipState = { x: 1, y: 1 };
         let rotationState = 0; // Degrees
+        let expandedNodes = new Set(); // Persist tree expansion state
 
         // WebGL State
         let gl = null;
@@ -493,7 +544,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         const rotAngleInput = document.getElementById('rot-angle-input');
         const resetBtn = document.getElementById('reset-btn');
         const stopBtn = document.getElementById('stop-btn');
-        const cellSelect = document.getElementById('cell-select');
+        const cellTree = document.getElementById('cell-tree');
         const statusMsg = document.getElementById('status-msg');
         const layersList = document.getElementById('layers-list');
         const toggleControlsBtn = document.getElementById('toggle-controls-btn');
@@ -621,6 +672,118 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             }
         });
 
+        function selectCell(cellName) {
+            vscode.postMessage({
+                command: 'changeCell',
+                cellName: cellName
+            });
+        }
+
+        function buildTree(hierarchy, topLevelCells, allCells, currentCellName) {
+            cellTree.innerHTML = '';
+
+            // Fallback to flat list if no hierarchy
+            if (!hierarchy || !topLevelCells || topLevelCells.length === 0) {
+                allCells.forEach(cell => {
+                    const item = document.createElement('div');
+                    item.className = 'tree-content';
+                    item.style.paddingLeft = '5px';
+                    if (cell === currentCellName) item.classList.add('selected');
+                    item.textContent = cell;
+                    item.onclick = () => selectCell(cell);
+                    cellTree.appendChild(item);
+                });
+                return;
+            }
+
+            // Pre-process roots to hide $$$ nodes
+            let effectiveRoots = [];
+            const processRoots = (roots) => {
+                roots.forEach(root => {
+                    if (root.startsWith('$$$')) {
+                        const children = hierarchy[root] || [];
+                        processRoots(children);
+                    } else {
+                        effectiveRoots.push(root);
+                    }
+                });
+            };
+            processRoots(topLevelCells);
+            // Deduplicate and sort
+            effectiveRoots = [...new Set(effectiveRoots)].sort();
+
+            function createNode(cellName, visited) {
+                const item = document.createElement('div');
+                item.className = 'tree-item';
+
+                // Restore expansion state
+                if (expandedNodes.has(cellName)) {
+                    item.classList.add('expanded');
+                }
+
+                const content = document.createElement('div');
+                content.className = 'tree-content';
+                if (cellName === currentCellName) content.classList.add('selected');
+
+                const children = hierarchy[cellName] || [];
+                const hasChildren = children.length > 0;
+
+                const toggle = document.createElement('span');
+                toggle.className = 'tree-toggle' + (hasChildren ? '' : ' empty');
+                content.appendChild(toggle);
+
+                const label = document.createElement('span');
+                label.className = 'tree-label';
+                label.textContent = cellName;
+                content.appendChild(label);
+
+                label.onclick = (e) => {
+                    e.stopPropagation();
+                    selectCell(cellName);
+                };
+
+                if (hasChildren) {
+                    toggle.onclick = (e) => {
+                        e.stopPropagation();
+                        item.classList.toggle('expanded');
+                        if (item.classList.contains('expanded')) {
+                            expandedNodes.add(cellName);
+                        } else {
+                            expandedNodes.delete(cellName);
+                        }
+                    };
+                }
+
+                item.appendChild(content);
+
+                if (hasChildren) {
+                    const childrenContainer = document.createElement('div');
+                    childrenContainer.className = 'tree-children';
+
+                    if (!visited.has(cellName)) {
+                        const newVisited = new Set(visited);
+                        newVisited.add(cellName);
+                        children.forEach(childName => {
+                            childrenContainer.appendChild(createNode(childName, newVisited));
+                        });
+                    } else {
+                        const recursiveMsg = document.createElement('div');
+                        recursiveMsg.textContent = '<recursive>';
+                        recursiveMsg.style.paddingLeft = '20px';
+                        recursiveMsg.style.color = '#888';
+                        childrenContainer.appendChild(recursiveMsg);
+                    }
+                    item.appendChild(childrenContainer);
+                }
+
+                return item;
+            }
+
+            effectiveRoots.forEach(cellName => {
+                cellTree.appendChild(createNode(cellName, new Set()));
+            });
+        }
+
         function handleInitialize(data) {
             updateStatus("Initializing...");
 
@@ -634,16 +797,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             layerTextBrightness = {};
             layerBuffers = {}; // Clear WebGL buffers
 
-            // Update Cell Select
-            cellSelect.innerHTML = '';
-            cellSelect.disabled = false;
-            data.all_cells.forEach(cell => {
-                const option = document.createElement('option');
-                option.value = cell;
-                option.textContent = cell;
-                if (cell === data.cell_name) option.selected = true;
-                cellSelect.appendChild(option);
-            });
+            // Update Cell Tree
+            buildTree(data.hierarchy, data.top_level_cells, data.all_cells, data.cell_name);
 
             // Update Layers UI
             layersList.innerHTML = '';
@@ -855,16 +1010,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         function handleDataUpdate(data) {
             updateStatus("Rendering...");
 
-            // Update Cell Select
-            cellSelect.innerHTML = '';
-            cellSelect.disabled = false;
-            data.all_cells.forEach(cell => {
-                const option = document.createElement('option');
-                option.value = cell;
-                option.textContent = cell;
-                if (cell === data.cell_name) option.selected = true;
-                cellSelect.appendChild(option);
-            });
+            // Update Cell Tree
+            buildTree(data.hierarchy, data.top_level_cells, data.all_cells, data.cell_name);
 
             // Update Layers UI
             layersList.innerHTML = '';
@@ -1532,17 +1679,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             else requestAnimationFrame(drawWebGL);
             requestAnimationFrame(drawLabels);
         });
-
-        if (cellSelect) {
-            cellSelect.addEventListener('change', function(e) {
-                const selectedCell = e.target.value;
-                updateStatus("Loading cell: " + selectedCell + "...");
-                vscode.postMessage({
-                    command: 'changeCell',
-                    cellName: selectedCell
-                });
-            });
-        }
 
         controls.addEventListener('change', function(event) {
             const target = event.target;
