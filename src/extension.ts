@@ -21,15 +21,40 @@ export function activate(context: vscode.ExtensionContext) {
             }
         )
     );
+
+    context.subscriptions.push(vscode.commands.registerCommand('gds-preview.reset', () => {
+        provider.reset();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('gds-preview.stop', () => {
+        provider.stop();
+    }));
 }
 
 class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
     public static readonly viewType = 'gds-preview.gdsPreview';
+    private readonly webviews = new Set<vscode.WebviewPanel>();
 
     constructor(
         private readonly context: vscode.ExtensionContext
     ) { }
+
+    public reset() {
+        for (const panel of this.webviews) {
+            if (panel.visible) {
+                panel.webview.postMessage({ command: 'reset' });
+            }
+        }
+    }
+
+    public stop() {
+        for (const panel of this.webviews) {
+            if (panel.visible) {
+                panel.webview.postMessage({ command: 'stop' });
+            }
+        }
+    }
 
     openCustomDocument(
         uri: vscode.Uri,
@@ -44,6 +69,11 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         webviewPanel: vscode.WebviewPanel,
         token: vscode.CancellationToken
     ): void | Thenable<void> {
+        this.webviews.add(webviewPanel);
+        webviewPanel.onDidDispose(() => {
+            this.webviews.delete(webviewPanel);
+        });
+
         const filePath = document.uri.fsPath;
 
         webviewPanel.webview.options = {
@@ -460,10 +490,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 </head>
 <body>
     <div id="controls">
-        <div style="display: flex; gap: 5px; margin-top: 10px;">
-            <button id="reset-btn" class="action-btn" style="flex: 1;">Reset</button>
-            <button id="stop-btn" class="action-btn" style="flex: 1;">Stop</button>
-        </div>
         <h3>Cell Control</h3>
         <div class="control-group">
             <label>Select Cell:</label>
@@ -608,8 +634,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         const rotCWBtn = document.getElementById('rot-cw-btn');
         const rotCCWBtn = document.getElementById('rot-ccw-btn');
         const rotAngleInput = document.getElementById('rot-angle-input');
-        const resetBtn = document.getElementById('reset-btn');
-        const stopBtn = document.getElementById('stop-btn');
         const cellTree = document.getElementById('cell-tree');
         const statusMsg = document.getElementById('status-msg');
         const layersList = document.getElementById('layers-list');
@@ -719,6 +743,19 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     // Apply initial transform for SVG mode to fix orientation
                     updateTransform();
                 }
+            } else if (message.command === 'reset') {
+                flipState = { x: 1, y: 1 };
+                rotationState = 0;
+                updateTransform();
+                // Reset toolbar position
+                const toolbar = document.getElementById('toolbar');
+                if (toolbar) {
+                    toolbar.style.top = '20px';
+                    toolbar.style.left = '20px';
+                }
+                vscode.postMessage({ command: 'reset' });
+            } else if (message.command === 'stop') {
+                vscode.postMessage({ command: 'stop' });
             }
         });
 
@@ -1764,27 +1801,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 }
             }
             requestAnimationFrame(drawLabels);
-        }
-
-        if (resetBtn) {
-            resetBtn.addEventListener('click', () => {
-                flipState = { x: 1, y: 1 };
-                rotationState = 0;
-                updateTransform();
-                // Reset toolbar position
-                const toolbar = document.getElementById('toolbar');
-                if (toolbar) {
-                    toolbar.style.top = '20px';
-                    toolbar.style.left = '20px';
-                }
-                vscode.postMessage({ command: 'reset' });
-            });
-        }
-
-        if (stopBtn) {
-            stopBtn.addEventListener('click', () => {
-                vscode.postMessage({ command: 'stop' });
-            });
         }
 
         if (toggleControlsBtn) {

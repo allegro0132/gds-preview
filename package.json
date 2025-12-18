@@ -78,6 +78,32 @@
           "description": "Path to the Python executable. Ensure 'gdstk' is installed in this environment."
         }
       }
+    },
+    "commands": [
+      {
+        "command": "gds-preview.reset",
+        "title": "Reset View",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "gds-preview.stop",
+        "title": "Stop Loading",
+        "icon": "$(stop-circle)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "gds-preview.reset",
+          "when": "activeCustomEditorId == 'gds-preview.gdsPreview'",
+          "group": "navigation"
+        },
+        {
+          "command": "gds-preview.stop",
+          "when": "activeCustomEditorId == 'gds-preview.gdsPreview'",
+          "group": "navigation"
+        }
+      ]
     }
   },
   "scripts": {
