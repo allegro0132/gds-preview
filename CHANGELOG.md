@@ -4,6 +4,27 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.1.0] - 2025-12-18
+
+### Added
+- **Floating Toolbar**: Added a draggable toolbar for quick access to view controls.
+  - Center View.
+  - Flip Horizontal / Vertical.
+  - Rotate Clockwise / Counter-Clockwise (with custom angle input).
+- **UI Improvements**:
+  - Moved "Reset" and "Stop" buttons to the VS Code editor title bar.
+  - Improved Cell Tree View to hide empty cells and metadata.
+  - Added collapsible sidebar for controls.
+
+### Fixed
+- **SVG Engine**:
+  - Fixed inverted panning direction (Y-axis).
+  - Fixed text label alignment and rendering in SVG mode.
+  - Fixed color updates for SVG elements.
+- **General**:
+  - Fixed weird object rendering bugs.
+  - Removed obsolete `minLabelZoom` setting.
+
 ## [0.0.6] - 2025-12-18
 
 ### Added
