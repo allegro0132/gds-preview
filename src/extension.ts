@@ -900,86 +900,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             } else if (currentEngine === 'webgl') {
                 setupWebGLMode({ geometry: {}, bbox: data.bbox, layers: [] });
             } else if (currentEngine === 'svg') {
-                canvas.style.display = 'none';
-                document.getElementById('gds-webgl-canvas').style.display = 'none';
-                // Ensure text canvas is sized correctly
-                resizeCanvas();
-                // Clear text canvas when switching to SVG
-                const textCanvas = document.getElementById('text-canvas');
-                if (textCanvas) {
-                    const ctx = textCanvas.getContext('2d');
-                    ctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
-                }
-                svgContainer.style.display = 'block';
-                svgContainer.innerHTML = '';
-
-                if (data.svg_fragments) {
-                    const width = data.bbox.x_max - data.bbox.x_min;
-                    const height = data.bbox.y_max - data.bbox.y_min;
-                    // Note: GDS is Y-up, SVG is Y-down. We might need to flip, but let's stick to raw coordinates for now
-                    // or rely on svg-pan-zoom to handle orientation if the user rotates.
-                    // Actually, let's just render it. If it's flipped, we can fix it later.
-                    const viewBox = \`\${data.bbox.x_min} \${data.bbox.y_min} \${width} \${height}\`;
-
-                    let svgContent = '';
-                    for (const layerKey in data.svg_fragments) {
-                        const fragment = data.svg_fragments[layerKey];
-                        const color = layerColors[layerKey];
-                        // Wrap in group for color and opacity control
-                        svgContent += \`<g id="layer-group-\${layerKey}" fill="\${color}" stroke="\${color}" style="opacity: 0.8">\${fragment}</g>\`;
-                    }
-
-                    // Wrap for flip and viewport
-                    // Flip Y axis to match GDS (Y-up)
-                    const flippedContent = \`<g transform="scale(1, -1)">\${svgContent}</g>\`;
-                    const viewportContent = \`<g id="svg-viewport">\${flippedContent}</g>\`;
-
-                    // Create main SVG (No viewBox, let svg-pan-zoom handle it)
-                    svgContainer.innerHTML = \`<svg id="main-svg" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg" style="background-color: #000;">\${viewportContent}</svg>\`;
-
-                    // Initialize PanZoom
-                    try {
-                        // @ts-ignore
-                        panZoomInstance = svgPanZoom('#main-svg', {
-                            zoomEnabled: true,
-                            controlIconsEnabled: false,
-                            fit: true,
-                            center: true,
-                            minZoom: 0.001,
-                            maxZoom: 1000,
-                            viewportSelector: '#svg-viewport',
-                            onZoom: function(newZoom) {
-                                const pan = this.getPan();
-                                offsetX = pan.x;
-                                offsetY = pan.y;
-                                scale = newZoom;
-                                requestAnimationFrame(drawLabels);
-                            },
-                            onPan: function(newPan) {
-                                // svg-pan-zoom pan is in screen pixels
-                                // We need to sync this with our offsetX/offsetY
-                                // But wait, svg-pan-zoom applies transform to the viewport.
-                                // Our drawLabels uses offsetX/offsetY/scale to project world to screen.
-                                // If svg-pan-zoom handles the transform, we just need to know the current transform.
-                                const pan = this.getPan();
-                                offsetX = pan.x;
-                                offsetY = pan.y;
-                                scale = this.getSizes().realZoom;
-                                requestAnimationFrame(drawLabels);
-                            }
-                        });
-
-                        // Initial sync
-                        const pan = panZoomInstance.getPan();
-                        offsetX = pan.x;
-                        offsetY = pan.y;
-                        scale = panZoomInstance.getSizes().realZoom;
-                        requestAnimationFrame(drawLabels);
-
-                    } catch (e) {
-                        console.error("PanZoom init error:", e);
-                    }
-                }
+                setupSvgMode(data);
 
                 // Handle Labels for SVG mode (from separate JSON list)
                 if (data.labels && data.labels.length > 0) {
@@ -1175,9 +1096,12 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             // 1. Viewport Group (for svg-pan-zoom)
             svgContent += \`<g id="svg-pan-zoom-viewport">\`;
 
-            // 2. Flip Group (for orientation control)
-            // Initial transform - Identity (we use CSS on container now)
-            svgContent += \`<g id="gds-flip-group">\`;
+            // 2. Base Flip Group (scale 1, -1) to match GDS Y-up to SVG Y-down
+            svgContent += \`<g id="gds-base-flip-group" transform="scale(1, -1)">\`;
+
+            // 3. User Transform Group (Rotation, User Flip)
+            // Initial transform will be set by updateTransform, but we default to identity here
+            svgContent += \`<g id="gds-user-transform-group">\`;
 
             for (const layerKey of data.layers) {
                 const fragment = data.svg_fragments[layerKey];
@@ -1186,7 +1110,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     \${fragment}
                 </g>\`;
             }
-            svgContent += \`</g>\`; // Close flip group
+            svgContent += \`</g>\`; // Close user transform group
+            svgContent += \`</g>\`; // Close base flip group
             svgContent += \`</g>\`; // Close viewport group
             svgContent += '</svg>';
 
@@ -1220,8 +1145,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     requestAnimationFrame(drawLabels);
                 }
             });
-            flipState.y *= -1;
-            updateTransform();
         }
 
         function setupWebGLMode(data) {
@@ -1768,6 +1691,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 if (currentEngine === 'svg') {
                     const el = document.getElementById('layer-group-' + layerId);
                     if (el) {
+                        // Update color style for currentColor inheritance
+                        el.style.color = target.value;
+                        // Also update attributes for compatibility
                         el.setAttribute('fill', target.value);
                         el.setAttribute('stroke', target.value);
                     }
@@ -1826,14 +1752,15 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             } else if (currentEngine === 'webgl') {
                 drawWebGL();
             } else if (currentEngine === 'svg') {
-                // Apply transform via CSS to the container
-                // This ensures "View Transform" behavior (Flip Screen, Rotate Screen)
-                // and avoids interfering with svg-pan-zoom's internal coordinate system.
+                // Apply transform to the inner group
+                const group = document.getElementById('gds-user-transform-group');
+                if (group) {
+                    group.setAttribute('transform', \`scale(\${flipState.x}, \${flipState.y}) rotate(\${rotationState})\`);
+                }
+
+                // Remove CSS transform from container if present (cleanup from previous logic)
                 if (svgContainer) {
-                    // Apply Base Flip (Y-up to Y-down) by negating flipState.y
-                    svgContainer.style.transform = \`scale(\${flipState.x}, \${-flipState.y}) rotate(\${rotationState}deg)\`;
-                    // Ensure origin is center
-                    svgContainer.style.transformOrigin = 'center center';
+                    svgContainer.style.transform = '';
                 }
             }
             requestAnimationFrame(drawLabels);
