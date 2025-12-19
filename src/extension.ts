@@ -604,10 +604,28 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         </div>
         <hr style="width: 100%; border-color: #444; margin: 15px 0;">
         <h3>Layer Control</h3>
-        <div style="margin-top: 10px;">
-            <input type="checkbox" id="show-labels-checkbox">
-            <label for="show-labels-checkbox">Labels</label>
-            <input type="range" min="0" max="1" step="0.1" value="0.5" id="label-brightness-slider" style="width: 80px; margin-left: 10px; vertical-align: middle;" title="Text Brightness">
+        <div style="margin-top: 10px; display: flex; align-items: center;;">
+            <div style="display: flex; align-items: center;">
+                <input type="checkbox" id="show-labels-checkbox" style="margin-right: 4px;">
+                <label for="show-labels-checkbox">Labels</label>
+            </div>
+
+            <div style="margin-left: auto; display: flex; align-items: center; gap: 5px;">
+                <div style="display: flex; align-items: center;" title="Label Color">
+                    <!-- Hidden actual input -->
+                    <input type="color" id="label-color-picker" value="#ffffff" style="visibility: hidden; position: absolute; width: 0; height: 0;">
+
+                    <!-- Reset button (hidden by default) -->
+                    <div id="label-color-reset" style="display: none; margin-right: 4px; cursor: pointer; font-size: 14px;" title="Reset to layer colors">↺</div>
+
+                    <!-- Custom trigger -->
+                    <div id="label-color-trigger" style="width: 25px; height: 10px; border: 1px solid var(--vscode-input-border); cursor: pointer; background: linear-gradient(135deg, red, orange, yellow, green, blue, indigo, violet);" title="Click to set global color"></div>
+                </div>
+
+                <div style="display: flex; align-items: center;" title="Text Brightness">
+                    <input type="range" min="0" max="1" step="0.1" value="0.5" id="label-brightness-slider" style="width: 50px;">
+                </div>
+            </div>
         </div>
         <div id="layers-list"></div>
     </div>
@@ -717,6 +735,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let layerOpacities = {};
         let showLabels = false;
         let labelBrightness = 0.5;
+        let globalLabelColor = null;
         let currentEngine = '${engine}';
         let fastModeThreshold = ${fastModeThreshold};
         let labelFontSize = ${labelFontSize};
@@ -2012,8 +2031,13 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 if (!activeLayers.has(layerKey)) continue;
 
                 const layerLabels = labels[layerKey];
-                const baseColor = layerColors[layerKey] || '#ffffff';
-                ctx.fillStyle = darken(baseColor, labelBrightness);
+
+                if (globalLabelColor) {
+                    ctx.fillStyle = darken(globalLabelColor, labelBrightness);
+                } else {
+                    const baseColor = layerColors[layerKey] || '#ffffff';
+                    ctx.fillStyle = darken(baseColor, labelBrightness);
+                }
 
                 for (const label of layerLabels) {
                     // label: { text, x, y, ... }
@@ -2237,6 +2261,19 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             requestAnimationFrame(drawLabels);
         });
 
+        controls.addEventListener('click', function(event) {
+            const target = event.target;
+            if (target.id === 'label-color-trigger') {
+                document.getElementById('label-color-picker').click();
+            }
+            if (target.id === 'label-color-reset') {
+                globalLabelColor = null;
+                document.getElementById('label-color-trigger').style.background = 'linear-gradient(135deg, red, orange, yellow, green, blue, indigo, violet)';
+                target.style.display = 'none';
+                requestAnimationFrame(drawLabels);
+            }
+        });
+
         controls.addEventListener('change', function(event) {
             const target = event.target;
             if (target.id === 'cell-select') return;
@@ -2249,6 +2286,20 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
             if (target.id === 'label-brightness-slider') {
                 labelBrightness = parseFloat(target.value);
+                requestAnimationFrame(drawLabels);
+                return;
+            }
+
+            if (target.id === 'label-color-picker') {
+                globalLabelColor = target.value;
+                document.getElementById('label-color-trigger').style.background = globalLabelColor;
+                document.getElementById('label-color-reset').style.display = 'inline-block';
+                requestAnimationFrame(drawLabels);
+                return;
+            }
+
+            if (target.id === 'label-color-picker') {
+                globalLabelColor = target.value;
                 requestAnimationFrame(drawLabels);
                 return;
             }
