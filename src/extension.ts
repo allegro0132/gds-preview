@@ -2160,8 +2160,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     const y = label.y;
                     const text = label.text;
 
-                    if (x < vMinX || x > vMaxX || y < vMinY || y > vMaxY) continue;
-
                     // Project to screen coordinates manually
                     // World -> Rotation -> UserFlip -> BaseFlip -> Scale -> Offset
 
