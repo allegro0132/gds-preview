@@ -335,6 +335,52 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
                             i // chunk_size) % flow_control_step == 0:
                         sys.stdin.readline()
 
+        # 3.5 Stream Labels (Flattened)
+        # We flatten labels on the server side so the frontend can just draw them
+        labels_by_layer = {}
+
+        for cell_name in needed_definitions:
+            c = cell_map.get(cell_name)
+            if not c:
+                continue
+
+            cell_labels = c.labels
+            if not cell_labels:
+                continue
+
+            cell_instances = instances.get(cell_name, [])
+
+            for l in cell_labels:
+                layer_key = f"{l.layer}_{l.texttype}"
+                if layer_key not in labels_by_layer:
+                    labels_by_layer[layer_key] = []
+
+                # Original position
+                p_local = np.array([l.origin[0], l.origin[1], 1.0])
+
+                for t_global in cell_instances:
+                    # t_global is 3x3 matrix
+                    # p_global = t_global @ p_local
+                    p_global = t_global @ p_local
+
+                    labels_by_layer[layer_key].append({
+                        "text": l.text,
+                        "x": p_global[0],
+                        "y": p_global[1],
+                        "rotation": l.rotation,
+                        "magnification": l.magnification,
+                        "anchor": l.anchor
+                    })
+
+        # Send labels
+        for layer_key, lbls in labels_by_layer.items():
+            print(json.dumps({
+                "layerKey": layer_key,
+                "labels": lbls
+            },
+                             cls=NumpyEncoder))
+            sys.stdout.flush()
+
         # 4. Stream Instances
         instance_chunk_size = chunk_size
 
