@@ -1535,7 +1535,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             }, [buffer]); // Transfer buffer ownership
             // flow control
             if (flowControlStep !== -1 && (chunkIndex % flowControlStep === 0 || chunkIndex === totalChunks - 1)) {
-                vscode.postMessage({ command: 'ready_for_next' });
+                // Yield to main thread to allow UI updates and GC before requesting next chunk
+                setTimeout(() => {
+                    vscode.postMessage({ command: 'ready_for_next' });
+                }, 0);
             }
             updateStatus(\`Loading \${layerKey} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
         }
