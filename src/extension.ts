@@ -1972,6 +1972,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
                 const buffers = layerBuffers[layerKey];
                 // Support both single buffer (legacy/small files) and array of buffers (chunked)
+                if (!buffers) continue;
                 const bufferList = Array.isArray(buffers) ? buffers : [buffers];
 
                 // Convert hex color to rgba
