@@ -14,7 +14,7 @@ class NumpyEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
+def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None, is_negative=False):
     """
     Converts a GDSII file into multiple SVG fragments (inner <g> content), one for each layer.
     Outputs a JSON object to stdout with the results.
@@ -109,6 +109,11 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
                   file=sys.stderr)
             sys.exit(1)
 
+        # Create BBox polygon for negative view
+        bbox_poly = None
+        if is_negative:
+            bbox_poly = gdstk.rectangle(bbox[0], bbox[1])
+
         # Find all unique layers by iterating through the cell's geometry
         unique_layers_datatypes = set()
         for poly in flattened_cell.polygons:
@@ -162,6 +167,21 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None):
 
             if not polygons_for_layer:
                 continue
+
+            # Apply negative view logic if enabled
+            if is_negative and bbox_poly:
+                # Subtract polygons from bbox
+                try:
+                    polygons_for_layer = gdstk.boolean([bbox_poly], polygons_for_layer, 'not')
+                    # Ensure the new polygons have the correct layer/datatype so the style matches
+                    for p in polygons_for_layer:
+                        p.layer = layer
+                        p.datatype = datatype
+                except Exception as e:
+                    print(f"Warning: Boolean operation failed for layer {layer_key}: {e}", file=sys.stderr)
+                    # Fallback to original polygons or skip?
+                    # If boolean fails, we probably shouldn't show anything or show original
+                    pass
 
             # Only add polygons to the SVG, NOT labels
             layer_cell.add(*polygons_for_layer)
@@ -243,13 +263,22 @@ if __name__ == "__main__":
     if len(sys.argv) < 3:
         print(json.dumps({
             "error":
-                "Usage: python gds_to_svg.py <input_gds_path> <output_dir_path> [cell_name]"
+                "Usage: python gds_to_svg.py <input_gds_path> <output_dir_path> [cell_name] [--negative]"
         }),
               file=sys.stderr)
         sys.exit(1)
 
     gds_input_path = sys.argv[1]
     output_dir_path = sys.argv[2]
-    target_cell = sys.argv[3] if len(sys.argv) > 3 else None
 
-    gds_to_layered_svgs(gds_input_path, output_dir_path, target_cell)
+    target_cell = None
+    is_negative = False
+
+    # Parse remaining arguments
+    for arg in sys.argv[3:]:
+        if arg == "--negative":
+            is_negative = True
+        elif not arg.startswith("--"):
+            target_cell = arg
+
+    gds_to_layered_svgs(gds_input_path, output_dir_path, target_cell, is_negative)

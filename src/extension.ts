@@ -88,6 +88,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
         let currentCell: string | undefined;
         let currentProcess: cp.ChildProcess | undefined;
+        let isNegative = false;
 
         // Set initial HTML content
         const config = vscode.workspace.getConfiguration('gdsPreview');
@@ -99,7 +100,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const pythonPath = config.get<string>('pythonPath', 'python');
         const enableProfiling = config.get<boolean>('enableProfiling', false);
 
-        const updateWebview = (cellName?: string) => {
+        const updateWebview = (cellName?: string, isNegativeMode?: boolean) => {
             // console.log(`updateWebview called with cellName: ${cellName}`);
             // Kill existing process if any
             if (currentProcess) {
@@ -125,7 +126,22 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
             const args = [pythonScriptPath, filePath, tempDir];
             args.push(cellName || "");
-            args.push(chunkSize.toString());
+
+            if (currentRenderingEngine === 'svg' && isNegativeMode) {
+                args.push("--negative");
+            } else {
+                // Only pass chunk size for canvas/webgl mode or if not negative?
+                // Actually gds_to_canvas expects chunk size as 4th arg.
+                // gds_to_svg expects cell name as 3rd (optional) and flags after.
+                // We need to be careful about argument order.
+
+                // gds_to_canvas: path, out_dir, cell_name, chunk_size
+                // gds_to_svg: path, out_dir, cell_name, [--negative]
+
+                if (currentRenderingEngine !== 'svg') {
+                    args.push(chunkSize.toString());
+                }
+            }
 
             console.log(`Running python script: ${pythonPath} ${args.join(' ')}`);
             if (enableProfiling) {
@@ -267,7 +283,15 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         currentCell = message.cellName;
                         updateWebview(message.cellName);
                         return;
+                    case 'reloadNegative':
+                        isNegative = message.isNegative;
+                        updateWebview(currentCell, message.isNegative);
+                        return;
+                    case 'syncNegativeState':
+                        isNegative = message.isNegative;
+                        return;
                     case 'reset':
+                        isNegative = false;
                         updateWebview(currentCell);
                         return;
                     case 'stop':
@@ -310,7 +334,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 });
             }
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {
-                updateWebview(currentCell);
+                updateWebview(currentCell, isNegative);
             }
             if (e.affectsConfiguration('gdsPreview.maxWorkers') || e.affectsConfiguration('gdsPreview.chunkSize')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
@@ -660,6 +684,13 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             <button id="rot-ccw-btn" class="toolbar-btn" title="Rotate CCW">
                 <svg viewBox="0 0 24 24"><path d="M8.45 5.55L13 1v3.07c3.94.49 7 3.85 7 7.93s-3.05 7.44-7 7.93v-2.02c2.84-.48 5-2.94 5-5.91s-2.16-5.43-5-5.91V10l-4.55-4.45zM4.07 11c.17-1.39.72-2.73 1.62-3.89l1.42 1.42c-.54.75-.88 1.6-1.02 2.47H4.07zm6.93 6.9v2.02c-1.39-.17-2.74-.71-3.9-1.61l1.44-1.44c.75.54 1.59.89 2.46 1.03zm-3.89-2.42l-1.42 1.41c-.9-1.16-1.45-2.5-1.62-3.89h2.02c.14.87.48 1.72 1.02 2.48z"/></svg>
             </button>
+
+            <div class="toolbar-separator"></div>
+
+            <!-- Negative View -->
+            <button id="negative-view-btn" class="toolbar-btn" title="Toggle Negative View">
+                <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z M8 8h8v8H8z" fill="currentColor" fill-rule="evenodd"/></svg>
+            </button>
         </div>
 
         <button id="toggle-controls-btn" title="Toggle Sidebar">❮</button>
@@ -744,11 +775,14 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let rotationState = 0; // Degrees
         let expandedNodes = new Set(); // Persist tree expansion state
         let isViewFitted = false;
+        let isNegative = false;
+        let svgFragments = {};
 
         // WebGL State
         let gl = null;
         let glProgram = null;
         let layerBuffers = {}; // { layerKey: { vertexBuffer, vertexCount, colorLocation, matrixLocation } }
+        let bboxBuffer = null;
 
         // Worker Pool for Triangulation
         const workerCode = \`
@@ -931,6 +965,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
         // Elements
         const canvas = document.getElementById('gds-canvas');
+        const scratchCanvas = document.createElement('canvas');
+        const scratchCtx = scratchCanvas.getContext('2d');
         const svgContainer = document.getElementById('svg-container');
         const ctx = canvas.getContext('2d');
         const controls = document.getElementById('controls');
@@ -1106,6 +1142,17 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     toolbar.style.top = '20px';
                     toolbar.style.left = '20px';
                 }
+
+                // Reset Negative View
+                isNegative = false;
+                const negBtn = document.getElementById('negative-view-btn');
+                if (negBtn) {
+                    negBtn.style.backgroundColor = '';
+                }
+
+                requestAnimationFrame(drawLabels);
+                if (currentEngine === 'canvas') requestAnimationFrame(draw);
+
                 vscode.postMessage({ command: 'reset' });
             } else if (message.command === 'stop') {
                 vscode.postMessage({ command: 'stop' });
@@ -1418,6 +1465,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             } else if (currentEngine === 'webgl') {
                 setupWebGLMode({ geometry: {}, bbox: data.bbox, layers: [] });
             } else if (currentEngine === 'svg') {
+                // Ensure svgFragments is populated from data if available
+                if (data.svg_fragments) {
+                    svgFragments = data.svg_fragments;
+                }
                 setupSvgMode(data);
                 updateTransform();
 
@@ -1528,6 +1579,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             layerOpacities = {};
 
             allLayers = data.layers;
+            if (data.svg_fragments) {
+                svgFragments = data.svg_fragments;
+            } else {
+                svgFragments = {};
+            }
 
             allLayers.forEach(layerKey => {
                 activeLayers.add(layerKey);
@@ -1678,9 +1734,13 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             const renderOrder = [...allLayers].reverse();
 
             for (const layerKey of renderOrder) {
-                const fragment = data.svg_fragments[layerKey];
+                const fragment = svgFragments[layerKey] || "";
                 const opacity = layerOpacities[layerKey] !== undefined ? layerOpacities[layerKey] : 0.8;
-                svgContent += \`<g id="layer-group-\${layerKey}" class="gds-layer" style="color: \${layerColors[layerKey]}; opacity: \${opacity}; display: block;">
+                const color = layerColors[layerKey] || '#888888';
+
+                // In Negative Mode (backend generated), the fragment IS the negative geometry (holes punched).
+                // So we just render it normally.
+                svgContent += \`<g id="layer-group-\${layerKey}" class="gds-layer" style="color: \${color}; opacity: \${opacity}; display: inline;">
                     \${fragment}
                 </g>\`;
             }
@@ -1730,7 +1790,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             geometry = data.geometry;
             bbox = data.bbox;
 
-            gl = glCanvas.getContext('webgl');
+            gl = glCanvas.getContext('webgl', { stencil: true });
             if (!gl) {
                 updateStatus("WebGL not supported");
                 return;
@@ -1791,6 +1851,21 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             // because we discard it to save memory.
             // But if we switch FROM Canvas TO WebGL, we need to process existing geometry.
             layerBuffers = {};
+
+            // Create BBox Buffer for Negative View
+            if (bbox) {
+                const bboxVertices = [
+                    bbox.x_min, bbox.y_min,
+                    bbox.x_max, bbox.y_min,
+                    bbox.x_min, bbox.y_max,
+                    bbox.x_min, bbox.y_max,
+                    bbox.x_max, bbox.y_min,
+                    bbox.x_max, bbox.y_max
+                ];
+                bboxBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, bboxBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(bboxVertices), gl.STATIC_DRAW);
+            }
 
             for (const layerKey in geometry) {
                 const polys = geometry[layerKey];
@@ -1862,7 +1937,14 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
             gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
             gl.clearColor(0, 0, 0, 0); // Transparent background
-            gl.clear(gl.COLOR_BUFFER_BIT);
+
+            if (isNegative) {
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
+                gl.enable(gl.STENCIL_TEST);
+            } else {
+                gl.clear(gl.COLOR_BUFFER_BIT);
+                gl.disable(gl.STENCIL_TEST);
+            }
 
             gl.useProgram(glProgram);
 
@@ -1899,13 +1981,46 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 const b = parseInt(hex.slice(5, 7), 16) / 255;
                 const a = layerOpacities[layerKey] !== undefined ? layerOpacities[layerKey] : 0.8;
 
-                gl.uniform4f(colorLocation, r, g, b, a);
+                if (isNegative) {
+                    // Pass 1: Draw polygons to stencil buffer
+                    gl.clear(gl.STENCIL_BUFFER_BIT);
+                    gl.colorMask(false, false, false, false);
+                    gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
+                    gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
 
-                for (const layerData of bufferList) {
-                    gl.bindBuffer(gl.ARRAY_BUFFER, layerData.buffer);
-                    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
-                    gl.drawArrays(gl.TRIANGLES, 0, layerData.count);
+                    for (const layerData of bufferList) {
+                        gl.bindBuffer(gl.ARRAY_BUFFER, layerData.buffer);
+                        gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+                        gl.drawArrays(gl.TRIANGLES, 0, layerData.count);
+                    }
+
+                    // Pass 2: Draw BBox where stencil != 1
+                    gl.colorMask(true, true, true, true);
+                    gl.stencilFunc(gl.NOTEQUAL, 1, 0xFF);
+                    gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+
+                    gl.uniform4f(colorLocation, r, g, b, a);
+
+                    if (bboxBuffer) {
+                        gl.bindBuffer(gl.ARRAY_BUFFER, bboxBuffer);
+                        gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+                        gl.drawArrays(gl.TRIANGLES, 0, 6);
+                    }
+
+                } else {
+                    gl.uniform4f(colorLocation, r, g, b, a);
+
+                    for (const layerData of bufferList) {
+                        gl.bindBuffer(gl.ARRAY_BUFFER, layerData.buffer);
+                        gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+                        gl.drawArrays(gl.TRIANGLES, 0, layerData.count);
+                    }
                 }
+            }
+
+            // Restore state
+            if (isNegative) {
+                gl.disable(gl.STENCIL_TEST);
             }
         }
 
@@ -2118,16 +2233,54 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 // Render in reverse dictionary order (Z -> A) so A is drawn last (on top)
                 const renderOrder = [...allLayers].reverse();
 
+                // Ensure scratch canvas size matches
+                if (isNegative) {
+                    if (scratchCanvas.width !== canvas.width || scratchCanvas.height !== canvas.height) {
+                        scratchCanvas.width = canvas.width;
+                        scratchCanvas.height = canvas.height;
+                    }
+                }
+
                 for (const layerKey of renderOrder) {
                     if (!activeLayers.has(layerKey)) continue;
 
                     const polys = geometry[layerKey];
                     if (!polys) continue;
 
-                    ctx.fillStyle = layerColors[layerKey] || '#888';
-                    ctx.strokeStyle = layerColors[layerKey] || '#888';
+                    const layerColor = layerColors[layerKey] || '#888';
+                    const layerOpacity = layerOpacities[layerKey] !== undefined ? layerOpacities[layerKey] : 0.8;
 
-                    ctx.beginPath();
+                    let targetCtx = ctx;
+
+                    if (isNegative) {
+                        // Use scratch canvas for negative composition
+                        targetCtx = scratchCtx;
+                        targetCtx.clearRect(0, 0, targetCtx.canvas.width, targetCtx.canvas.height);
+                        targetCtx.save();
+
+                        // Apply same transform to scratch canvas
+                        targetCtx.translate(offsetX, offsetY);
+                        targetCtx.scale(scale, -scale);
+                        targetCtx.scale(flipState.x, flipState.y);
+                        targetCtx.rotate(rotationState * Math.PI / 180);
+
+                        // Draw BBox (The "Sheet")
+                        targetCtx.fillStyle = layerColor;
+                        targetCtx.globalAlpha = layerOpacity;
+                        targetCtx.beginPath();
+                        targetCtx.rect(bbox.x_min, bbox.y_min, bbox.x_max - bbox.x_min, bbox.y_max - bbox.y_min);
+                        targetCtx.fill();
+
+                        // Prepare to punch holes
+                        targetCtx.globalCompositeOperation = 'destination-out';
+                        targetCtx.globalAlpha = 1.0; // Fully opaque eraser
+                        targetCtx.fillStyle = '#000000'; // Color doesn't matter
+                    } else {
+                        ctx.fillStyle = layerColor;
+                        ctx.strokeStyle = layerColor;
+                    }
+
+                    targetCtx.beginPath();
                     for (const poly of polys) {
                         // Culling check
                         if (poly.bbox) {
@@ -2153,24 +2306,33 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                         if (len < 2) continue;
 
                         if (isFlat) {
-                            ctx.moveTo(poly[0], poly[1]);
+                            targetCtx.moveTo(poly[0], poly[1]);
                             for (let i = 1; i < len; i++) {
-                                ctx.lineTo(poly[i * 2], poly[i * 2 + 1]);
+                                targetCtx.lineTo(poly[i * 2], poly[i * 2 + 1]);
                             }
                         } else {
-                            ctx.moveTo(poly[0][0], poly[0][1]);
+                            targetCtx.moveTo(poly[0][0], poly[0][1]);
                             for (let i = 1; i < poly.length; i++) {
-                                ctx.lineTo(poly[i][0], poly[i][1]);
+                                targetCtx.lineTo(poly[i][0], poly[i][1]);
                             }
                         }
-                        ctx.closePath();
+                        targetCtx.closePath();
                         polyCount++;
                     }
-                    ctx.globalAlpha = layerOpacities[layerKey] !== undefined ? layerOpacities[layerKey] : 0.8;
-                    ctx.fill();
-                    ctx.globalAlpha = 1.0;
-                    ctx.lineWidth = 1 / scale;
-                    ctx.stroke();
+
+                    if (isNegative) {
+                        targetCtx.fill(); // Punch holes
+                        targetCtx.restore(); // Restore transform and composite op
+
+                        // Draw result to main canvas
+                        ctx.save();
+                        ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform to draw full screen image
+                        ctx.drawImage(scratchCanvas, 0, 0);
+                        ctx.restore();
+                    } else {
+                        ctx.globalAlpha = layerOpacity;
+                        ctx.fill();
+                    }
                 }
 
                 ctx.restore();
@@ -2347,6 +2509,35 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         });
 
         recenterBtn.addEventListener('click', fitView);
+
+        const negativeViewBtn = document.getElementById('negative-view-btn');
+        if (negativeViewBtn) {
+            negativeViewBtn.addEventListener('click', () => {
+                isNegative = !isNegative;
+                if (isNegative) {
+                    negativeViewBtn.style.backgroundColor = 'var(--vscode-toolbar-activeBackground)';
+                } else {
+                    negativeViewBtn.style.backgroundColor = '';
+                }
+
+                // Always sync state with extension host
+                vscode.postMessage({
+                    command: 'syncNegativeState',
+                    isNegative: isNegative
+                });
+
+                if (currentEngine === 'canvas') requestAnimationFrame(draw);
+                else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
+                else if (currentEngine === 'svg') {
+                    // Trigger reload with negative flag
+                    vscode.postMessage({
+                        command: 'reloadNegative',
+                        isNegative: isNegative
+                    });
+                }
+            });
+        }
+
 
         if (flipHBtn) {
             flipHBtn.addEventListener('click', () => {
