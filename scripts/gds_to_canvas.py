@@ -20,7 +20,8 @@ class NumpyEncoder(json.JSONEncoder):
 def gds_to_geometry(gds_path,
                     output_dir,
                     target_cell_name=None,
-                    chunk_size=2000):
+                    chunk_size=2000,
+                    flow_control_step=5):
     """
     Converts a GDSII file into geometry data (polygons), one for each layer.
     Outputs a JSON object to stdout with the results.
@@ -110,7 +111,8 @@ def gds_to_geometry(gds_path,
         flattened_cell.paths.clear()
 
         t_flatten = time.time()
-        print(f"PROFILE: Flatten & Path Conv: {t_flatten - t_select:.4f}s", file=sys.stderr)
+        print(f"PROFILE: Flatten & Path Conv: {t_flatten - t_select:.4f}s",
+              file=sys.stderr)
 
         # Get bounding box of the whole cell to ensure all SVGs have the same viewport
         bbox = flattened_cell.bounding_box()
@@ -170,7 +172,8 @@ def gds_to_geometry(gds_path,
         sys.stdout.flush()
 
         t_meta = time.time()
-        print(f"PROFILE: Metadata Prep: {t_meta - t_flatten:.4f}s", file=sys.stderr)
+        print(f"PROFILE: Metadata Prep: {t_meta - t_flatten:.4f}s",
+              file=sys.stderr)
 
         # Second pass: stream layer data
 
@@ -209,7 +212,8 @@ def gds_to_geometry(gds_path,
 
             # Stream polygons in chunks
             total_polys = len(polygons_for_layer)
-            print(f"PROFILE: Layer {layer_key} has {total_polys} polygons", file=sys.stderr)
+            print(f"PROFILE: Layer {layer_key} has {total_polys} polygons",
+                  file=sys.stderr)
 
             for i in range(0, total_polys, chunk_size):
                 chunk_polys = polygons_for_layer[i:i + chunk_size]
@@ -222,7 +226,7 @@ def gds_to_geometry(gds_path,
                 buffer_parts.append(struct.pack('<I', len(chunk_polys)))
 
                 for p in chunk_polys:
-                    points = p.points # Nx2 numpy array
+                    points = p.points  # Nx2 numpy array
                     n_points = len(points)
                     # 2. Point count (uint32)
                     buffer_parts.append(struct.pack('<I', n_points))
@@ -236,17 +240,26 @@ def gds_to_geometry(gds_path,
                 # Format: CHUNK_B64|{"layerKey":..., "data": "..."}
                 print("CHUNK_B64|" + json.dumps(
                     {
-                        "layerKey": layer_key,
-                        "chunkIndex": i // chunk_size,
-                        "totalChunks": (total_polys + chunk_size - 1) // chunk_size,
-                        "data": b64_data
+                        "layerKey":
+                            layer_key,
+                        "chunkIndex":
+                            i // chunk_size,
+                        "totalChunks": (total_polys + chunk_size - 1) //
+                                       chunk_size,
+                        "data":
+                            b64_data
                     },
                     separators=(',', ':')))
                 sys.stdout.flush()
+                # flow control
+                if flow_control_step != -1 and (
+                        i // chunk_size) % flow_control_step == 0:
+                    sys.stdin.readline()
 
         t_end = time.time()
         print(f"PROFILE: Streaming: {t_end - t_meta:.4f}s", file=sys.stderr)
-        print(f"PROFILE: Total Python Time: {t_end - t_start:.4f}s", file=sys.stderr)
+        print(f"PROFILE: Total Python Time: {t_end - t_start:.4f}s",
+              file=sys.stderr)
 
         sys.exit(0)
 
@@ -271,5 +284,7 @@ if __name__ == "__main__":
         target_cell = None
 
     chunk_size = int(sys.argv[4]) if len(sys.argv) > 4 else 2000
+    flow_control_step = int(sys.argv[5]) if len(sys.argv) > 5 else 5
 
-    gds_to_geometry(gds_input_path, output_dir_path, target_cell, chunk_size)
+    gds_to_geometry(gds_input_path, output_dir_path, target_cell, chunk_size,
+                    flow_control_step)

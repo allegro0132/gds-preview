@@ -99,6 +99,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const chunkSize = config.get<number>('chunkSize', 2000);
         const pythonPath = config.get<string>('pythonPath', 'python');
         const enableProfiling = config.get<boolean>('enableProfiling', false);
+        const flowControlStep = config.get<number>('flowControlStep', 5);
 
         const updateWebview = (cellName?: string, isNegativeMode?: boolean) => {
             // console.log(`updateWebview called with cellName: ${cellName}`);
@@ -112,6 +113,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             const currentConfig = vscode.workspace.getConfiguration('gdsPreview');
             const currentRenderingEngine = currentConfig.get<string>('renderingEngine', 'canvas');
             const chunkSize = currentConfig.get<number>('chunkSize', 2000);
+            const flowControlStep = currentConfig.get<number>('flowControlStep', 5);
             const enableProfiling = currentConfig.get<boolean>('enableProfiling', false);
 
             const tempDir = path.join(os.tmpdir(), `gds_preview_data_${Date.now()}`);
@@ -140,6 +142,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
                 if (currentRenderingEngine !== 'svg') {
                     args.push(chunkSize.toString());
+                    args.push(flowControlStep.toString());
                 }
             }
 
@@ -276,6 +279,11 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                     console.log(`[Webview Error]: ${message.message}`);
                     return;
                 }
+                if (message.command === 'ready_for_next') {
+                    // unset flow control signal
+                    currentProcess?.stdin?.write("\n");
+                    return;
+                }
 
                 console.log(`Received message: ${JSON.stringify(message)}`);
                 switch (message.command) {
@@ -317,7 +325,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             this.context.subscriptions
         );
 
-        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling);
+        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep);
         console.log("Webview HTML set");
 
         // Listen for configuration changes
@@ -336,7 +344,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {
                 updateWebview(currentCell, isNegative);
             }
-            if (e.affectsConfiguration('gdsPreview.maxWorkers') || e.affectsConfiguration('gdsPreview.chunkSize')) {
+            if (e.affectsConfiguration('gdsPreview.maxWorkers') || e.affectsConfiguration('gdsPreview.chunkSize') || e.affectsConfiguration('gdsPreview.flowControlStep')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
                 const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
                 const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
@@ -345,14 +353,15 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 const chunkSize = config.get<number>('chunkSize', 2000);
                 const pythonPath = config.get<string>('pythonPath', 'python');
                 const enableProfiling = config.get<boolean>('enableProfiling', false);
+                const flowControlStep = config.get<number>('flowControlStep', 5);
 
-                webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling);
+                webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep);
             }
         }, null, this.context.subscriptions);
     }
 }
 
-function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string, enableProfiling: boolean): string {
+function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string, enableProfiling: boolean, flowControlStep: number): string {
     const nonce = getNonce();
     const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
     const earcutCdn = "https://unpkg.com/earcut@2.2.4/dist/earcut.min.js";
@@ -719,6 +728,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 <input type="number" id="chunk-size-input" value="${chunkSize}" min="100" step="100">
             </div>
             <div class="control-group">
+                <label for="flow-control-step-input">Flow Control Step:</label>
+                <input type="number" id="flow-control-step-input" value="${flowControlStep}" min="-1" step="1" title="-1 to disable">
+            </div>
+            <div class="control-group">
                 <label for="font-size-input">Label Font Size:</label>
                 <input type="number" id="font-size-input" value="${labelFontSize}" min="1" step="1">
             </div>
@@ -771,6 +784,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let fastModeThreshold = ${fastModeThreshold};
         let labelFontSize = ${labelFontSize};
         let enableProfiling = ${enableProfiling};
+        let flowControlStep = ${flowControlStep};
         let flipState = { x: 1, y: 1 };
         let rotationState = 0; // Degrees
         let expandedNodes = new Set(); // Persist tree expansion state
@@ -988,6 +1002,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         const fastModeInput = document.getElementById('fast-mode-input');
         const maxWorkersInput = document.getElementById('max-workers-input');
         const chunkSizeInput = document.getElementById('chunk-size-input');
+        const flowControlStepInput = document.getElementById('flow-control-step-input');
         const fontSizeInput = document.getElementById('font-size-input');
         const minZoomInput = document.getElementById('min-zoom-input');
         const pythonPathInput = document.getElementById('python-path-input');
@@ -1029,6 +1044,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 vscode.postMessage({
                     command: 'updateConfig',
                     key: 'chunkSize',
+                    value: parseInt(e.target.value)
+                });
+            });
+        }
+
+        if (flowControlStepInput) {
+            flowControlStepInput.addEventListener('change', (e) => {
+                vscode.postMessage({
+                    command: 'updateConfig',
+                    key: 'flowControlStep',
                     value: parseInt(e.target.value)
                 });
             });
@@ -1508,7 +1533,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 isBinary: true,
                 returnPolygons: currentEngine === 'canvas'
             }, [buffer]); // Transfer buffer ownership
-
+            // flow control
+            if (flowControlStep !== -1 && (chunkIndex % flowControlStep === 0 || chunkIndex === totalChunks - 1)) {
+                vscode.postMessage({ command: 'ready_for_next' });
+            }
             updateStatus(\`Loading \${layerKey} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
         }
 

@@ -82,6 +82,11 @@
           "default": 2000,
           "description": "Number of polygons per chunk for streaming data from Python to the extension."
         },
+        "gdsPreview.flowControlStep": {
+          "type": "number",
+          "default": 5,
+          "description": "Number of chunks to send before waiting for a signal from the frontend. Set to -1 to disable flow control."
+        },
         "gdsPreview.pythonPath": {
           "type": "string",
           "default": "python",
