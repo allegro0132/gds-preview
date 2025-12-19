@@ -5,6 +5,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as readline from 'readline';
 
+const MSG_JSON = 0x01;
+const MSG_BINARY_GEOM = 0x02;
+const HEADER_SIZE = 5;
+
 export function activate(context: vscode.ExtensionContext) {
     console.log('Congratulations, your extension "gds-preview" is now active!');
     console.log(`Extension path: ${context.extensionPath}`);
@@ -163,61 +167,140 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 }
             });
 
-            // Use readline to stream stdout line by line
-            const rl = readline.createInterface({
-                input: process.stdout,
-                crlfDelay: Infinity
-            });
+            // // Use readline to stream stdout line by line
+            // const rl = readline.createInterface({
+            //     input: process.stdout,
+            //     crlfDelay: Infinity
+            // });
 
-            let isFirstLine = true;
+            // let isFirstLine = true;
 
-            let currentChunkMeta: any = null;
+            // let currentChunkMeta: any = null;
 
-            rl.on('line', (line) => {
-                if (isFirstLine) {
-                    console.log(`[PythonProcess] First byte received`);
-                }
-                // console.log(`Received line from Python: ${line.substring(0, 100)}...`);
-                try {
-                    if (!line.trim()) return;
+            // rl.on('line', (line) => {
+            //     if (isFirstLine) {
+            //         console.log(`[PythonProcess] First byte received`);
+            //     }
+            //     // console.log(`Received line from Python: ${line.substring(0, 100)}...`);
+            //     try {
+            //         if (!line.trim()) return;
 
-                    if (line.startsWith("CHUNK_B64|")) {
-                        const chunkInfo = JSON.parse(line.substring(10));
-                        webviewPanel.webview.postMessage({
-                            command: 'addLayerChunkB64',
-                            layerKey: chunkInfo.layerKey,
-                            chunkIndex: chunkInfo.chunkIndex,
-                            totalChunks: chunkInfo.totalChunks,
-                            data: chunkInfo.data
-                        });
-                    } else {
-                        // Legacy/Metadata handling
-                        const data = JSON.parse(line);
+            //         if (line.startsWith("CHUNK_B64|")) {
+            //             const chunkInfo = JSON.parse(line.substring(10));
+            //             webviewPanel.webview.postMessage({
+            //                 command: 'addLayerChunkB64',
+            //                 layerKey: chunkInfo.layerKey,
+            //                 chunkIndex: chunkInfo.chunkIndex,
+            //                 totalChunks: chunkInfo.totalChunks,
+            //                 data: chunkInfo.data
+            //             });
+            //         } else {
+            //             // Legacy/Metadata handling
+            //             const data = JSON.parse(line);
 
-                        if (isFirstLine) {
-                            console.log("[PythonProcess] Sending initialize command to webview");
-                            // Metadata
-                            webviewPanel.webview.postMessage({
-                                command: 'initialize',
-                                data: data,
-                                engine: currentRenderingEngine
-                            }).then(
-                                (success) => console.log(`[Webview Log] Initialize message delivery status: ${success}`),
-                                (err) => console.log(`[Webview Log] Initialize message delivery failed: ${err}`)
+            //             if (isFirstLine) {
+            //                 console.log("[PythonProcess] Sending initialize command to webview");
+            //                 // Metadata
+            //                 webviewPanel.webview.postMessage({
+            //                     command: 'initialize',
+            //                     data: data,
+            //                     engine: currentRenderingEngine
+            //                 }).then(
+            //                     (success) => console.log(`[Webview Log] Initialize message delivery status: ${success}`),
+            //                     (err) => console.log(`[Webview Log] Initialize message delivery failed: ${err}`)
+            //                 );
+            //                 isFirstLine = false;
+            //             } else if (data.layerKey && data.labels) {
+            //                 // Label chunk (still JSON)
+            //                 webviewPanel.webview.postMessage({
+            //                     command: 'addLayerChunk',
+            //                     layerKey: data.layerKey,
+            //                     data: data
+            //                 });
+            //             }
+            //         }
+            //     } catch (e: any) {
+            //         console.log(`Failed to parse line: ${e.message}`);
+            //         // Don't show error message for every line, just log it
+            //     }
+            // });
+            let remainingBuffer = Buffer.alloc(0);
+            let isInitialized = false; // 替代原来的 isFirstLine
+
+            process.stdout.on('data', (chunk: Buffer) => {
+                remainingBuffer = Buffer.concat([remainingBuffer, chunk]);
+
+                while (remainingBuffer.length >= HEADER_SIZE) {
+                    const payloadLength = remainingBuffer.readUInt32LE(0);
+                    const msgType = remainingBuffer.readUInt8(4);
+
+                    if (remainingBuffer.length < HEADER_SIZE + payloadLength) break;
+
+                    const payload = remainingBuffer.slice(HEADER_SIZE, HEADER_SIZE + payloadLength);
+                    remainingBuffer = remainingBuffer.slice(HEADER_SIZE + payloadLength);
+
+                    try {
+                        // --- 兼容层：处理所有 JSON 格式的消息 ---
+                        if (msgType === MSG_JSON) {
+                            const data = JSON.parse(payload.toString('utf-8'));
+
+                            // 兼容逻辑 A：元数据初始化 (Metadata)
+                            if (!isInitialized && data.all_cells && data.bbox) {
+                                console.log("[PythonProcess] Sending initialize command to webview");
+                                webviewPanel.webview.postMessage({
+                                    command: 'initialize',
+                                    data: data,
+                                    engine: initialRenderingEngine
+                                }).then(
+                                    (success) => console.log(`[Webview Log] Initialize message delivery status: ${success}`),
+                                    (err) => console.log(`[Webview Log] Initialize message delivery failed: ${err}`)
+                                );
+                                isInitialized = true;
+                            }
+                            // 兼容逻辑 B：文本标签块 (Labels)
+                            else if (data.layerKey && data.labels) {
+                                webviewPanel.webview.postMessage({
+                                    command: 'addLayerChunk',
+                                    layerKey: data.layerKey,
+                                    data: data
+                                });
+                            }
+                        }
+
+                        // --- 新功能层：处理纯二进制几何数据 ---
+                        else if (msgType === MSG_BINARY_GEOM) {
+                            // 解析自定义的二进制几何包
+                            let offset = 0;
+
+                            // [layerKeyLen(1B)][layerKey(str)]
+                            const keyLen = payload.readUInt8(offset++);
+                            const layerKey = payload.slice(offset, offset + keyLen).toString('utf-8');
+                            offset += keyLen;
+
+                            // [chunkIndex(4B)][totalChunks(4B)][polyCount(4B)]
+                            const chunkIndex = payload.readUInt32LE(offset);
+                            const totalChunks = payload.readUInt32LE(offset + 4);
+                            offset += 12;
+
+                            // 提取剩余的几何数据（点信息）
+                            // 使用 ArrayBuffer.slice 确保数据是独立的，以便通过 Transferable 传输
+                            const geomArrayBuffer = payload.buffer.slice(
+                                payload.byteOffset + offset,
+                                payload.byteOffset + payload.length
                             );
-                            isFirstLine = false;
-                        } else if (data.layerKey && data.labels) {
-                            // Label chunk (still JSON)
+
+                            // 发送给 Webview，利用第二个参数 [geomArrayBuffer] 启用零拷贝转移
                             webviewPanel.webview.postMessage({
-                                command: 'addLayerChunk',
-                                layerKey: data.layerKey,
-                                data: data
+                                command: 'addLayerBinaryChunk',
+                                layerKey: layerKey,
+                                chunkIndex: chunkIndex,
+                                totalChunks: totalChunks,
+                                data: geomArrayBuffer
                             });
                         }
+                    } catch (e: any) {
+                        console.log(`Failed to parse binary packet: ${e.message}`);
                     }
-                } catch (e: any) {
-                    console.log(`Failed to parse line: ${e.message}`);
-                    // Don't show error message for every line, just log it
                 }
             });
 
@@ -274,6 +357,11 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 }
                 if (message.command === 'error') {
                     console.log(`[Webview Error]: ${message.message}`);
+                    return;
+                }
+                if (message.command === 'ready_for_next') {
+                    // unset flow control signal
+                    currentProcess?.stdin?.write("\n");
                     return;
                 }
 
@@ -1109,6 +1197,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 handleAddLayerChunk(message.layerKey, message.data);
             } else if (message.command === 'addLayerChunkB64') {
                 handleAddLayerChunkB64(message.layerKey, message.chunkIndex, message.totalChunks, message.data);
+            } else if (message.command === 'addLayerBinaryChunk') {
+                handleAddLayerBinaryChunk(message.layerKey, message.chunkIndex, message.totalChunks, message.data);
             } else if (message.command === 'updateSettings') {
                 if (message.fastModeThreshold !== undefined) {
                     fastModeThreshold = message.fastModeThreshold;
@@ -1484,6 +1574,29 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
             updateStatus("Loading layers...");
         }
+
+        function handleAddLayerBinaryChunk(layerKey, chunkIndex, totalChunks, buffer) {
+                // 增加待处理任务计数，用于加载状态追踪
+                pendingTasks++;
+
+                // 选择一个 Worker 进行负载均衡
+                const worker = workerPool[workerRoundRobin];
+                workerRoundRobin = (workerRoundRobin + 1) % workerPool.length;
+
+                // 向 Worker 发送数据
+                // 注意：第二个参数 [buffer] 再次触发 Transferable 机制
+                worker.postMessage({
+                    id: { layerKey, chunkIndex },
+                    buffer: buffer,
+                    isBinary: true,
+                    returnPolygons: currentEngine === 'canvas'
+                }, [buffer]);
+                // flow control
+                if (chunkIndex % 5 === 0 || chunkIndex === totalChunks - 1) {
+                    vscode.postMessage({ command: 'ready_for_next' });
+                }
+                updateStatus(\`Loading \${layerKey} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
+            }
 
         function handleAddLayerChunkB64(layerKey, chunkIndex, totalChunks, b64Data) {
             // console.log("Received B64 chunk for", layerKey, "size:", b64Data.length);

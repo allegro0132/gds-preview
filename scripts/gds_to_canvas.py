@@ -6,7 +6,22 @@ import gdstk
 import shutil
 import struct
 import numpy as np
-import base64
+
+MSG_JSON = 0x01
+MSG_BINARY_GEOM = 0x02
+MSG_BINARY_LABELS = 0x03
+
+
+def send_msg(msg_type, payload_bytes):
+    """
+    Sending message by [Length(4B)][Type(1B)][Payload] format.
+    """
+    length = len(payload_bytes)
+    header = struct.pack('<IB', length, msg_type)
+    sys.stdout.buffer.write(header)
+    sys.stdout.buffer.write(payload_bytes)
+    sys.stdout.buffer.flush()
+    return
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -110,7 +125,8 @@ def gds_to_geometry(gds_path,
         flattened_cell.paths.clear()
 
         t_flatten = time.time()
-        print(f"PROFILE: Flatten & Path Conv: {t_flatten - t_select:.4f}s", file=sys.stderr)
+        print(f"PROFILE: Flatten & Path Conv: {t_flatten - t_select:.4f}s",
+              file=sys.stderr)
 
         # Get bounding box of the whole cell to ensure all SVGs have the same viewport
         bbox = flattened_cell.bounding_box()
@@ -166,11 +182,13 @@ def gds_to_geometry(gds_path,
                 valid_layers.append((layer, datatype))
 
         # Print metadata first
-        print(json.dumps(metadata, cls=NumpyEncoder))
-        sys.stdout.flush()
+        # print(json.dumps(metadata, cls=NumpyEncoder))
+        # sys.stdout.flush()
+        send_msg(MSG_JSON, json.dumps(metadata, cls=NumpyEncoder).encode('utf-8'))
 
         t_meta = time.time()
-        print(f"PROFILE: Metadata Prep: {t_meta - t_flatten:.4f}s", file=sys.stderr)
+        print(f"PROFILE: Metadata Prep: {t_meta - t_flatten:.4f}s",
+              file=sys.stderr)
 
         # Second pass: stream layer data
 
@@ -199,17 +217,25 @@ def gds_to_geometry(gds_path,
                         "magnification": l.magnification,
                         "anchor": l.anchor
                     })
-                print(
+                # print(
+                #     json.dumps({
+                #         "layerKey": layer_key,
+                #         "labels": lbls
+                #     },
+                #                cls=NumpyEncoder))
+                # sys.stdout.flush()
+                send_msg(
+                    MSG_JSON,
                     json.dumps({
                         "layerKey": layer_key,
                         "labels": lbls
                     },
-                               cls=NumpyEncoder))
-                sys.stdout.flush()
+                               cls=NumpyEncoder).encode('utf-8'))
 
             # Stream polygons in chunks
             total_polys = len(polygons_for_layer)
-            print(f"PROFILE: Layer {layer_key} has {total_polys} polygons", file=sys.stderr)
+            print(f"PROFILE: Layer {layer_key} has {total_polys} polygons",
+                  file=sys.stderr)
 
             for i in range(0, total_polys, chunk_size):
                 chunk_polys = polygons_for_layer[i:i + chunk_size]
@@ -222,31 +248,48 @@ def gds_to_geometry(gds_path,
                 buffer_parts.append(struct.pack('<I', len(chunk_polys)))
 
                 for p in chunk_polys:
-                    points = p.points # Nx2 numpy array
+                    points = p.points  # Nx2 numpy array
                     n_points = len(points)
                     # 2. Point count (uint32)
                     buffer_parts.append(struct.pack('<I', n_points))
                     # 3. Points (float32)
                     buffer_parts.append(points.astype(np.float32).tobytes())
 
-                full_binary = b''.join(buffer_parts)
-                b64_data = base64.b64encode(full_binary).decode('ascii')
+                key_bytes = layer_key.encode('utf-8')
+                total_chunks = (total_polys + chunk_size - 1) // chunk_size
+                chunk_index = i // chunk_size
 
+                header_parts = [
+                    struct.pack('<B', len(key_bytes)), key_bytes,
+                    struct.pack('<III', chunk_index, total_chunks,
+                                len(chunk_polys))
+                ]
+                full_binary = b''.join(header_parts + buffer_parts)
+                send_msg(MSG_BINARY_GEOM, full_binary)
+                # b64_data = base64.b64encode(full_binary).decode('ascii')
+                # flow control
+                if (i // chunk_size) % 5 == 0:
+                    sys.stdin.readline()
                 # Send Base64 Data Line
                 # Format: CHUNK_B64|{"layerKey":..., "data": "..."}
-                print("CHUNK_B64|" + json.dumps(
-                    {
-                        "layerKey": layer_key,
-                        "chunkIndex": i // chunk_size,
-                        "totalChunks": (total_polys + chunk_size - 1) // chunk_size,
-                        "data": b64_data
-                    },
-                    separators=(',', ':')))
-                sys.stdout.flush()
+                # print("CHUNK_B64|" + json.dumps(
+                #     {
+                #         "layerKey":
+                #             layer_key,
+                #         "chunkIndex":
+                #             i // chunk_size,
+                #         "totalChunks": (total_polys + chunk_size - 1) //
+                #                        chunk_size,
+                #         "data":
+                #             b64_data
+                #     },
+                #     separators=(',', ':')))
+                # sys.stdout.flush()
 
         t_end = time.time()
         print(f"PROFILE: Streaming: {t_end - t_meta:.4f}s", file=sys.stderr)
-        print(f"PROFILE: Total Python Time: {t_end - t_start:.4f}s", file=sys.stderr)
+        print(f"PROFILE: Total Python Time: {t_end - t_start:.4f}s",
+              file=sys.stderr)
 
         sys.exit(0)
 
