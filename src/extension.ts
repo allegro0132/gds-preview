@@ -797,7 +797,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let enableProfiling = ${enableProfiling};
         let flowControlStep = ${flowControlStep};
         let useInstancing = ${useInstancing};
-        let flipState = { x: 1, y: 1 };
+        let flipState = { x: 1, y: currentEngine === 'svg' ? -1 : 1 };
         let rotationState = 0; // Degrees
         let expandedNodes = new Set(); // Persist tree expansion state
         let isViewFitted = false;
@@ -1174,6 +1174,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 if (currentEngine === 'svg' && newEngine !== 'svg') {
                     flipState.y *= -1;
                 }
+                if (currentEngine !== 'svg' && newEngine === 'svg') {
+                    flipState.y *= -1;
+                }
                 currentEngine = newEngine;
             };
 
@@ -1206,13 +1209,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     pythonFinished = true;
                     checkCompletion();
                 }
-                    if (message.message === 'Loaded successfully' && currentEngine === 'svg') {
-                    // Apply initial transform for SVG mode to fix orientation
-                    flipState.y *= -1;
-                    updateTransform();
-                }
             } else if (message.command === 'reset') {
-                flipState = { x: 1, y: 1 };
+                flipState = { x: 1, y: currentEngine === 'svg' ? -1 : 1 };
                 rotationState = 0;
                 updateTransform();
                 // Reset toolbar position
@@ -2803,7 +2801,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 // Apply transform to the inner group
                 const group = document.getElementById('gds-user-transform-group');
                 if (group) {
-                    group.setAttribute('transform', \`scale(\${flipState.x}, \${flipState.y}) rotate(\${rotationState})\`);
+                    // SVG rotation is CW by default. WebGL/Canvas logic expects CCW for positive angles.
+                    // So we negate the angle for SVG to match.
+                    group.setAttribute('transform', \`scale(\${flipState.x}, \${flipState.y}) rotate(\${-rotationState})\`);
                 }
 
                 // Remove CSS transform from container if present (cleanup from previous logic)
