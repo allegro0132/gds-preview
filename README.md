@@ -22,6 +22,7 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
   - **Incremental Rendering**: Streams data for all modes (WebGL, Canvas) to provide immediate visual feedback.
   - **Viewport Culling**: Only renders what is visible on screen.
   - **Dynamic Level of Detail (LOD)**: Automatically reduces detail during fast interactions to maintain high frame rates.
+  - **Instanced Rendering**: Uses hardware instancing (`ANGLE_instanced_arrays`) to efficiently render hierarchical designs with thousands of repeated cells.
 
 ## Rendering Engines
 
@@ -29,9 +30,9 @@ This extension provides three rendering pipelines to suit different needs:
 
 ### 1. WebGL (Default & Recommended)
 - **Technology**: GPU-accelerated rendering using WebGL.
-- **Pros**: Extremely smooth Pan/Zoom performance ("Silky Smooth"). Handles millions of polygons with ease.
+- **Pros**: Extremely smooth Pan/Zoom performance ("Silky Smooth"). Handles millions of polygons with ease. Supports **Instanced Rendering** for hierarchical designs.
 - **Cons**: Slightly longer initial load time due to polygon triangulation.
-- **Best For**: Large, complex layouts (10MB+).
+- **Best For**: Large, complex layouts (10MB+), hierarchical designs.
 
 ### 2. SVG
 - **Technology**: Scalable Vector Graphics (DOM-based).
@@ -53,6 +54,11 @@ This extension contributes the following settings:
   * `webgl` (Default): GPU acceleration.
   * `canvas`: Standard HTML5 Canvas.
   * `svg`: Legacy vector rendering.
+
+* `gdsPreview.useInstancing`: (Default: `true`)
+  * Enables hardware instancing for WebGL mode.
+  * Greatly improves performance for hierarchical designs (e.g., memory arrays).
+  * If disabled, the design is flattened before rendering (legacy behavior).
 
 * `gdsPreview.fastModeThreshold`: (Default: `10`)
   * Controls the aggressiveness of the Dynamic LOD optimization (Only use for Canvas engine).

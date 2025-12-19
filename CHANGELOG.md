@@ -4,6 +4,23 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.2.5] - 2025-12-20
+
+### Added
+- **Instanced Rendering (WebGL)**:
+  - Implemented hardware-accelerated instancing using `ANGLE_instanced_arrays`.
+  - Significantly reduces memory usage and load times for hierarchical designs with repetitive cells (e.g., memory arrays, standard cell rows).
+  - Added `gdsPreview.useInstancing` setting and UI toggle.
+- **Negative View for Instanced Mode**:
+  - Implemented Stencil Buffer-based negative rendering for instanced geometry.
+  - Correctly handles both flat and instanced geometry as "holes" in the layer sheet.
+
+### Fixed
+- **Rendering Correctness**:
+  - Fixed matrix coordinate system mismatch (Row-Major vs Column-Major) causing sub-cells to render at the origin.
+  - Fixed SVG Negative View orientation issue where the view would flip upside down.
+  - Fixed rotation direction inconsistency between WebGL (CCW) and SVG (CW) modes.
+
 ## [0.2.4] - 2025-12-20
 
 ### Added
