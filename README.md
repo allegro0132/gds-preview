@@ -6,8 +6,9 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
 
 - **High-Performance Rendering**: View large GDSII layouts smoothly directly within VS Code.
 - **Multi-Engine Support**: Choose between WebGL (GPU), Canvas (CPU), or SVG rendering.
-- **Text Rendering**: Displays text labels and annotations within the GDSII layout.
-- **Layer Management**: Toggle layer visibility and customize layer colors.
+- **Text Rendering**: Displays text labels and annotations within the GDSII layout, with customizable colors.
+- **Layer Management**: Toggle layer visibility, customize layer colors, and reorder layers via drag-and-drop.
+- **Negative View**: Inspect mask polarities with negative view mode.
 - **Cell Navigation**: Inspect different cells within the GDS library.
 - **Interactive Controls**:
   - **Floating Toolbar**: Draggable toolbar for common view operations.

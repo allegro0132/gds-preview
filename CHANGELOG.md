@@ -4,6 +4,22 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.2.1] - 2025-12-19
+
+### Added
+- **Negative View**: Implemented negative view mode for inspecting mask polarities.
+
+## [0.2.0] - 2025-12-19
+
+### Added
+- **Text Color Controller**: Added ability to customize text label colors independently.
+- **Layer Management**: Implemented drag-and-drop support for reordering layers in the layer list.
+
+## [0.1.5] - 2025-12-19
+
+### Changed
+- **Layer Rendering**: Changed layer rendering order to reverse lexicographical sorting for better visibility of smaller features.
+
 ## [0.1.4] - 2025-12-19
 
 ### Added
