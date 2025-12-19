@@ -62,6 +62,11 @@
           "default": "webgl",
           "description": "Choose the rendering engine. 'webgl' provides GPU acceleration. 'canvas' is standard. 'svg' is legacy."
         },
+        "gdsPreview.useInstancing": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Instanced Rendering for WebGL (improves performance for hierarchical designs)."
+        },
         "gdsPreview.fastModeThreshold": {
           "type": "number",
           "default": 10,

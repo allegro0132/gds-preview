@@ -14,7 +14,10 @@ class NumpyEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None, is_negative=False):
+def gds_to_layered_svgs(gds_path,
+                        output_dir,
+                        target_cell_name=None,
+                        is_negative=False):
     """
     Converts a GDSII file into multiple SVG fragments (inner <g> content), one for each layer.
     Outputs a JSON object to stdout with the results.
@@ -172,13 +175,17 @@ def gds_to_layered_svgs(gds_path, output_dir, target_cell_name=None, is_negative
             if is_negative and bbox_poly:
                 # Subtract polygons from bbox
                 try:
-                    polygons_for_layer = gdstk.boolean([bbox_poly], polygons_for_layer, 'not')
+                    polygons_for_layer = gdstk.boolean([bbox_poly],
+                                                       polygons_for_layer,
+                                                       'not')
                     # Ensure the new polygons have the correct layer/datatype so the style matches
                     for p in polygons_for_layer:
                         p.layer = layer
                         p.datatype = datatype
                 except Exception as e:
-                    print(f"Warning: Boolean operation failed for layer {layer_key}: {e}", file=sys.stderr)
+                    print(
+                        f"Warning: Boolean operation failed for layer {layer_key}: {e}",
+                        file=sys.stderr)
                     # Fallback to original polygons or skip?
                     # If boolean fails, we probably shouldn't show anything or show original
                     pass
@@ -281,4 +288,5 @@ if __name__ == "__main__":
         elif not arg.startswith("--"):
             target_cell = arg
 
-    gds_to_layered_svgs(gds_input_path, output_dir_path, target_cell, is_negative)
+    gds_to_layered_svgs(gds_input_path, output_dir_path, target_cell,
+                        is_negative)

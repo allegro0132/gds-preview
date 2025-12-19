@@ -70,6 +70,11 @@ This extension contributes the following settings:
   * Number of polygons per data chunk streamed from Python.
   * Adjusting this can help balance memory usage and throughput.
 
+* `gdsPreview.flowControlStep`: (Default: `5`)
+  * Number of chunks to send before waiting for a signal from the frontend.
+  * Helps prevent the extension host from being overwhelmed by data.
+  * Set to `-1` to disable flow control.
+
 * `gdsPreview.pythonPath`: (Default: `python`)
   * Path to the Python executable used for parsing GDSII files.
   * Useful if you have multiple Python installations or use a virtual environment.

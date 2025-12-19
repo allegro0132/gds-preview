@@ -17,6 +17,389 @@ class NumpyEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
+def get_transform_matrix(rotation, magnification, x_reflection, origin):
+    c = np.cos(rotation)
+    s = np.sin(rotation)
+
+    m11 = magnification * c
+    m12 = -magnification * s
+    m21 = magnification * s
+    m22 = magnification * c
+
+    if x_reflection:
+        m12 *= -1
+        m22 *= -1
+
+    return np.array([[m11, m12, origin[0]], [m21, m22, origin[1]], [0, 0, 1]])
+
+
+def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
+                              chunk_size, flow_control_step):
+    try:
+        t_start = time.time()
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
+        os.makedirs(output_dir)
+
+        lib = gdstk.read_gds(gds_path)
+        t_read = time.time()
+        print(f"PROFILE: GDS Read: {t_read - t_start:.4f}s", file=sys.stderr)
+
+        # ... (Cell selection logic same as gds_to_geometry) ...
+        valid_cells = [c for c in lib.cells if not c.name.startswith("$$$")]
+        all_cell_names = sorted([c.name for c in valid_cells])
+
+        hierarchy = {}
+        for c in lib.cells:
+            deps = c.dependencies(recursive=False)
+            hierarchy[c.name] = sorted([d.name for d in deps])
+        top_level_cells = sorted([c.name for c in lib.top_level()])
+
+        main_cell = None
+        if target_cell_name:
+            for c in lib.cells:
+                if c.name == target_cell_name:
+                    main_cell = c
+                    break
+            if not main_cell:
+                print(json.dumps(
+                    {"error": f"Cell '{target_cell_name}' not found."}),
+                      file=sys.stderr)
+                sys.exit(1)
+        else:
+            if not valid_cells:
+                if lib.cells:
+                    lib.cells.sort(key=lambda x: x.name)
+                    main_cell = lib.cells[0]
+                else:
+                    print(json.dumps({"error": "No cells found."}),
+                          file=sys.stderr)
+                    sys.exit(1)
+            else:
+                valid_cells.sort(key=lambda x: x.name)
+                main_cell = valid_cells[0]
+
+        print(f"Selected cell: {main_cell.name}", file=sys.stderr)
+
+        # 1. Traverse and collect instances
+        # instances: { cell_name: [ matrices (3x3 flat list or similar) ] }
+        instances = {}
+        # definitions: set of cell names we need to send geometry for
+        needed_definitions = set()
+
+        # Stack: (cell, transform_matrix)
+        stack = [(main_cell, np.identity(3))]
+
+        # We need to handle the main cell itself as an instance at identity
+        instances[main_cell.name] = [np.identity(3)]
+        needed_definitions.add(main_cell.name)
+
+        count = 0
+        while stack:
+            current_cell, current_transform = stack.pop()
+            count += 1
+
+            # For each reference in this cell
+            for ref in current_cell.references:
+                # ref can be Reference or CellArray
+
+                # Use apply_repetition if available to handle all array types correctly
+                sub_refs = []
+                if hasattr(ref, 'apply_repetition'):
+                    sub_refs = ref.apply_repetition()
+                else:
+                    # Fallback for older gdstk or if apply_repetition is missing
+                    if isinstance(ref, gdstk.Reference):
+                        cols = getattr(ref, 'columns', 1)
+                        rows = getattr(ref, 'rows', 1)
+                        if cols is None:
+                            cols = 1
+                        if rows is None:
+                            rows = 1
+
+                        if cols == 1 and rows == 1:
+                            sub_refs = [ref]
+                        else:
+                            # Manual expansion for simple grid
+                            spacing = getattr(ref, 'spacing', (0, 0))
+                            if spacing is None:
+                                spacing = (0, 0)
+                            s1, s2 = spacing
+
+                            # We create temporary objects or just calculate matrices
+                            # To keep logic unified, let's just calculate matrices here
+                            pass
+
+                    elif isinstance(ref, gdstk.CellArray):
+                        # Manual expansion for CellArray
+                        pass
+
+                # If we got sub_refs from apply_repetition, use them
+                if sub_refs:
+                    for sub_ref in sub_refs:
+                        if not isinstance(sub_ref.cell, gdstk.Cell):
+                            continue
+
+                        origin = sub_ref.origin
+                        rotation = sub_ref.rotation if sub_ref.rotation else 0
+                        magnification = sub_ref.magnification if sub_ref.magnification else 1
+                        x_reflection = sub_ref.x_reflection if sub_ref.x_reflection else False
+
+                        t_local = get_transform_matrix(rotation, magnification,
+                                                       x_reflection, origin)
+                        t_global = current_transform @ t_local
+
+                        if sub_ref.cell.name not in instances:
+                            instances[sub_ref.cell.name] = []
+                        instances[sub_ref.cell.name].append(t_global)
+
+                        needed_definitions.add(sub_ref.cell.name)
+                        stack.append((sub_ref.cell, t_global))
+                    continue
+
+                # Fallback Manual Logic (if apply_repetition failed or not available)
+                ref_cells = []
+                transforms = []
+
+                if isinstance(ref, gdstk.Reference):
+                    if isinstance(ref.cell, gdstk.Cell):
+                        ref_cells = [ref.cell]
+                    else:
+                        continue
+
+                    cols = getattr(ref, 'columns', 1)
+                    rows = getattr(ref, 'rows', 1)
+                    if cols is None:
+                        cols = 1
+                    if rows is None:
+                        rows = 1
+
+                    spacing = getattr(ref, 'spacing', (0, 0))
+                    if spacing is None:
+                        spacing = (0, 0)
+
+                    origin = ref.origin
+                    rotation = ref.rotation if ref.rotation else 0
+                    magnification = ref.magnification if ref.magnification else 1
+                    x_reflection = ref.x_reflection if ref.x_reflection else False
+
+                    base_matrix = get_transform_matrix(rotation, magnification,
+                                                       x_reflection, origin)
+
+                    if cols == 1 and rows == 1:
+                        transforms.append(base_matrix)
+                    else:
+                        s1, s2 = spacing
+                        for i in range(cols):
+                            for j in range(rows):
+                                offset_matrix = np.identity(3)
+                                offset_matrix[0, 2] = i * s1
+                                offset_matrix[1, 2] = j * s2
+                                transforms.append(base_matrix @ offset_matrix)
+
+                elif isinstance(ref, gdstk.CellArray):
+                    if isinstance(ref.cell, gdstk.Cell):
+                        ref_cells = [ref.cell]
+                    else:
+                        continue
+
+                    cols = ref.columns
+                    rows = ref.rows
+                    s1, s2 = ref.spacing
+                    origin = ref.origin
+                    rotation = ref.rotation
+                    magnification = ref.magnification
+                    x_reflection = ref.x_reflection
+
+                    base_matrix = get_transform_matrix(rotation, magnification,
+                                                       x_reflection, origin)
+
+                    for i in range(cols):
+                        for j in range(rows):
+                            offset_matrix = np.identity(3)
+                            offset_matrix[0, 2] = i * s1
+                            offset_matrix[1, 2] = j * s2
+                            transforms.append(base_matrix @ offset_matrix)
+
+                # Now process these transforms
+                for cell_to_ref in ref_cells:
+                    for t_local in transforms:
+                        # T_global = T_parent * T_local
+                        t_global = current_transform @ t_local
+
+                        if cell_to_ref.name not in instances:
+                            instances[cell_to_ref.name] = []
+                        instances[cell_to_ref.name].append(t_global)
+
+                        needed_definitions.add(cell_to_ref.name)
+                        stack.append((cell_to_ref, t_global))
+
+        # 2. Send Metadata
+        bbox = main_cell.bounding_box()
+        if bbox is None:
+            bbox = [[0, 0], [0, 0]]
+
+        metadata = {
+            "cell_name": main_cell.name,
+            "all_cells": all_cell_names,
+            "top_level_cells": top_level_cells,
+            "hierarchy": hierarchy,
+            "layers": [],
+            "bbox": {
+                "x_min": bbox[0][0],
+                "x_max": bbox[1][0],
+                "y_min": bbox[0][1],
+                "y_max": bbox[1][1]
+            },
+            "isInstanced": True
+        }
+
+        all_layers = set()
+        cell_map = {c.name: c for c in lib.cells}
+
+        for cell_name in needed_definitions:
+            c = cell_map.get(cell_name)
+            if not c:
+                continue
+            for p in c.polygons:
+                all_layers.add(f"{p.layer}_{p.datatype}")
+            for l in c.labels:
+                all_layers.add(f"{l.layer}_{l.texttype}")
+
+        def layer_key_sort(key):
+            parts = key.split('_')
+            return (int(parts[0]), int(parts[1]))
+
+        metadata["layers"] = sorted(list(all_layers), key=layer_key_sort)
+
+        print(json.dumps(metadata, cls=NumpyEncoder))
+        sys.stdout.flush()
+
+        # 3. Stream Definitions (Geometry)
+        for cell_name in needed_definitions:
+            c = cell_map.get(cell_name)
+            if not c:
+                continue
+
+            layer_polys = {}
+            polys = list(c.polygons)
+            for path in c.paths:
+                polys.extend(path.to_polygons())
+
+            for p in polys:
+                key = f"{p.layer}_{p.datatype}"
+                if key not in layer_polys:
+                    layer_polys[key] = []
+                layer_polys[key].append(p)
+
+            for layer_key, polygons in layer_polys.items():
+                total_polys = len(polygons)
+                for i in range(0, total_polys, chunk_size):
+                    chunk = polygons[i:i + chunk_size]
+
+                    buffer_parts = []
+
+                    # Filter valid polygons first
+                    valid_chunk = []
+                    for p in chunk:
+                        if p.points is not None and len(p.points) > 0:
+                            valid_chunk.append(p)
+
+                    buffer_parts.append(struct.pack('<I', len(valid_chunk)))
+                    for p in valid_chunk:
+                        points = p.points
+                        buffer_parts.append(struct.pack('<I', len(points)))
+                        buffer_parts.append(points.astype(np.float32).tobytes())
+
+                    full_binary = b''.join(buffer_parts)
+                    b64_data = base64.b64encode(full_binary).decode('ascii')
+
+                    msg = {
+                        "type":
+                            "definition",
+                        "cellName":
+                            cell_name,
+                        "layerKey":
+                            layer_key,
+                        "chunkIndex":
+                            i // chunk_size,
+                        "totalChunks":
+                            (total_polys + chunk_size - 1) // chunk_size,
+                        "data":
+                            b64_data
+                    }
+                    print("CHUNK_B64|" + json.dumps(msg, separators=(',', ':')))
+                    sys.stdout.flush()
+
+                    if flow_control_step != -1 and (
+                            i // chunk_size) % flow_control_step == 0:
+                        sys.stdin.readline()
+
+        # 4. Stream Instances
+        instance_chunk_size = chunk_size
+
+        for cell_name, transforms in instances.items():
+            if not transforms:
+                continue
+
+            # Ensure cell_name is a string
+            if cell_name is None:
+                print(f"Warning: Found instance with None cell_name, skipping.",
+                      file=sys.stderr)
+                continue
+
+            total_instances = len(transforms)
+
+            for i in range(0, total_instances, instance_chunk_size):
+                chunk = transforms[i:i + instance_chunk_size]
+
+                buffer_parts = []
+                buffer_parts.append(struct.pack('<I', len(chunk)))
+
+                # Transpose matrices from Row-Major (Python/Math) to Column-Major (GLSL)
+                # chunk is list of (3,3) arrays.
+                # We want to transpose each 3x3 matrix.
+                chunk_array = np.array(chunk,
+                                       dtype=np.float32)  # Shape (N, 3, 3)
+                chunk_transposed = chunk_array.transpose(
+                    0, 2, 1)  # Swap last two axes (rows <-> cols)
+                flat_transforms = chunk_transposed.reshape(-1, 9)
+
+                buffer_parts.append(flat_transforms.tobytes())
+
+                full_binary = b''.join(buffer_parts)
+                b64_data = base64.b64encode(full_binary).decode('ascii')
+
+                msg = {
+                    "type":
+                        "instance",
+                    "cellName":
+                        cell_name,
+                    "chunkIndex":
+                        i // instance_chunk_size,
+                    "totalChunks":
+                        (total_instances + instance_chunk_size - 1) //
+                        instance_chunk_size,
+                    "data":
+                        b64_data
+                }
+                print("CHUNK_B64|" + json.dumps(msg, separators=(',', ':')))
+                sys.stdout.flush()
+
+                if flow_control_step != -1 and (
+                        i // instance_chunk_size) % flow_control_step == 0:
+                    sys.stdin.readline()
+
+        t_end = time.time()
+        print(f"PROFILE: Instanced Streaming: {t_end - t_read:.4f}s",
+              file=sys.stderr)
+        sys.exit(0)
+
+    except Exception as e:
+        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
+
+
 def gds_to_geometry(gds_path,
                     output_dir,
                     target_cell_name=None,
@@ -285,6 +668,11 @@ if __name__ == "__main__":
 
     chunk_size = int(sys.argv[4]) if len(sys.argv) > 4 else 2000
     flow_control_step = int(sys.argv[5]) if len(sys.argv) > 5 else 5
+    use_instancing = int(sys.argv[6]) if len(sys.argv) > 6 else 0
 
-    gds_to_geometry(gds_input_path, output_dir_path, target_cell, chunk_size,
-                    flow_control_step)
+    if use_instancing:
+        gds_to_instanced_geometry(gds_input_path, output_dir_path, target_cell,
+                                  chunk_size, flow_control_step)
+    else:
+        gds_to_geometry(gds_input_path, output_dir_path, target_cell,
+                        chunk_size, flow_control_step)

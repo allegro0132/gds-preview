@@ -4,6 +4,19 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.2.4] - 2025-12-20
+
+### Added
+- **Instanced Rendering**: Implemented `ANGLE_instanced_arrays` support for WebGL to significantly improve performance on hierarchical GDSII files.
+  - Added `gdsPreview.useInstancing` configuration option (default: true).
+  - Added UI toggle for Instanced Rendering in the configuration panel.
+
+## [0.2.3] - 2025-12-20
+
+### Added
+- **Flow Control**: Implemented a flow control mechanism for data streaming to prevent overwhelming the Webview.
+  - Added `gdsPreview.flowControlStep` setting to configure the number of chunks sent before waiting for acknowledgement.
+  - Added UI control for flow control step in the configuration panel.
 ## [0.2.1] - 2025-12-19
 
 ### Added

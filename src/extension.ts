@@ -100,6 +100,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const pythonPath = config.get<string>('pythonPath', 'python');
         const enableProfiling = config.get<boolean>('enableProfiling', false);
         const flowControlStep = config.get<number>('flowControlStep', 5);
+        const useInstancing = config.get<boolean>('useInstancing', true);
 
         const updateWebview = (cellName?: string, isNegativeMode?: boolean) => {
             // console.log(`updateWebview called with cellName: ${cellName}`);
@@ -114,6 +115,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             const currentRenderingEngine = currentConfig.get<string>('renderingEngine', 'canvas');
             const chunkSize = currentConfig.get<number>('chunkSize', 2000);
             const flowControlStep = currentConfig.get<number>('flowControlStep', 5);
+            const useInstancing = currentConfig.get<boolean>('useInstancing', true);
             const enableProfiling = currentConfig.get<boolean>('enableProfiling', false);
 
             const tempDir = path.join(os.tmpdir(), `gds_preview_data_${Date.now()}`);
@@ -143,6 +145,8 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 if (currentRenderingEngine !== 'svg') {
                     args.push(chunkSize.toString());
                     args.push(flowControlStep.toString());
+                    // Use instancing if WebGL and enabled
+                    args.push((currentRenderingEngine === 'webgl' && useInstancing) ? "1" : "0");
                 }
             }
 
@@ -191,7 +195,9 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                             layerKey: chunkInfo.layerKey,
                             chunkIndex: chunkInfo.chunkIndex,
                             totalChunks: chunkInfo.totalChunks,
-                            data: chunkInfo.data
+                            data: chunkInfo.data,
+                            type: chunkInfo.type,
+                            cellName: chunkInfo.cellName
                         });
                     } else {
                         // Legacy/Metadata handling
@@ -325,7 +331,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             this.context.subscriptions
         );
 
-        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep);
+        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
         console.log("Webview HTML set");
 
         // Listen for configuration changes
@@ -344,7 +350,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {
                 updateWebview(currentCell, isNegative);
             }
-            if (e.affectsConfiguration('gdsPreview.maxWorkers') || e.affectsConfiguration('gdsPreview.chunkSize') || e.affectsConfiguration('gdsPreview.flowControlStep')) {
+            if (e.affectsConfiguration('gdsPreview.maxWorkers') || e.affectsConfiguration('gdsPreview.chunkSize') || e.affectsConfiguration('gdsPreview.flowControlStep') || e.affectsConfiguration('gdsPreview.useInstancing')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
                 const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
                 const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
@@ -354,14 +360,15 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 const pythonPath = config.get<string>('pythonPath', 'python');
                 const enableProfiling = config.get<boolean>('enableProfiling', false);
                 const flowControlStep = config.get<number>('flowControlStep', 5);
+                const useInstancing = config.get<boolean>('useInstancing', true);
 
-                webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep);
+                webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
             }
         }, null, this.context.subscriptions);
     }
 }
 
-function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string, enableProfiling: boolean, flowControlStep: number): string {
+function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string, enableProfiling: boolean, flowControlStep: number, useInstancing: boolean): string {
     const nonce = getNonce();
     const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
     const earcutCdn = "https://unpkg.com/earcut@2.2.4/dist/earcut.min.js";
@@ -732,6 +739,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 <input type="number" id="flow-control-step-input" value="${flowControlStep}" min="-1" step="1" title="-1 to disable">
             </div>
             <div class="control-group">
+                <label for="use-instancing-input">Use Instancing (WebGL):</label>
+                <input type="checkbox" id="use-instancing-input" ${useInstancing ? 'checked' : ''}>
+            </div>
+            <div class="control-group">
                 <label for="font-size-input">Label Font Size:</label>
                 <input type="number" id="font-size-input" value="${labelFontSize}" min="1" step="1">
             </div>
@@ -785,6 +796,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let labelFontSize = ${labelFontSize};
         let enableProfiling = ${enableProfiling};
         let flowControlStep = ${flowControlStep};
+        let useInstancing = ${useInstancing};
         let flipState = { x: 1, y: 1 };
         let rotationState = 0; // Degrees
         let expandedNodes = new Set(); // Persist tree expansion state
@@ -795,7 +807,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         // WebGL State
         let gl = null;
         let glProgram = null;
+        let instancedArraysExt = null;
         let layerBuffers = {}; // { layerKey: { vertexBuffer, vertexCount, colorLocation, matrixLocation } }
+        let instanceBuffers = {}; // { cellName: { buffer, count } }
+        let definitions = {}; // { cellName: { layerKey: { vertexBuffer, vertexCount } } }
         let bboxBuffer = null;
 
         // Worker Pool for Triangulation
@@ -824,12 +839,27 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
                         polygons = [];
                         for(let i=0; i<totalPolys; i++) {
+                            if (offset + 4 > buffer.byteLength) break;
                             const nPoints = dataView.getUint32(offset, true);
                             offset += 4;
 
                             // Create Float32Array view for points
                             // nPoints * 2 floats * 4 bytes
                             const byteLen = nPoints * 2 * 4;
+
+                            if (offset + byteLen > buffer.byteLength) {
+                                console.error("Worker: Buffer overflow detected", offset, byteLen, buffer.byteLength);
+                                break;
+                            }
+
+                            // Safety check for huge polygons (likely garbage)
+                            if (nPoints > 1000000) {
+                                console.error("Worker: Huge polygon detected, skipping", nPoints);
+                                offset += byteLen; // Try to skip? Or just break?
+                                // If nPoints is garbage, byteLen is garbage, so skipping is unsafe.
+                                break;
+                            }
+
                             const points = new Float32Array(buffer, offset, nPoints * 2);
                             polygons.push(points);
                             offset += byteLen;
@@ -914,8 +944,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             const { id, vertices, polygons, duration } = e.data;
             if (duration) perfMetrics.workerTime += duration;
 
-            // id is { layerKey, chunkIndex }
+            // id is { layerKey, chunkIndex, type, cellName }
             const layerKey = id.layerKey;
+            const type = id.type;
+            const cellName = id.cellName;
 
             if (polygons && currentEngine === 'canvas') {
                 if (!geometry[layerKey]) geometry[layerKey] = [];
@@ -941,12 +973,23 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
                 gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
-                if (!layerBuffers[layerKey]) layerBuffers[layerKey] = [];
+                if (type === 'definition') {
+                    if (!definitions[cellName]) definitions[cellName] = {};
+                    if (!definitions[cellName][layerKey]) definitions[cellName][layerKey] = [];
 
-                layerBuffers[layerKey].push({
-                    buffer: buffer,
-                    count: vertices.length / 2
-                });
+                    definitions[cellName][layerKey].push({
+                        buffer: buffer,
+                        count: vertices.length / 2
+                    });
+                } else {
+                    // Legacy / Flat mode
+                    if (!layerBuffers[layerKey]) layerBuffers[layerKey] = [];
+
+                    layerBuffers[layerKey].push({
+                        buffer: buffer,
+                        count: vertices.length / 2
+                    });
+                }
 
                 requestAnimationFrame(drawWebGL);
             }
@@ -1003,6 +1046,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         const maxWorkersInput = document.getElementById('max-workers-input');
         const chunkSizeInput = document.getElementById('chunk-size-input');
         const flowControlStepInput = document.getElementById('flow-control-step-input');
+        const useInstancingInput = document.getElementById('use-instancing-input');
         const fontSizeInput = document.getElementById('font-size-input');
         const minZoomInput = document.getElementById('min-zoom-input');
         const pythonPathInput = document.getElementById('python-path-input');
@@ -1055,6 +1099,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     command: 'updateConfig',
                     key: 'flowControlStep',
                     value: parseInt(e.target.value)
+                });
+            });
+        }
+
+        if (useInstancingInput) {
+            useInstancingInput.addEventListener('change', (e) => {
+                vscode.postMessage({
+                    command: 'updateConfig',
+                    key: 'useInstancing',
+                    value: e.target.checked
                 });
             });
         }
@@ -1133,7 +1187,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 // console.log("Received layer chunk", message.layerKey);
                 handleAddLayerChunk(message.layerKey, message.data);
             } else if (message.command === 'addLayerChunkB64') {
-                handleAddLayerChunkB64(message.layerKey, message.chunkIndex, message.totalChunks, message.data);
+                handleAddLayerChunkB64(message.layerKey, message.chunkIndex, message.totalChunks, message.data, message.type, message.cellName);
             } else if (message.command === 'updateSettings') {
                 if (message.fastModeThreshold !== undefined) {
                     fastModeThreshold = message.fastModeThreshold;
@@ -1488,6 +1542,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 resizeCanvas();
                 fitView();
             } else if (currentEngine === 'webgl') {
+                // Clear previous buffers
+                definitions = {};
+                instanceBuffers = {};
                 setupWebGLMode({ geometry: {}, bbox: data.bbox, layers: [] });
             } else if (currentEngine === 'svg') {
                 // Ensure svgFragments is populated from data if available
@@ -1510,7 +1567,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             updateStatus("Loading layers...");
         }
 
-        function handleAddLayerChunkB64(layerKey, chunkIndex, totalChunks, b64Data) {
+        function handleAddLayerChunkB64(layerKey, chunkIndex, totalChunks, b64Data, type, cellName) {
             // console.log("Received B64 chunk for", layerKey, "size:", b64Data.length);
             pendingTasks++;
 
@@ -1523,12 +1580,28 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             }
             const buffer = bytes.buffer;
 
+            if (type === 'instance') {
+                // Instance transforms are already flat float32 arrays of 3x3 matrices
+                // We don't need triangulation worker for this.
+                // Just store it directly.
+                handleInstanceData(cellName, buffer);
+                pendingTasks--;
+
+                if (flowControlStep !== -1 && (chunkIndex % flowControlStep === 0 || chunkIndex === totalChunks - 1)) {
+                    setTimeout(() => {
+                        vscode.postMessage({ command: 'ready_for_next' });
+                    }, 0);
+                }
+                updateStatus(\`Loading Instances \${cellName || 'Unknown'} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
+                return;
+            }
+
             // Dispatch to worker
             const worker = workerPool[workerRoundRobin];
             workerRoundRobin = (workerRoundRobin + 1) % workerPool.length;
 
             worker.postMessage({
-                id: { layerKey, chunkIndex },
+                id: { layerKey, chunkIndex, type, cellName },
                 buffer: buffer,
                 isBinary: true,
                 returnPolygons: currentEngine === 'canvas'
@@ -1540,7 +1613,36 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     vscode.postMessage({ command: 'ready_for_next' });
                 }, 0);
             }
-            updateStatus(\`Loading \${layerKey} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
+            updateStatus(\`Loading \${layerKey || 'Unknown'} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
+        }
+
+        function handleInstanceData(cellName, buffer) {
+            if (!gl) return;
+
+            // Read count from first 4 bytes (uint32)
+            const dataView = new DataView(buffer);
+            const count = dataView.getUint32(0, true); // Little endian
+
+            // The rest is the float array (3x3 matrices)
+            // Offset 4 bytes. Length = count * 9 floats * 4 bytes/float
+            // We create a Float32Array view on the same buffer, starting at offset 4
+            const transforms = new Float32Array(buffer, 4, count * 9);
+
+            // Create buffer
+            const glBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, glBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, transforms, gl.STATIC_DRAW);
+
+            // Use a safe key if cellName is missing
+            const key = cellName || "UNKNOWN_CELL";
+            if (!instanceBuffers[key]) instanceBuffers[key] = [];
+
+            instanceBuffers[key].push({
+                buffer: glBuffer,
+                count: count
+            });
+
+            requestAnimationFrame(drawWebGL);
         }
 
         function handleAddLayerChunk(layerKey, data) {
@@ -1827,23 +1929,50 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 return;
             }
 
+            instancedArraysExt = gl.getExtension('ANGLE_instanced_arrays');
+            if (!instancedArraysExt) {
+                console.warn("ANGLE_instanced_arrays not supported");
+            }
+
             gl.enable(gl.BLEND);
             gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
             // Shaders
             const vsSource = \`
                 attribute vec2 a_position;
+
+                // Instance attributes (mat3 columns)
+                attribute vec3 a_instanceMatrixCol1;
+                attribute vec3 a_instanceMatrixCol2;
+                attribute vec3 a_instanceMatrixCol3;
+
                 uniform vec2 u_resolution;
                 uniform vec2 u_offset;
                 uniform float u_scale;
                 uniform vec2 u_flip;
                 uniform float u_rotation;
+                uniform bool u_isInstanced;
 
                 void main() {
+                    vec2 pos = a_position;
+
+                    if (u_isInstanced) {
+                        // Construct matrix from columns
+                        mat3 instanceMat = mat3(
+                            a_instanceMatrixCol1,
+                            a_instanceMatrixCol2,
+                            a_instanceMatrixCol3
+                        );
+
+                        // Apply instance transform: T * [x, y, 1]
+                        vec3 transformedPos = instanceMat * vec3(pos, 1.0);
+                        pos = transformedPos.xy;
+                    }
+
                     // Apply User Rotation (First)
                     float c = cos(u_rotation);
                     float s = sin(u_rotation);
-                    vec2 rotated = vec2(a_position.x * c - a_position.y * s, a_position.x * s + a_position.y * c);
+                    vec2 rotated = vec2(pos.x * c - pos.y * s, pos.x * s + pos.y * c);
 
                     // Apply User Flip (Second)
                     vec2 flipped = rotated * u_flip;
@@ -1985,7 +2114,12 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             const flipLocation = gl.getUniformLocation(glProgram, "u_flip");
             const rotationLocation = gl.getUniformLocation(glProgram, "u_rotation");
             const colorLocation = gl.getUniformLocation(glProgram, "u_color");
+            const isInstancedLocation = gl.getUniformLocation(glProgram, "u_isInstanced");
+
             const positionLocation = gl.getAttribLocation(glProgram, "a_position");
+            const instanceMatrixCol1Loc = gl.getAttribLocation(glProgram, "a_instanceMatrixCol1");
+            const instanceMatrixCol2Loc = gl.getAttribLocation(glProgram, "a_instanceMatrixCol2");
+            const instanceMatrixCol3Loc = gl.getAttribLocation(glProgram, "a_instanceMatrixCol3");
 
             gl.uniform2f(resolutionLocation, gl.canvas.width, gl.canvas.height);
             gl.uniform2f(offsetLocation, offsetX, offsetY);
@@ -2001,11 +2135,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             for (const layerKey of renderOrder) {
                 if (!activeLayers.has(layerKey)) continue;
 
-                const buffers = layerBuffers[layerKey];
-                // Support both single buffer (legacy/small files) and array of buffers (chunked)
-                if (!buffers) continue;
-                const bufferList = Array.isArray(buffers) ? buffers : [buffers];
-
                 // Convert hex color to rgba
                 const hex = layerColors[layerKey] || '#888888';
                 const r = parseInt(hex.slice(1, 3), 16) / 255;
@@ -2013,39 +2142,101 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 const b = parseInt(hex.slice(5, 7), 16) / 255;
                 const a = layerOpacities[layerKey] !== undefined ? layerOpacities[layerKey] : 0.8;
 
+                gl.uniform4f(colorLocation, r, g, b, a);
+
                 if (isNegative) {
-                    // Pass 1: Draw polygons to stencil buffer
                     gl.clear(gl.STENCIL_BUFFER_BIT);
                     gl.colorMask(false, false, false, false);
                     gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
                     gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+                }
+
+                // 1. Draw Flat Geometry (Legacy / Main Cell)
+                const buffers = layerBuffers[layerKey];
+                if (buffers) {
+                    gl.uniform1i(isInstancedLocation, 0);
+                    const bufferList = Array.isArray(buffers) ? buffers : [buffers];
 
                     for (const layerData of bufferList) {
                         gl.bindBuffer(gl.ARRAY_BUFFER, layerData.buffer);
                         gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
                         gl.drawArrays(gl.TRIANGLES, 0, layerData.count);
                     }
+                }
 
+                // 2. Draw Instanced Geometry
+                // Iterate over all definitions that have this layer
+                if (instancedArraysExt) {
+                    gl.uniform1i(isInstancedLocation, 1);
+
+                    for (const cellName in definitions) {
+                        const defLayers = definitions[cellName];
+                        if (!defLayers || !defLayers[layerKey]) continue;
+
+                        const instances = instanceBuffers[cellName];
+                        if (!instances) continue;
+
+                        // For each geometry chunk in definition
+                        const geomChunks = defLayers[layerKey];
+
+                        for (const geom of geomChunks) {
+                            // Bind Geometry
+                            gl.bindBuffer(gl.ARRAY_BUFFER, geom.buffer);
+                            gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+                            // For each instance chunk
+                            for (const inst of instances) {
+                                // Bind Instance Transforms
+                                gl.bindBuffer(gl.ARRAY_BUFFER, inst.buffer);
+
+                                // Matrix is 3x3 float32 (9 floats)
+                                // Stride = 9 * 4 = 36 bytes
+                                const stride = 36;
+
+                                // Col 1
+                                gl.enableVertexAttribArray(instanceMatrixCol1Loc);
+                                gl.vertexAttribPointer(instanceMatrixCol1Loc, 3, gl.FLOAT, false, stride, 0);
+                                instancedArraysExt.vertexAttribDivisorANGLE(instanceMatrixCol1Loc, 1);
+
+                                // Col 2
+                                gl.enableVertexAttribArray(instanceMatrixCol2Loc);
+                                gl.vertexAttribPointer(instanceMatrixCol2Loc, 3, gl.FLOAT, false, stride, 12);
+                                instancedArraysExt.vertexAttribDivisorANGLE(instanceMatrixCol2Loc, 1);
+
+                                // Col 3
+                                gl.enableVertexAttribArray(instanceMatrixCol3Loc);
+                                gl.vertexAttribPointer(instanceMatrixCol3Loc, 3, gl.FLOAT, false, stride, 24);
+                                instancedArraysExt.vertexAttribDivisorANGLE(instanceMatrixCol3Loc, 1);
+
+                                // Draw
+                                instancedArraysExt.drawArraysInstancedANGLE(gl.TRIANGLES, 0, geom.count, inst.count);
+
+                                // Cleanup Divisors immediately after draw to avoid state leak
+                                instancedArraysExt.vertexAttribDivisorANGLE(instanceMatrixCol1Loc, 0);
+                                instancedArraysExt.vertexAttribDivisorANGLE(instanceMatrixCol2Loc, 0);
+                                instancedArraysExt.vertexAttribDivisorANGLE(instanceMatrixCol3Loc, 0);
+                            }
+                        }
+                    }
+
+                    // Disable attributes after loop
+                    gl.disableVertexAttribArray(instanceMatrixCol1Loc);
+                    gl.disableVertexAttribArray(instanceMatrixCol2Loc);
+                    gl.disableVertexAttribArray(instanceMatrixCol3Loc);
+                }
+
+                if (isNegative) {
                     // Pass 2: Draw BBox where stencil != 1
                     gl.colorMask(true, true, true, true);
                     gl.stencilFunc(gl.NOTEQUAL, 1, 0xFF);
                     gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
 
-                    gl.uniform4f(colorLocation, r, g, b, a);
+                    gl.uniform1i(isInstancedLocation, 0);
 
                     if (bboxBuffer) {
                         gl.bindBuffer(gl.ARRAY_BUFFER, bboxBuffer);
                         gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
                         gl.drawArrays(gl.TRIANGLES, 0, 6);
-                    }
-
-                } else {
-                    gl.uniform4f(colorLocation, r, g, b, a);
-
-                    for (const layerData of bufferList) {
-                        gl.bindBuffer(gl.ARRAY_BUFFER, layerData.buffer);
-                        gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
-                        gl.drawArrays(gl.TRIANGLES, 0, layerData.count);
                     }
                 }
             }
