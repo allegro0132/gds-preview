@@ -577,6 +577,21 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             color: var(--vscode-input-foreground);
             margin-right: 2px;
         }
+        .layer-toggle.dragging {
+            opacity: 0.5;
+            background-color: var(--vscode-list-dropBackground);
+        }
+        .layer-toggle.drag-over {
+            border-top: 2px solid var(--vscode-focusBorder);
+        }
+        .layer-drop-dummy {
+            height: 10px;
+            margin-top: 5px;
+            border-top: 2px solid transparent;
+        }
+        .layer-drop-dummy.drag-over {
+            border-top: 2px solid var(--vscode-focusBorder);
+        }
     </style>
 </head>
 <body>
@@ -591,7 +606,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         <h3>Layer Control</h3>
         <div style="margin-top: 10px;">
             <input type="checkbox" id="show-labels-checkbox">
-            <label for="show-labels-checkbox">Show Labels</label>
+            <label for="show-labels-checkbox">Labels</label>
             <input type="range" min="0" max="1" step="0.1" value="0.5" id="label-brightness-slider" style="width: 80px; margin-left: 10px; vertical-align: middle;" title="Text Brightness">
         </div>
         <div id="layers-list"></div>
@@ -1194,6 +1209,90 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             });
         }
 
+        let dragSrcEl = null;
+
+        function handleDragStart(e) {
+            // Prevent dragging if interacting with inputs (checkbox, color, slider)
+            if (e.target.tagName === 'INPUT') {
+                e.preventDefault();
+                return;
+            }
+
+            dragSrcEl = this;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', this.getAttribute('data-layer-id'));
+            this.classList.add('dragging');
+        }
+
+        function handleDragEnd(e) {
+            this.classList.remove('dragging');
+            const list = document.getElementById('layers-list');
+            if (list) {
+                list.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+            }
+        }
+
+        function handleDragOver(e) {
+            if (e.preventDefault) {
+                e.preventDefault();
+            }
+            e.dataTransfer.dropEffect = 'move';
+            this.classList.add('drag-over');
+            return false;
+        }
+
+        function handleDragEnter(e) {
+            this.classList.add('drag-over');
+        }
+
+        function handleDragLeave(e) {
+            this.classList.remove('drag-over');
+        }
+
+        function handleDrop(e) {
+            if (e.stopPropagation) {
+                e.stopPropagation();
+            }
+            // Cleanup is handled in dragend, but we can remove drag-over from target immediately
+            this.classList.remove('drag-over');
+
+            if (dragSrcEl !== this) {
+                const list = document.getElementById('layers-list');
+                // Insert before the drop target
+                list.insertBefore(dragSrcEl, this);
+
+                // Update allLayers order based on DOM
+                const newOrder = [];
+                list.querySelectorAll('.layer-toggle').forEach(el => {
+                    const input = el.querySelector('input[type="checkbox"]');
+                    if (input) {
+                        newOrder.push(input.getAttribute('data-layer-id'));
+                    }
+                });
+                allLayers = newOrder;
+
+                // Trigger redraw
+                if (currentEngine === 'canvas') draw();
+                else if (currentEngine === 'webgl') drawWebGL();
+                else if (currentEngine === 'svg') {
+                     const group = document.getElementById('gds-user-transform-group');
+                     if (group) {
+                         // We want renderOrder = [...allLayers].reverse()
+                         // So the last element in allLayers should be the last element in DOM (topmost)
+                         const renderOrder = [...allLayers].reverse();
+                         renderOrder.forEach(layerKey => {
+                             const layerGroup = document.getElementById('layer-group-' + layerKey);
+                             if (layerGroup) {
+                                 group.appendChild(layerGroup); // Moves it to the end
+                             }
+                         });
+                     }
+                }
+                requestAnimationFrame(drawLabels);
+            }
+            return false;
+        }
+
         function handleInitialize(data) {
             startTime = performance.now();
             pendingTasks = 0;
@@ -1217,7 +1316,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             buildTree(data.hierarchy, data.top_level_cells, data.all_cells, data.cell_name);
 
             // Sort layers for consistent display and rendering
-            allLayers = (data.layers || []).sort();
+            allLayers = data.layers;
 
             // Update Layers UI
             layersList.innerHTML = '';
@@ -1245,14 +1344,49 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 // Create UI
                 const div = document.createElement('div');
                 div.className = 'layer-toggle';
+                div.setAttribute('draggable', 'true');
+                div.addEventListener('dragstart', handleDragStart, false);
+                div.addEventListener('dragend', handleDragEnd, false);
+                div.addEventListener('dragenter', handleDragEnter, false);
+                div.addEventListener('dragover', handleDragOver, false);
+                div.addEventListener('dragleave', handleDragLeave, false);
+                div.addEventListener('drop', handleDrop, false);
+
                 div.innerHTML = \`
                     <input type="checkbox" id="toggle-\${layerKey}" data-layer-id="\${layerKey}" checked>
                     <label for="toggle-\${layerKey}">Layer \${layerKey.replace('_', ' / ')}</label>
                     <input type="color" id="color-\${layerKey}" data-layer-id="\${layerKey}" value="\${color}">
                     <input type="range" min="0" max="1" step="0.1" value="0.8" class="opacity-slider" data-layer-id="\${layerKey}" style="width: 50px; margin-left: 5px;" title="Opacity">
                 \`;
+
+                // Prevent drag when interacting with inputs
+                div.querySelectorAll('input').forEach(input => {
+                    input.addEventListener('mousedown', (e) => {
+                        e.stopPropagation(); // Stop drag start
+                        div.setAttribute('draggable', 'false');
+                    });
+                    input.addEventListener('mouseup', () => {
+                        div.setAttribute('draggable', 'true');
+                    });
+                    input.addEventListener('mouseleave', () => {
+                        div.setAttribute('draggable', 'true');
+                    });
+                    input.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                    });
+                });
+
                 layersList.appendChild(div);
             });
+
+            // Add dummy drop target at the end
+            const dummy = document.createElement('div');
+            dummy.className = 'layer-drop-dummy';
+            dummy.addEventListener('dragenter', handleDragEnter, false);
+            dummy.addEventListener('dragover', handleDragOver, false);
+            dummy.addEventListener('dragleave', handleDragLeave, false);
+            dummy.addEventListener('drop', handleDrop, false);
+            layersList.appendChild(dummy);
 
             // Reset View
             if (currentEngine === 'canvas') {
@@ -1374,7 +1508,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             layerColors = {};
             layerOpacities = {};
 
-            allLayers = (data.layers || []).sort();
+            allLayers = data.layers;
 
             allLayers.forEach(layerKey => {
                 activeLayers.add(layerKey);
@@ -1400,14 +1534,49 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 // Create UI
                 const div = document.createElement('div');
                 div.className = 'layer-toggle';
+                div.setAttribute('draggable', 'true');
+                div.addEventListener('dragstart', handleDragStart, false);
+                div.addEventListener('dragend', handleDragEnd, false);
+                div.addEventListener('dragenter', handleDragEnter, false);
+                div.addEventListener('dragover', handleDragOver, false);
+                div.addEventListener('dragleave', handleDragLeave, false);
+                div.addEventListener('drop', handleDrop, false);
+
                 div.innerHTML = \`
                     <input type="checkbox" id="toggle-\${layerKey}" data-layer-id="\${layerKey}" checked>
                     <label for="toggle-\${layerKey}">Layer \${layerKey.replace('_', ' / ')}</label>
                     <input type="color" id="color-\${layerKey}" data-layer-id="\${layerKey}" value="\${color}">
                     <input type="range" min="0" max="1" step="0.1" value="0.8" class="opacity-slider" data-layer-id="\${layerKey}" style="width: 50px; margin-left: 5px;" title="Opacity">
                 \`;
+
+                // Prevent drag when interacting with inputs
+                div.querySelectorAll('input').forEach(input => {
+                    input.addEventListener('mousedown', (e) => {
+                        e.stopPropagation(); // Stop drag start
+                        div.setAttribute('draggable', 'false');
+                    });
+                    input.addEventListener('mouseup', () => {
+                        div.setAttribute('draggable', 'true');
+                    });
+                    input.addEventListener('mouseleave', () => {
+                        div.setAttribute('draggable', 'true');
+                    });
+                    input.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                    });
+                });
+
                 layersList.appendChild(div);
             });
+
+            // Add dummy drop target at the end
+            const dummy = document.createElement('div');
+            dummy.className = 'layer-drop-dummy';
+            dummy.addEventListener('dragenter', handleDragEnter, false);
+            dummy.addEventListener('dragover', handleDragOver, false);
+            dummy.addEventListener('dragleave', handleDragLeave, false);
+            dummy.addEventListener('drop', handleDrop, false);
+            layersList.appendChild(dummy);
 
             if (currentEngine === 'canvas') {
                 setupCanvasMode(data);
