@@ -299,155 +299,7 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
         print(json.dumps(metadata, cls=NumpyEncoder))
         sys.stdout.flush()
 
-        # 3. Stream Definitions (Geometry) - Only for Multi-Use Cells
-        for cell_name in needed_definitions:
-            c = cell_map.get(cell_name)
-            if not c:
-                continue
-
-            layer_polys = {}
-            polys = list(c.polygons)
-            for path in c.paths:
-                polys.extend(path.to_polygons())
-
-            for p in polys:
-                key = f"{p.layer}_{p.datatype}"
-                if key not in layer_polys:
-                    layer_polys[key] = []
-                layer_polys[key].append(p)
-
-            for layer_key, polygons in layer_polys.items():
-                total_polys = len(polygons)
-                for i in range(0, total_polys, chunk_size):
-                    chunk = polygons[i:i + chunk_size]
-
-                    buffer_parts = []
-
-                    # Filter valid polygons first
-                    valid_chunk = []
-                    for p in chunk:
-                        if p.points is not None and len(p.points) > 0:
-                            valid_chunk.append(p)
-
-                    buffer_parts.append(struct.pack('<I', len(valid_chunk)))
-                    for p in valid_chunk:
-                        points = p.points
-                        buffer_parts.append(struct.pack('<I', len(points)))
-                        buffer_parts.append(points.astype(np.float32).tobytes())
-
-                    full_binary = b''.join(buffer_parts)
-
-                    msg = {
-                        "type":
-                            "definition",
-                        "cellName":
-                            cell_name,
-                        "layerKey":
-                            layer_key,
-                        "chunkIndex":
-                            i // chunk_size,
-                        "totalChunks":
-                            (total_polys + chunk_size - 1) // chunk_size
-                    }
-                    send_binary_chunk(msg, full_binary, i // chunk_size,
-                                      flow_control_step)
-
-        # 3.5 Stream Labels (Flattened)
-        # We flatten labels on the server side so the frontend can just draw them
-        labels_by_layer = {}
-
-        for cell_name in all_referenced_cells:
-            c = cell_map.get(cell_name)
-            if not c:
-                continue
-
-            cell_labels = c.labels
-            if not cell_labels:
-                continue
-
-            cell_instances = instances.get(cell_name, [])
-
-            for l in cell_labels:
-                layer_key = f"{l.layer}_{l.texttype}"
-                if layer_key not in labels_by_layer:
-                    labels_by_layer[layer_key] = []
-
-                # Original position
-                p_local = np.array([l.origin[0], l.origin[1], 1.0])
-
-                for t_global in cell_instances:
-                    # t_global is 3x3 matrix
-                    # p_global = t_global @ p_local
-                    p_global = t_global @ p_local
-
-                    labels_by_layer[layer_key].append({
-                        "text": l.text,
-                        "x": p_global[0],
-                        "y": p_global[1],
-                        "rotation": l.rotation,
-                        "magnification": l.magnification,
-                        "anchor": l.anchor
-                    })
-
-        # Send labels
-        for layer_key, lbls in labels_by_layer.items():
-            print(
-                json.dumps({
-                    "layerKey": layer_key,
-                    "labels": lbls
-                },
-                           cls=NumpyEncoder))
-            sys.stdout.flush()
-
-        # 4. Stream Instances - Only for Multi-Use Cells
-        instance_chunk_size = chunk_size
-
-        for cell_name, transforms in multi_instances.items():
-            if not transforms:
-                continue
-
-            # Ensure cell_name is a string
-            if cell_name is None:
-                print(f"Warning: Found instance with None cell_name, skipping.",
-                      file=sys.stderr)
-                continue
-
-            total_instances = len(transforms)
-
-            for i in range(0, total_instances, instance_chunk_size):
-                chunk = transforms[i:i + instance_chunk_size]
-
-                buffer_parts = []
-                buffer_parts.append(struct.pack('<I', len(chunk)))
-
-                # Transpose matrices from Row-Major (Python/Math) to Column-Major (GLSL)
-                # chunk is list of (3,3) arrays.
-                # We want to transpose each 3x3 matrix.
-                chunk_array = np.array(chunk,
-                                       dtype=np.float32)  # Shape (N, 3, 3)
-                chunk_transposed = chunk_array.transpose(
-                    0, 2, 1)  # Swap last two axes (rows <-> cols)
-                flat_transforms = chunk_transposed.reshape(-1, 9)
-
-                buffer_parts.append(flat_transforms.tobytes())
-
-                full_binary = b''.join(buffer_parts)
-
-                msg = {
-                    "type":
-                        "instance",
-                    "cellName":
-                        cell_name,
-                    "chunkIndex":
-                        i // instance_chunk_size,
-                    "totalChunks":
-                        (total_instances + instance_chunk_size - 1) //
-                        instance_chunk_size
-                }
-                send_binary_chunk(msg, full_binary, i // instance_chunk_size,
-                                  flow_control_step)
-
-        # 5. Stream Flat Geometry - For Single-Use Cells
+        # 3. Stream Flat Geometry - For Single-Use Cells
         # Flatten single-use cells into global coordinates and stream as 'flat' geometry
         flat_layer_polys = {}
 
@@ -520,6 +372,154 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
                     "totalChunks": (total_polys + chunk_size - 1) // chunk_size
                 }
                 send_binary_chunk(msg, full_binary, i // chunk_size,
+                                  flow_control_step)
+
+        # 3.5 Stream Labels (Flattened)
+        # We flatten labels on the server side so the frontend can just draw them
+        labels_by_layer = {}
+
+        for cell_name in all_referenced_cells:
+            c = cell_map.get(cell_name)
+            if not c:
+                continue
+
+            cell_labels = c.labels
+            if not cell_labels:
+                continue
+
+            cell_instances = instances.get(cell_name, [])
+
+            for l in cell_labels:
+                layer_key = f"{l.layer}_{l.texttype}"
+                if layer_key not in labels_by_layer:
+                    labels_by_layer[layer_key] = []
+
+                # Original position
+                p_local = np.array([l.origin[0], l.origin[1], 1.0])
+
+                for t_global in cell_instances:
+                    # t_global is 3x3 matrix
+                    # p_global = t_global @ p_local
+                    p_global = t_global @ p_local
+
+                    labels_by_layer[layer_key].append({
+                        "text": l.text,
+                        "x": p_global[0],
+                        "y": p_global[1],
+                        "rotation": l.rotation,
+                        "magnification": l.magnification,
+                        "anchor": l.anchor
+                    })
+
+        # Send labels
+        for layer_key, lbls in labels_by_layer.items():
+            print(
+                json.dumps({
+                    "layerKey": layer_key,
+                    "labels": lbls
+                },
+                           cls=NumpyEncoder))
+            sys.stdout.flush()
+
+        # 4. Stream Definitions (Geometry) - Only for Multi-Use Cells
+        for cell_name in needed_definitions:
+            c = cell_map.get(cell_name)
+            if not c:
+                continue
+
+            layer_polys = {}
+            polys = list(c.polygons)
+            for path in c.paths:
+                polys.extend(path.to_polygons())
+
+            for p in polys:
+                key = f"{p.layer}_{p.datatype}"
+                if key not in layer_polys:
+                    layer_polys[key] = []
+                layer_polys[key].append(p)
+
+            for layer_key, polygons in layer_polys.items():
+                total_polys = len(polygons)
+                for i in range(0, total_polys, chunk_size):
+                    chunk = polygons[i:i + chunk_size]
+
+                    buffer_parts = []
+
+                    # Filter valid polygons first
+                    valid_chunk = []
+                    for p in chunk:
+                        if p.points is not None and len(p.points) > 0:
+                            valid_chunk.append(p)
+
+                    buffer_parts.append(struct.pack('<I', len(valid_chunk)))
+                    for p in valid_chunk:
+                        points = p.points
+                        buffer_parts.append(struct.pack('<I', len(points)))
+                        buffer_parts.append(points.astype(np.float32).tobytes())
+
+                    full_binary = b''.join(buffer_parts)
+
+                    msg = {
+                        "type":
+                            "definition",
+                        "cellName":
+                            cell_name,
+                        "layerKey":
+                            layer_key,
+                        "chunkIndex":
+                            i // chunk_size,
+                        "totalChunks":
+                            (total_polys + chunk_size - 1) // chunk_size
+                    }
+                    send_binary_chunk(msg, full_binary, i // chunk_size,
+                                      flow_control_step)
+
+        # 5. Stream Instances - Only for Multi-Use Cells
+        instance_chunk_size = chunk_size
+
+        for cell_name, transforms in multi_instances.items():
+            if not transforms:
+                continue
+
+            # Ensure cell_name is a string
+            if cell_name is None:
+                print(f"Warning: Found instance with None cell_name, skipping.",
+                      file=sys.stderr)
+                continue
+
+            total_instances = len(transforms)
+
+            for i in range(0, total_instances, instance_chunk_size):
+                chunk = transforms[i:i + instance_chunk_size]
+
+                buffer_parts = []
+                buffer_parts.append(struct.pack('<I', len(chunk)))
+
+                # Transpose matrices from Row-Major (Python/Math) to Column-Major (GLSL)
+                # chunk is list of (3,3) arrays.
+                # We want to transpose each 3x3 matrix.
+                chunk_array = np.array(chunk,
+                                       dtype=np.float32)  # Shape (N, 3, 3)
+                chunk_transposed = chunk_array.transpose(
+                    0, 2, 1)  # Swap last two axes (rows <-> cols)
+                flat_transforms = chunk_transposed.reshape(-1, 9)
+
+                buffer_parts.append(flat_transforms.tobytes())
+
+                full_binary = b''.join(buffer_parts)
+
+                msg = {
+                    "type":
+                        "instance",
+                    "cellName":
+                        cell_name,
+                    "chunkIndex":
+                        i // instance_chunk_size,
+                    "totalChunks":
+                        (total_instances + instance_chunk_size - 1) //
+                        instance_chunk_size
+                }
+                send_binary_chunk(msg, full_binary, i // instance_chunk_size,
                                   flow_control_step)
 
         t_end = time.time()
