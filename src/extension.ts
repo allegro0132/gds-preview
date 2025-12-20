@@ -2757,7 +2757,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             const candidates = [];
             for (const layerKey of activeLayers) {
                 if (geometry[layerKey]) {
-                    candidates.push(...geometry[layerKey]);
+                    // Avoid spread operator for large arrays to prevent stack overflow
+                    const layerPolys = geometry[layerKey];
+                    for (let i = 0; i < layerPolys.length; i++) {
+                        candidates.push(layerPolys[i]);
+                    }
                 }
             }
 
