@@ -1582,7 +1582,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 // Instance transforms are already flat float32 arrays of 3x3 matrices
                 // We don't need triangulation worker for this.
                 // Just store it directly.
-                handleInstanceData(cellName, buffer);
+                const count = handleInstanceData(cellName, buffer);
                 pendingTasks--;
 
                 if (flowControlStep !== -1 && (chunkIndex % flowControlStep === 0 || chunkIndex === totalChunks - 1)) {
@@ -1590,7 +1590,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                         vscode.postMessage({ command: 'ready_for_next' });
                     }, 0);
                 }
-                updateStatus(\`Loading Instances \${cellName || 'Unknown'} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
+                updateStatus(\`Loading Instances \${cellName || 'Unknown'} (\${chunkIndex + 1}/\${totalChunks || '?'}) - \${count} items\`);
                 return;
             }
 
@@ -1611,15 +1611,15 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     vscode.postMessage({ command: 'ready_for_next' });
                 }, 0);
             }
-            updateStatus(\`Loading \${layerKey || 'Unknown'} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
+            updateStatus(\`Loading \${layerKey || 'Unknown'}\${cellName ? ' ' + cellName : ''} (\${chunkIndex + 1}/\${totalChunks || '?'})\`);
         }
 
         function handleInstanceData(cellName, buffer) {
-            if (!gl) return;
-
             // Read count from first 4 bytes (uint32)
             const dataView = new DataView(buffer);
             const count = dataView.getUint32(0, true); // Little endian
+
+            if (!gl) return count;
 
             // The rest is the float array (3x3 matrices)
             // Offset 4 bytes. Length = count * 9 floats * 4 bytes/float
@@ -1641,6 +1641,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             });
 
             requestAnimationFrame(drawWebGL);
+            return count;
         }
 
         function handleAddLayerChunk(layerKey, data) {

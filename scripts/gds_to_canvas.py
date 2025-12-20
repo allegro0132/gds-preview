@@ -33,6 +33,14 @@ def get_transform_matrix(rotation, magnification, x_reflection, origin):
     return np.array([[m11, m12, origin[0]], [m21, m22, origin[1]], [0, 0, 1]])
 
 
+def send_binary_chunk(msg, binary_data, chunk_index, flow_control_step):
+    msg['data'] = base64.b64encode(binary_data).decode('ascii')
+    print("CHUNK_B64|" + json.dumps(msg, separators=(',', ':')))
+    sys.stdout.flush()
+    if flow_control_step != -1 and chunk_index % flow_control_step == 0:
+        sys.stdin.readline()
+
+
 def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
                               chunk_size, flow_control_step):
     try:
@@ -234,6 +242,22 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
                         needed_definitions.add(cell_to_ref.name)
                         stack.append((cell_to_ref, t_global))
 
+        # 1.5 Filter Instances
+        # Separate cells into "Multi-Use" (Instanced) and "Single-Use" (Flattened)
+        multi_instances = {}
+        single_instances = {}
+        for name, trans in instances.items():
+            # Threshold: If used > 1 time, use instancing.
+            # Exception: Main cell is always treated as instanced (identity) to keep logic simple,
+            # unless we want to flatten it too. Let's keep main_cell as instanced for now.
+            if len(trans) > 1 or name == main_cell.name:
+                multi_instances[name] = trans
+            else:
+                single_instances[name] = trans
+
+        needed_definitions = set(multi_instances.keys())
+        all_referenced_cells = set(instances.keys())
+
         # 2. Send Metadata
         bbox = main_cell.bounding_box()
         if bbox is None:
@@ -257,7 +281,7 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
         all_layers = set()
         cell_map = {c.name: c for c in lib.cells}
 
-        for cell_name in needed_definitions:
+        for cell_name in all_referenced_cells:
             c = cell_map.get(cell_name)
             if not c:
                 continue
@@ -275,7 +299,7 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
         print(json.dumps(metadata, cls=NumpyEncoder))
         sys.stdout.flush()
 
-        # 3. Stream Definitions (Geometry)
+        # 3. Stream Definitions (Geometry) - Only for Multi-Use Cells
         for cell_name in needed_definitions:
             c = cell_map.get(cell_name)
             if not c:
@@ -312,7 +336,6 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
                         buffer_parts.append(points.astype(np.float32).tobytes())
 
                     full_binary = b''.join(buffer_parts)
-                    b64_data = base64.b64encode(full_binary).decode('ascii')
 
                     msg = {
                         "type":
@@ -324,22 +347,16 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
                         "chunkIndex":
                             i // chunk_size,
                         "totalChunks":
-                            (total_polys + chunk_size - 1) // chunk_size,
-                        "data":
-                            b64_data
+                            (total_polys + chunk_size - 1) // chunk_size
                     }
-                    print("CHUNK_B64|" + json.dumps(msg, separators=(',', ':')))
-                    sys.stdout.flush()
-
-                    if flow_control_step != -1 and (
-                            i // chunk_size) % flow_control_step == 0:
-                        sys.stdin.readline()
+                    send_binary_chunk(msg, full_binary, i // chunk_size,
+                                      flow_control_step)
 
         # 3.5 Stream Labels (Flattened)
         # We flatten labels on the server side so the frontend can just draw them
         labels_by_layer = {}
 
-        for cell_name in needed_definitions:
+        for cell_name in all_referenced_cells:
             c = cell_map.get(cell_name)
             if not c:
                 continue
@@ -374,17 +391,18 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
 
         # Send labels
         for layer_key, lbls in labels_by_layer.items():
-            print(json.dumps({
-                "layerKey": layer_key,
-                "labels": lbls
-            },
-                             cls=NumpyEncoder))
+            print(
+                json.dumps({
+                    "layerKey": layer_key,
+                    "labels": lbls
+                },
+                           cls=NumpyEncoder))
             sys.stdout.flush()
 
-        # 4. Stream Instances
+        # 4. Stream Instances - Only for Multi-Use Cells
         instance_chunk_size = chunk_size
 
-        for cell_name, transforms in instances.items():
+        for cell_name, transforms in multi_instances.items():
             if not transforms:
                 continue
 
@@ -414,7 +432,6 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
                 buffer_parts.append(flat_transforms.tobytes())
 
                 full_binary = b''.join(buffer_parts)
-                b64_data = base64.b64encode(full_binary).decode('ascii')
 
                 msg = {
                     "type":
@@ -425,16 +442,85 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
                         i // instance_chunk_size,
                     "totalChunks":
                         (total_instances + instance_chunk_size - 1) //
-                        instance_chunk_size,
-                    "data":
-                        b64_data
+                        instance_chunk_size
                 }
-                print("CHUNK_B64|" + json.dumps(msg, separators=(',', ':')))
-                sys.stdout.flush()
+                send_binary_chunk(msg, full_binary, i // instance_chunk_size,
+                                  flow_control_step)
 
-                if flow_control_step != -1 and (
-                        i // instance_chunk_size) % flow_control_step == 0:
-                    sys.stdin.readline()
+        # 5. Stream Flat Geometry - For Single-Use Cells
+        # Flatten single-use cells into global coordinates and stream as 'flat' geometry
+        flat_layer_polys = {}
+
+        class TransformedPolygon:
+
+            def __init__(self, points, layer, datatype):
+                self.points = points
+                self.layer = layer
+                self.datatype = datatype
+
+        for cell_name, transforms in single_instances.items():
+            c = cell_map.get(cell_name)
+            if not c:
+                continue
+
+            # Get all polygons (including paths)
+            polys = list(c.polygons)
+            for path in c.paths:
+                polys.extend(path.to_polygons())
+
+            if not polys:
+                continue
+
+            # Apply transforms (usually just 1)
+            for t in transforms:
+                # t is 3x3 matrix (Row-Major in Python/Numpy)
+                # Points are (N, 2)
+                # Transformed = Points @ T[:2,:2].T + T[:2, 2]
+
+                rotation_scale = t[:2, :2].T
+                translation = t[:2, 2]
+
+                for p in polys:
+                    if p.points is None or len(p.points) == 0:
+                        continue
+
+                    # Transform points
+                    new_points = p.points @ rotation_scale + translation
+
+                    key = f"{p.layer}_{p.datatype}"
+                    if key not in flat_layer_polys:
+                        flat_layer_polys[key] = []
+
+                    # Store as simple object
+                    flat_layer_polys[key].append(
+                        TransformedPolygon(new_points, p.layer, p.datatype))
+
+        # Stream Flat Polygons
+        for layer_key, polygons in flat_layer_polys.items():
+            total_polys = len(polygons)
+            for i in range(0, total_polys, chunk_size):
+                chunk = polygons[i:i + chunk_size]
+
+                buffer_parts = []
+                buffer_parts.append(struct.pack('<I', len(chunk)))
+
+                for p in chunk:
+                    points = p.points
+                    buffer_parts.append(struct.pack('<I', len(points)))
+                    buffer_parts.append(points.astype(np.float32).tobytes())
+
+                full_binary = b''.join(buffer_parts)
+
+                # Use type='flat' (or just omit type, but 'flat' is clearer)
+                # Frontend handles non-'definition' types as flat geometry
+                msg = {
+                    "type": "flat",
+                    "layerKey": layer_key,
+                    "chunkIndex": i // chunk_size,
+                    "totalChunks": (total_polys + chunk_size - 1) // chunk_size
+                }
+                send_binary_chunk(msg, full_binary, i // chunk_size,
+                                  flow_control_step)
 
         t_end = time.time()
         print(f"PROFILE: Instanced Streaming: {t_end - t_read:.4f}s",
@@ -663,27 +749,16 @@ def gds_to_geometry(gds_path,
                     buffer_parts.append(points.astype(np.float32).tobytes())
 
                 full_binary = b''.join(buffer_parts)
-                b64_data = base64.b64encode(full_binary).decode('ascii')
 
                 # Send Base64 Data Line
                 # Format: CHUNK_B64|{"layerKey":..., "data": "..."}
-                print("CHUNK_B64|" + json.dumps(
-                    {
-                        "layerKey":
-                            layer_key,
-                        "chunkIndex":
-                            i // chunk_size,
-                        "totalChunks": (total_polys + chunk_size - 1) //
-                                       chunk_size,
-                        "data":
-                            b64_data
-                    },
-                    separators=(',', ':')))
-                sys.stdout.flush()
-                # flow control
-                if flow_control_step != -1 and (
-                        i // chunk_size) % flow_control_step == 0:
-                    sys.stdin.readline()
+                msg = {
+                    "layerKey": layer_key,
+                    "chunkIndex": i // chunk_size,
+                    "totalChunks": (total_polys + chunk_size - 1) // chunk_size
+                }
+                send_binary_chunk(msg, full_binary, i // chunk_size,
+                                  flow_control_step)
 
         t_end = time.time()
         print(f"PROFILE: Streaming: {t_end - t_meta:.4f}s", file=sys.stderr)
