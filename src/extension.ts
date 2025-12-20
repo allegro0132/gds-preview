@@ -805,6 +805,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let isNegative = false;
         let svgFragments = {};
         let highlightedPolygons = [];
+        let searchRequestId = null;
 
         // WebGL State
         let gl = null;
@@ -1243,6 +1244,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
                 vscode.postMessage({ command: 'reset' });
             } else if (message.command === 'stop') {
+                if (searchRequestId) {
+                    cancelAnimationFrame(searchRequestId);
+                    searchRequestId = null;
+                    updateStatus("Search stopped by user");
+                }
                 vscode.postMessage({ command: 'stop' });
             }
         });
@@ -1509,6 +1515,30 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 div.addEventListener('dragleave', handleDragLeave, false);
                 div.addEventListener('drop', handleDrop, false);
 
+                div.addEventListener('dblclick', (e) => {
+                    e.stopPropagation();
+                    activeLayers.clear();
+                    activeLayers.add(layerKey);
+
+                    // Update UI
+                    const checkboxes = document.querySelectorAll('#layers-list input[type="checkbox"]');
+                    checkboxes.forEach(cb => {
+                        cb.checked = (cb.getAttribute('data-layer-id') === layerKey);
+                    });
+
+                    // Redraw
+                    if (currentEngine === 'canvas') draw();
+                    else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
+                    requestAnimationFrame(drawLabels);
+
+                    if (currentEngine === 'svg') {
+                        allLayers.forEach(key => {
+                            const el = document.getElementById('layer-group-' + key);
+                            if (el) el.style.display = (key === layerKey) ? 'block' : 'none';
+                        });
+                    }
+                });
+
                 div.innerHTML = \`
                     <input type="checkbox" id="toggle-\${layerKey}" data-layer-id="\${layerKey}" checked>
                     <label for="toggle-\${layerKey}">Layer \${layerKey.replace('_', ' / ')}</label>
@@ -1765,6 +1795,30 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 div.addEventListener('dragover', handleDragOver, false);
                 div.addEventListener('dragleave', handleDragLeave, false);
                 div.addEventListener('drop', handleDrop, false);
+
+                div.addEventListener('dblclick', (e) => {
+                    e.stopPropagation();
+                    activeLayers.clear();
+                    activeLayers.add(layerKey);
+
+                    // Update UI
+                    const checkboxes = document.querySelectorAll('#layers-list input[type="checkbox"]');
+                    checkboxes.forEach(cb => {
+                        cb.checked = (cb.getAttribute('data-layer-id') === layerKey);
+                    });
+
+                    // Redraw
+                    if (currentEngine === 'canvas') draw();
+                    else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
+                    requestAnimationFrame(drawLabels);
+
+                    if (currentEngine === 'svg') {
+                        allLayers.forEach(key => {
+                            const el = document.getElementById('layer-group-' + key);
+                            if (el) el.style.display = (key === layerKey) ? 'block' : 'none';
+                        });
+                    }
+                });
 
                 div.innerHTML = \`
                     <input type="checkbox" id="toggle-\${layerKey}" data-layer-id="\${layerKey}" checked>
@@ -2663,6 +2717,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         }
 
         function findAndHighlight(x, y) {
+            if (searchRequestId) {
+                cancelAnimationFrame(searchRequestId);
+                searchRequestId = null;
+            }
+
             let startPoly = null;
             for (const layerKey of activeLayers) {
                 if (!geometry[layerKey]) continue;
@@ -2699,30 +2758,43 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             const MAX_SEARCH_STEPS = 5000;
             let steps = 0;
 
-            while(head < queue.length && steps < MAX_SEARCH_STEPS) {
-                const current = queue[head++];
-                steps++;
+            const processChunk = () => {
+                const startTime = performance.now();
+                while(head < queue.length && steps < MAX_SEARCH_STEPS) {
+                    // Check time budget (e.g. 10ms)
+                    if (performance.now() - startTime > 10) {
+                        searchRequestId = requestAnimationFrame(processChunk);
+                        return;
+                    }
 
-                for (const other of candidates) {
-                    if (visited.has(other)) continue;
+                    const current = queue[head++];
+                    steps++;
 
-                    if (!bboxesIntersect(current.bbox, other.bbox)) continue;
+                    for (const other of candidates) {
+                        if (visited.has(other)) continue;
 
-                    if (polygonsIntersect(current, other)) {
-                        visited.add(other);
-                        result.push(other);
-                        queue.push(other);
+                        if (!bboxesIntersect(current.bbox, other.bbox)) continue;
+
+                        if (polygonsIntersect(current, other)) {
+                            visited.add(other);
+                            result.push(other);
+                            queue.push(other);
+                        }
                     }
                 }
-            }
 
-            highlightedPolygons = result;
-            if (steps >= MAX_SEARCH_STEPS) {
-                updateStatus(\`Highlighted \${result.length} objects (Search limit reached)\`);
-            } else {
-                updateStatus(\`Highlighted \${result.length} connected objects\`);
-            }
-            requestAnimationFrame(drawLabels);
+                // Finished
+                searchRequestId = null;
+                highlightedPolygons = result;
+                if (steps >= MAX_SEARCH_STEPS) {
+                    updateStatus(\`Highlighted \${result.length} objects (Search limit reached)\`);
+                } else {
+                    updateStatus(\`Highlighted \${result.length} connected objects\`);
+                }
+                requestAnimationFrame(drawLabels);
+            };
+
+            processChunk();
         }
 
         function pointInPolygon(x, y, poly) {
