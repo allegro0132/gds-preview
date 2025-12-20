@@ -415,8 +415,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             font-size: var(--vscode-font-size);
         }
         #view-container { flex-grow: 1; position: relative; height: 100%; overflow: hidden; }
-        #gds-canvas, #gds-webgl-canvas { display: block; width: 100%; height: 100%; }
-        #root-svg-for-panzoom { width: 100%; height: 100%; display: block; }
+        #gds-canvas, #gds-webgl-canvas { display: block; width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
+        #root-svg-for-panzoom { width: 100%; height: 100%; display: block; position: absolute; top: 0; left: 0; }
         .gds-layer path, .gds-layer polygon, .gds-layer text {
             fill: currentColor;
             stroke: currentColor;
@@ -756,10 +756,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         <canvas id="gds-canvas" style="display: none;"></canvas>
         <!-- WebGL Canvas -->
         <canvas id="gds-webgl-canvas" style="display: none;"></canvas>
-        <!-- Text Overlay Canvas -->
-        <canvas id="text-canvas" style="position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
         <!-- SVG container for 'svg' mode -->
         <div id="svg-container" style="display: none; width: 100%; height: 100%;"></div>
+        <!-- Text Overlay Canvas -->
+        <canvas id="text-canvas" style="position: absolute; top: 0; left: 0; pointer-events: none; z-index: 100;"></canvas>
     </div>
 
     <script src="${svgPanZoomCdn}" onerror="console.error('Failed to load svg-pan-zoom')"></script>
@@ -801,8 +801,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let rotationState = 0; // Degrees
         let expandedNodes = new Set(); // Persist tree expansion state
         let isViewFitted = false;
+        let hasUserInteracted = false;
         let isNegative = false;
         let svgFragments = {};
+        let highlightedPolygons = [];
 
         // WebGL State
         let gl = null;
@@ -876,9 +878,11 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                         const t1 = performance.now();
                         // Return raw polygons (Float32Arrays)
                         // If binary, we can transfer the buffer back to save memory
-                        const transfer = e.data.isBinary ? [e.data.buffer] : [];
+                        // BUT if we also need to triangulate (for WebGL), we cannot transfer the buffer yet!
+                        const transfer = (e.data.isBinary && !e.data.alsoTriangulate) ? [e.data.buffer] : [];
                         self.postMessage({ id, polygons, duration: t1 - t0 }, transfer);
-                        return;
+
+                        if (!e.data.alsoTriangulate) return;
                     }
 
                     if (!self.earcut) {
@@ -949,26 +953,30 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             const type = id.type;
             const cellName = id.cellName;
 
-            if (polygons && currentEngine === 'canvas') {
-                if (!geometry[layerKey]) geometry[layerKey] = [];
+            if (polygons) {
+                if (currentEngine === 'canvas' || currentEngine === 'webgl') {
+                    if (!geometry[layerKey]) geometry[layerKey] = [];
 
-                // Pre-calculate bbox for flat polygons
-                for (const poly of polygons) {
-                    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                    // poly is Float32Array [x, y, x, y...]
-                    for (let i = 0; i < poly.length; i += 2) {
-                        const x = poly[i];
-                        const y = poly[i+1];
-                        if (x < minX) minX = x;
-                        if (x > maxX) maxX = x;
-                        if (y < minY) minY = y;
-                        if (y > maxY) maxY = y;
+                    // Pre-calculate bbox for flat polygons
+                    for (const poly of polygons) {
+                        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                        // poly is Float32Array [x, y, x, y...]
+                        for (let i = 0; i < poly.length; i += 2) {
+                            const x = poly[i];
+                            const y = poly[i+1];
+                            if (x < minX) minX = x;
+                            if (x > maxX) maxX = x;
+                            if (y < minY) minY = y;
+                            if (y > maxY) maxY = y;
+                        }
+                        poly.bbox = { minX, minY, maxX, maxY };
                     }
-                    poly.bbox = { minX, minY, maxX, maxY };
+                    geometry[layerKey].push(...polygons);
                 }
-                geometry[layerKey].push(...polygons);
-                requestAnimationFrame(draw);
-            } else if (vertices && vertices.length > 0 && gl) {
+                if (currentEngine === 'canvas') requestAnimationFrame(draw);
+            }
+
+            if (vertices && vertices.length > 0 && gl) {
                 const buffer = gl.createBuffer();
                 gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
                 gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
@@ -1151,6 +1159,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         }
 
         function onInteraction() {
+            hasUserInteracted = true;
             if (!isInteracting) {
                 isInteracting = true;
                 // Redraw immediately to switch to low-quality mode
@@ -1212,6 +1221,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             } else if (message.command === 'reset') {
                 flipState = { x: 1, y: currentEngine === 'svg' ? -1 : 1 };
                 rotationState = 0;
+                highlightedPolygons = [];
+                hasUserInteracted = false;
                 updateTransform();
                 // Reset toolbar position
                 const toolbar = document.getElementById('toolbar');
@@ -1441,13 +1452,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             pendingTasks = 0;
             pythonFinished = false;
             isViewFitted = false;
+            hasUserInteracted = false;
             updateStatus("Initializing...");
 
             // Reset state
             geometry = {};
             labels = {};
+            highlightedPolygons = [];
             bbox = data.bbox;
             activeLayers.clear();
+            hasUserInteracted = false;
             layerColors = {};
             layerOpacities = {};
             layerBuffers = {}; // Clear WebGL buffers
@@ -1602,7 +1616,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 id: { layerKey, chunkIndex, type, cellName },
                 buffer: buffer,
                 isBinary: true,
-                returnPolygons: currentEngine === 'canvas'
+                returnPolygons: true, // Always return polygons for highlighting
+                alsoTriangulate: currentEngine === 'webgl' // Triangulate only for WebGL
             }, [buffer]); // Transfer buffer ownership
             // flow control
             if (flowControlStep !== -1 && (chunkIndex % flowControlStep === 0 || chunkIndex === totalChunks - 1)) {
@@ -1647,8 +1662,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         function handleAddLayerChunk(layerKey, data) {
             const polys = data.polygons;
 
-            // 1. Handle Geometry Storage (Canvas Mode Only)
-            if (currentEngine === 'canvas') {
+            // 1. Handle Geometry Storage (Canvas & WebGL)
+            if (currentEngine === 'canvas' || currentEngine === 'webgl') {
                 if (polys && polys.length > 0) {
                     if (!geometry[layerKey]) geometry[layerKey] = [];
 
@@ -1674,7 +1689,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             }
 
             // 3. Handle WebGL Buffers (WebGL Mode Only)
-            // CRITICAL: We process and DISCARD the polygons immediately to save memory
+            // We process polygons for WebGL triangulation
             if (currentEngine === 'webgl' && polys && polys.length > 0) {
                 // Dispatch to worker
                 const worker = workerPool[workerRoundRobin];
@@ -1700,6 +1715,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
         function handleDataUpdate(data) {
             updateStatus("Rendering...");
+
+            highlightedPolygons = [];
 
             // Update Cell Tree
             buildTree(data.hierarchy, data.top_level_cells, data.all_cells, data.cell_name);
@@ -1841,6 +1858,22 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             resizeCanvas();
             svgContainer.style.display = 'block';
 
+            geometry = data.geometry || {}; // Load geometry for highlighting
+            // Calculate bboxes for SVG geometry
+            for (const layerKey in geometry) {
+                const polys = geometry[layerKey];
+                for (const poly of polys) {
+                    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                    for (const p of poly) {
+                        if (p[0] < minX) minX = p[0];
+                        if (p[0] > maxX) maxX = p[0];
+                        if (p[1] < minY) minY = p[1];
+                        if (p[1] > maxY) maxY = p[1];
+                    }
+                    poly.bbox = { minX, minY, maxX, maxY };
+                }
+            }
+
             bbox = data.bbox; // Update global bbox for transform calculations
 
             const bboxWidth = data.bbox.x_max - data.bbox.x_min;
@@ -1891,17 +1924,22 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 viewportSelector: '#svg-pan-zoom-viewport',
                 panEnabled: true,
                 zoomEnabled: true,
+                dblClickZoomEnabled: false,
                 controlIconsEnabled: false,
                 fit: true,
                 center: true,
                 minZoom: 0.1,
                 maxZoom: 100,
                 onZoom: function(newZoom) {
-                    const pan = this.getPan();
-                    offsetX = pan.x;
-                    offsetY = pan.y;
-                    scale = newZoom;
-                    requestAnimationFrame(drawLabels);
+                    const instance = this;
+                    // Defer update to ensure pan is calculated for the new zoom level
+                    setTimeout(() => {
+                        const pan = instance.getPan();
+                        offsetX = pan.x;
+                        offsetY = pan.y;
+                        scale = instance.getSizes().realZoom;
+                        requestAnimationFrame(drawLabels);
+                    }, 0);
                 },
                 onPan: function(newPan) {
                     const pan = this.getPan();
@@ -1911,6 +1949,13 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     requestAnimationFrame(drawLabels);
                 }
             });
+
+            // Sync initial state immediately
+            const pan = panZoomInstance.getPan();
+            const sizes = panZoomInstance.getSizes();
+            offsetX = pan.x;
+            offsetY = pan.y;
+            scale = sizes.realZoom;
         }
 
         function setupWebGLMode(data) {
@@ -2265,7 +2310,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 textCanvas.height = container.clientHeight;
             }
 
-            if (!isViewFitted && (currentEngine === 'canvas' || currentEngine === 'webgl')) {
+            if ((!isViewFitted || !hasUserInteracted) && (currentEngine === 'canvas' || currentEngine === 'webgl')) {
                 fitView();
             } else {
                 if (currentEngine === 'canvas') draw();
@@ -2332,6 +2377,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             if (!textCanvas) return;
             const ctx = textCanvas.getContext('2d');
             ctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
+
+            if (highlightedPolygons.length > 0) {
+                drawHighlights(ctx);
+            }
 
             if (!showLabels) return;
 
@@ -2557,6 +2606,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
                 ctx.restore();
 
+                if (highlightedPolygons.length > 0) {
+                    // drawHighlights(); // Moved to drawLabels to support WebGL overlay
+                }
+
                 // Debug overlay
                 ctx.save();
                 ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--vscode-editor-foreground');
@@ -2567,6 +2620,171 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 console.error("Draw error:", e);
                 updateStatus("Draw error: " + e.message);
             }
+        }
+
+        function drawHighlights(targetCtx) {
+            const ctxToUse = targetCtx || ctx;
+            if (!ctxToUse) return;
+
+            ctxToUse.save();
+            ctxToUse.translate(offsetX, offsetY);
+            ctxToUse.scale(scale, -scale);
+            // In SVG mode, the coordinate system needs an extra flip to match display
+            const fy = currentEngine === 'svg' ? -flipState.y : flipState.y;
+            ctxToUse.scale(flipState.x, fy);
+            ctxToUse.rotate(rotationState * Math.PI / 180);
+
+            ctxToUse.strokeStyle = '#00FFFF';
+            ctxToUse.lineWidth = 2 / scale;
+            ctxToUse.fillStyle = 'rgba(0, 255, 255, 0.3)';
+
+            for (const poly of highlightedPolygons) {
+                ctxToUse.beginPath();
+                const isFlat = poly instanceof Float32Array;
+                const len = isFlat ? poly.length / 2 : poly.length;
+                if (len < 2) continue;
+
+                if (isFlat) {
+                    ctxToUse.moveTo(poly[0], poly[1]);
+                    for (let i = 1; i < len; i++) {
+                        ctxToUse.lineTo(poly[i * 2], poly[i * 2 + 1]);
+                    }
+                } else {
+                    ctxToUse.moveTo(poly[0][0], poly[0][1]);
+                    for (let i = 1; i < poly.length; i++) {
+                        ctxToUse.lineTo(poly[i][0], poly[i][1]);
+                    }
+                }
+                ctxToUse.closePath();
+                ctxToUse.fill();
+                ctxToUse.stroke();
+            }
+            ctxToUse.restore();
+        }
+
+        function findAndHighlight(x, y) {
+            let startPoly = null;
+            for (const layerKey of activeLayers) {
+                if (!geometry[layerKey]) continue;
+                for (const poly of geometry[layerKey]) {
+                    if (pointInPolygon(x, y, poly)) {
+                        startPoly = poly;
+                        break;
+                    }
+                }
+                if (startPoly) break;
+            }
+
+            if (!startPoly) {
+                highlightedPolygons = [];
+                requestAnimationFrame(drawLabels);
+                return;
+            }
+
+            const queue = [startPoly];
+            const visited = new Set([startPoly]);
+            const result = [startPoly];
+
+            updateStatus("Searching connected objects...");
+
+            const candidates = [];
+            for (const layerKey of activeLayers) {
+                if (geometry[layerKey]) {
+                    candidates.push(...geometry[layerKey]);
+                }
+            }
+
+            let head = 0;
+            // Limit search to avoid freezing
+            const MAX_SEARCH_STEPS = 5000;
+            let steps = 0;
+
+            while(head < queue.length && steps < MAX_SEARCH_STEPS) {
+                const current = queue[head++];
+                steps++;
+
+                for (const other of candidates) {
+                    if (visited.has(other)) continue;
+
+                    if (!bboxesIntersect(current.bbox, other.bbox)) continue;
+
+                    if (polygonsIntersect(current, other)) {
+                        visited.add(other);
+                        result.push(other);
+                        queue.push(other);
+                    }
+                }
+            }
+
+            highlightedPolygons = result;
+            if (steps >= MAX_SEARCH_STEPS) {
+                updateStatus(\`Highlighted \${result.length} objects (Search limit reached)\`);
+            } else {
+                updateStatus(\`Highlighted \${result.length} connected objects\`);
+            }
+            requestAnimationFrame(drawLabels);
+        }
+
+        function pointInPolygon(x, y, poly) {
+            let inside = false;
+            const isFlat = poly instanceof Float32Array;
+            const len = isFlat ? poly.length / 2 : poly.length;
+
+            for (let i = 0, j = len - 1; i < len; j = i++) {
+                const xi = isFlat ? poly[i*2] : poly[i][0];
+                const yi = isFlat ? poly[i*2+1] : poly[i][1];
+                const xj = isFlat ? poly[j*2] : poly[j][0];
+                const yj = isFlat ? poly[j*2+1] : poly[j][1];
+
+                const intersect = ((yi > y) !== (yj > y)) &&
+                    (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+                if (intersect) inside = !inside;
+            }
+            return inside;
+        }
+
+        function bboxesIntersect(a, b) {
+            if (!a || !b) return false;
+            return a.minX <= b.maxX && a.maxX >= b.minX &&
+                   a.minY <= b.maxY && a.maxY >= b.minY;
+        }
+
+        function polygonsIntersect(poly1, poly2) {
+            const getPt = (poly, i) => {
+                if (poly instanceof Float32Array) return {x: poly[i*2], y: poly[i*2+1]};
+                return {x: poly[i][0], y: poly[i][1]};
+            };
+            const getLen = (poly) => poly instanceof Float32Array ? poly.length/2 : poly.length;
+
+            const len1 = getLen(poly1);
+            const len2 = getLen(poly2);
+
+            for(let i=0; i<len1; i++) {
+                const p = getPt(poly1, i);
+                if (pointInPolygon(p.x, p.y, poly2)) return true;
+            }
+            for(let i=0; i<len2; i++) {
+                const p = getPt(poly2, i);
+                if (pointInPolygon(p.x, p.y, poly1)) return true;
+            }
+
+            for(let i=0; i<len1; i++) {
+                const p1 = getPt(poly1, i);
+                const p2 = getPt(poly1, (i+1)%len1);
+
+                for(let j=0; j<len2; j++) {
+                    const p3 = getPt(poly2, j);
+                    const p4 = getPt(poly2, (j+1)%len2);
+
+                    if (segmentsIntersect(p1, p2, p3, p4)) return true;
+                }
+            }
+            return false;
+        }
+
+        function segmentsIntersect(a, b, c, d) {
+            const ccw = (p1, p2, p3) => (p3.y - p1.y) * (p2.x - p1.x) > (p2.y - p1.y) * (p3.x - p1.x);
+            return (ccw(a, c, d) !== ccw(b, c, d)) && (ccw(a, b, c) !== ccw(a, b, d));
         }
 
         // Event Listeners
@@ -2588,6 +2806,40 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         const viewContainer = document.getElementById('view-container');
 
         // Mouse interaction
+        viewContainer.addEventListener('dblclick', e => {
+            if (currentEngine !== 'canvas' && currentEngine !== 'webgl' && currentEngine !== 'svg') {
+                updateStatus("Highlighting not supported in this mode");
+                return;
+            }
+
+            const rect = viewContainer.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            // Inverse transform: Screen -> World
+            // Screen = ((World * Rot * Flip) * BaseFlip * Scale) + Offset
+            // World = (((Screen - Offset) / Scale) * BaseFlipInv * FlipInv * RotInv)
+
+            let x = mouseX - offsetX;
+            let y = mouseY - offsetY;
+
+            x /= scale;
+            y /= -scale; // BaseFlip (y *= -1) is included here
+
+            x /= flipState.x;
+            // In SVG mode, the coordinate system needs an extra flip to match detection
+            const fy = currentEngine === 'svg' ? -flipState.y : flipState.y;
+            y /= fy;
+
+            const rad = -rotationState * Math.PI / 180;
+            const c = Math.cos(rad);
+            const s = Math.sin(rad);
+            const wx = x * c - y * s;
+            const wy = x * s + y * c;
+
+            findAndHighlight(wx, wy);
+        });
+
         viewContainer.addEventListener('mousedown', e => {
             if (currentEngine !== 'canvas' && currentEngine !== 'webgl') return;
             isDragging = true;
@@ -2860,6 +3112,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let toolbarOffsetY = 0;
 
         if (toolbar) {
+            toolbar.addEventListener('dblclick', (e) => e.stopPropagation());
+
             toolbar.addEventListener('mousedown', (e) => {
                 // Only drag if clicking on the toolbar background, not buttons/inputs
                 if (e.target === toolbar || e.target.classList.contains('toolbar-separator')) {

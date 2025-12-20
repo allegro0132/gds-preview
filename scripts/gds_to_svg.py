@@ -134,6 +134,7 @@ def gds_to_layered_svgs(gds_path,
         layer_svg_fragments = {}
         all_labels = []
         active_layer_keys = set()
+        geometry = {}
 
         for layer, datatype in layers_datatypes_list:
             layer_key = f"{layer}_{datatype}"
@@ -193,6 +194,10 @@ def gds_to_layered_svgs(gds_path,
             # Only add polygons to the SVG, NOT labels
             layer_cell.add(*polygons_for_layer)
 
+            # Collect geometry for client-side highlighting
+            # Convert numpy arrays to lists for JSON serialization
+            geometry[layer_key] = [p.points for p in polygons_for_layer]
+
             temp_full_svg_path = os.path.join(
                 output_dir, f"temp_full_layer_{layer_key}.svg")
 
@@ -249,6 +254,7 @@ def gds_to_layered_svgs(gds_path,
             "layers": sorted(list(active_layer_keys), key=layer_key_sort),
             "svg_fragments":
                 layer_svg_fragments,  # Changed from 'files' to 'svg_fragments'
+            "geometry": geometry,
             "labels": all_labels,
             "bbox": {
                 "x_min": bbox[0][0],
