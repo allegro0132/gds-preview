@@ -23,6 +23,9 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
   - **Viewport Culling**: Only renders what is visible on screen.
   - **Dynamic Level of Detail (LOD)**: Automatically reduces detail during fast interactions to maintain high frame rates.
   - **Instanced Rendering**: Uses hardware instancing (`ANGLE_instanced_arrays`) to efficiently render hierarchical designs with thousands of repeated cells.
+- **Advanced Analysis**:
+  - **Net Tracing**: Double-click any object to highlight all physically connected polygons (Net Tracing). Works across instances and hierarchy.
+  - **Layer Soloing**: Double-click a layer in the sidebar to instantly isolate it.
 
 ## Rendering Engines
 

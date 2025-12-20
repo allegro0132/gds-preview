@@ -4,6 +4,28 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.3.0] - 2025-12-21
+
+### Added
+- **Connected Object Highlighting**:
+  - Double-click on any object to highlight it and all physically connected objects (net tracing).
+  - Works across all rendering engines (WebGL, Canvas, SVG).
+  - **Instance Support**: Fully supports tracing connectivity into and across GDSII instances (references) without flattening.
+  - **Dynamic Expansion**: Implemented "Dynamic Instance Expansion" algorithm to efficiently trace connectivity in hierarchical designs.
+  - Double-click background to clear highlights.
+- **Layer Soloing**:
+  - Double-click a layer in the sidebar to isolate it (hide all other layers).
+
+### Fixed
+- **Rendering & Coordinates**:
+  - Fixed label drift when zooming in SVG mode.
+  - Fixed coordinate offsets caused by CSS layout timing.
+- **Stability**:
+  - Fixed "Maximum call stack size exceeded" error when highlighting large nets.
+  - Fixed `pendingTasks` tracking in WebGL mode to ensure correct completion status.
+  - Fixed data duplication issues when reloading or resetting the view in WebGL mode.
+  - Fixed matrix indexing issues (Column-Major vs Row-Major) for instance hit testing.
+
 ## [0.2.5] - 2025-12-20
 
 ### Added
