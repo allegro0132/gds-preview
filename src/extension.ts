@@ -814,6 +814,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let layerBuffers = {}; // { layerKey: { vertexBuffer, vertexCount, colorLocation, matrixLocation } }
         let instanceBuffers = {}; // { cellName: { buffer, count } }
         let definitions = {}; // { cellName: { layerKey: { vertexBuffer, vertexCount } } }
+        let definitionGeometry = {}; // { cellName: { layerKey: [polygons...] } }
+        let instanceTransforms = {}; // { cellName: [Float32Array(9), ...] }
+        let definitionBBoxes = {}; // { cellName: { minX, minY, maxX, maxY } }
         let bboxBuffer = null;
 
         // Worker Pool for Triangulation
@@ -956,8 +959,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
             if (polygons) {
                 if (currentEngine === 'canvas' || currentEngine === 'webgl') {
-                    if (!geometry[layerKey]) geometry[layerKey] = [];
-
                     // Pre-calculate bbox for flat polygons
                     for (const poly of polygons) {
                         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -972,7 +973,25 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                         }
                         poly.bbox = { minX, minY, maxX, maxY };
                     }
-                    geometry[layerKey].push(...polygons);
+
+                    if (type === 'definition') {
+                        if (!definitionGeometry[cellName]) definitionGeometry[cellName] = {};
+                        if (!definitionGeometry[cellName][layerKey]) definitionGeometry[cellName][layerKey] = [];
+                        definitionGeometry[cellName][layerKey].push(...polygons);
+
+                        // Update definition BBox
+                        if (!definitionBBoxes[cellName]) definitionBBoxes[cellName] = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+                        const db = definitionBBoxes[cellName];
+                        for (const poly of polygons) {
+                            if (poly.bbox.minX < db.minX) db.minX = poly.bbox.minX;
+                            if (poly.bbox.minY < db.minY) db.minY = poly.bbox.minY;
+                            if (poly.bbox.maxX > db.maxX) db.maxX = poly.bbox.maxX;
+                            if (poly.bbox.maxY > db.maxY) db.maxY = poly.bbox.maxY;
+                        }
+                    } else {
+                        if (!geometry[layerKey]) geometry[layerKey] = [];
+                        geometry[layerKey].push(...polygons);
+                    }
                 }
                 if (currentEngine === 'canvas') requestAnimationFrame(draw);
             }
@@ -1231,6 +1250,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 rotationState = 0;
                 highlightedPolygons = [];
                 hasUserInteracted = false;
+
+                // Clear data structures
+                geometry = {};
+                labels = {};
+                definitions = {};
+                instanceBuffers = {};
+                definitionGeometry = {};
+                instanceTransforms = {};
+                definitionBBoxes = {};
+
                 updateTransform();
                 // Reset toolbar position
                 const toolbar = document.getElementById('toolbar');
@@ -1594,6 +1623,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 // Clear previous buffers
                 definitions = {};
                 instanceBuffers = {};
+                definitionGeometry = {};
+                instanceTransforms = {};
+                definitionBBoxes = {};
                 setupWebGLMode({ geometry: {}, bbox: data.bbox, layers: [] });
             } else if (currentEngine === 'svg') {
                 // Ensure svgFragments is populated from data if available
@@ -1678,13 +1710,21 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             // We create a Float32Array view on the same buffer, starting at offset 4
             const transforms = new Float32Array(buffer, 4, count * 9);
 
+            // Store transforms for CPU-side hit testing
+            const key = cellName || "UNKNOWN_CELL";
+            if (!instanceTransforms[key]) instanceTransforms[key] = [];
+
+            // Copy transforms to individual arrays or keep as one big block?
+            // Keeping as one big block is harder to iterate if we have multiple chunks.
+            // But here we get one buffer per call.
+            // Let's store the Float32Array directly.
+            instanceTransforms[key].push(transforms);
+
             // Create buffer
             const glBuffer = gl.createBuffer();
             gl.bindBuffer(gl.ARRAY_BUFFER, glBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, transforms, gl.STATIC_DRAW);
 
-            // Use a safe key if cellName is missing
-            const key = cellName || "UNKNOWN_CELL";
             if (!instanceBuffers[key]) instanceBuffers[key] = [];
 
             instanceBuffers[key].push({
@@ -2724,12 +2764,42 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         }
 
         function findAndHighlight(x, y) {
+            // Helper to transform polygon
+            function transformPolygon(poly, m) {
+                // m = [m0, m1, m2, m3, m4, m5]
+                const isFlat = poly instanceof Float32Array;
+                const len = isFlat ? poly.length / 2 : poly.length;
+                const newPoints = new Float32Array(len * 2);
+
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+                for(let i=0; i<len; i++) {
+                    const x = isFlat ? poly[i*2] : poly[i][0];
+                    const y = isFlat ? poly[i*2+1] : poly[i][1];
+
+                    const nx = m[0]*x + m[1]*y + m[2];
+                    const ny = m[3]*x + m[4]*y + m[5];
+
+                    newPoints[i*2] = nx;
+                    newPoints[i*2+1] = ny;
+
+                    if (nx < minX) minX = nx;
+                    if (nx > maxX) maxX = nx;
+                    if (ny < minY) minY = ny;
+                    if (ny > maxY) maxY = ny;
+                }
+                newPoints.bbox = { minX, minY, maxX, maxY };
+                return newPoints;
+            }
+
             if (searchRequestId) {
                 cancelAnimationFrame(searchRequestId);
                 searchRequestId = null;
             }
 
             let startPoly = null;
+
+            // 1. Check Top-Level Geometry
             for (const layerKey of activeLayers) {
                 if (!geometry[layerKey]) continue;
                 for (const poly of geometry[layerKey]) {
@@ -2739,6 +2809,97 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     }
                 }
                 if (startPoly) break;
+            }
+
+            let hitInstanceContext = null;
+
+            // 2. Check Instances (if not found in top-level)
+            if (!startPoly) {
+                for (const cellName in instanceTransforms) {
+                    const transforms = instanceTransforms[cellName];
+                    const defGeom = definitionGeometry[cellName];
+                    if (!defGeom) continue;
+
+                    // Check if any layer in this definition is active
+                    let hasActiveLayer = false;
+                    for (const lk in defGeom) {
+                        if (activeLayers.has(lk)) {
+                            hasActiveLayer = true;
+                            break;
+                        }
+                    }
+                    if (!hasActiveLayer) continue;
+
+                    // Iterate instances
+                    for (const transformList of transforms) {
+                        // transformList is Float32Array of 9 floats per instance
+                        const count = transformList.length / 9;
+                        for (let i = 0; i < count; i++) {
+                            const offset = i * 9;
+                            // Matrix is 3x3 Column-Major (Transposed for WebGL):
+                            // m0 m3 m6
+                            // m1 m4 m7
+                            // m2 m5 m8
+                            //
+                            // Original (Row-Major):
+                            // m11 m12 tx
+                            // m21 m22 ty
+                            // 0   0   1
+                            //
+                            // Transposed Layout in Float32Array:
+                            // 0: m11
+                            // 1: m21
+                            // 2: 0
+                            // 3: m12
+                            // 4: m22
+                            // 5: 0
+                            // 6: tx
+                            // 7: ty
+                            // 8: 1
+
+                            const m11 = transformList[offset + 0];
+                            const m21 = transformList[offset + 1];
+                            const m12 = transformList[offset + 3];
+                            const m22 = transformList[offset + 4];
+                            const tx  = transformList[offset + 6];
+                            const ty  = transformList[offset + 7];
+
+                            // Inverse Transform (to map click point to local space)
+                            // det = m11*m22 - m12*m21
+                            const det = m11 * m22 - m12 * m21;
+                            if (Math.abs(det) < 1e-6) continue;
+
+                            const invDet = 1.0 / det;
+                            // x = (m22*(x' - tx) - m12*(y' - ty)) / det
+                            // y = (-m21*(x' - tx) + m11*(y' - ty)) / det
+
+                            const dx = x - tx;
+                            const dy = y - ty;
+
+                            const localX = (m22 * dx - m12 * dy) * invDet;
+                            const localY = (m11 * dy - m21 * dx) * invDet;
+
+                            // Check against definition geometry
+                            for (const layerKey in defGeom) {
+                                if (!activeLayers.has(layerKey)) continue;
+
+                                for (const poly of defGeom[layerKey]) {
+                                    if (pointInPolygon(localX, localY, poly)) {
+                                        // Found it!
+                                        // Transform polygon to world space
+                                        startPoly = transformPolygon(poly, [m11, m12, tx, m21, m22, ty]);
+                                        hitInstanceContext = { cellName, matrix: [m11, m12, tx, m21, m22, ty], originPoly: poly };
+                                        break;
+                                    }
+                                }
+                                if (startPoly) break;
+                            }
+                            if (startPoly) break;
+                        }
+                        if (startPoly) break;
+                    }
+                    if (startPoly) break;
+                }
             }
 
             if (!startPoly) {
@@ -2754,13 +2915,41 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
             updateStatus("Searching connected objects...");
 
+            // Build candidates list dynamically or use spatial query
+            // For now, we only search top-level geometry + the instance we found (if any)
+            // To support full connectivity, we would need a spatial index.
+            // Let's stick to top-level for now to avoid O(N^2) with instances.
+
             const candidates = [];
             for (const layerKey of activeLayers) {
                 if (geometry[layerKey]) {
-                    // Avoid spread operator for large arrays to prevent stack overflow
                     const layerPolys = geometry[layerKey];
                     for (let i = 0; i < layerPolys.length; i++) {
                         candidates.push(layerPolys[i]);
+                    }
+                }
+            }
+
+            // If startPoly came from an instance, it's already in world space but not in 'geometry'
+            // We should add it to candidates? No, it's already in queue.
+            // But we might want to add other polygons from the SAME instance to candidates?
+            // Yes, otherwise we can't trace inside the instance.
+            if (hitInstanceContext) {
+                const { cellName, matrix, originPoly } = hitInstanceContext;
+                const defGeom = definitionGeometry[cellName];
+                if (defGeom) {
+                    for (const layerKey in defGeom) {
+                        if (!activeLayers.has(layerKey)) continue;
+                        for (const poly of defGeom[layerKey]) {
+                            if (poly === originPoly) {
+                                // This is the polygon we already found and added to queue/visited.
+                                // Add the SAME object to candidates to ensure identity match in visited check.
+                                candidates.push(startPoly);
+                            } else {
+                                const worldPoly = transformPolygon(poly, matrix);
+                                candidates.push(worldPoly);
+                            }
+                        }
                     }
                 }
             }
