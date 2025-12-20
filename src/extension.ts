@@ -1004,6 +1004,13 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             }
 
             // updateStatus(\`Processed chunk for \${layerKey}\`);
+
+            // If this task requested triangulation (WebGL), and we only received polygons so far,
+            // wait for the vertices message before marking task as complete.
+            if (id.alsoTriangulate && polygons && !vertices) {
+                return;
+            }
+
             pendingTasks--;
             checkCompletion();
         }
@@ -1643,7 +1650,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             workerRoundRobin = (workerRoundRobin + 1) % workerPool.length;
 
             worker.postMessage({
-                id: { layerKey, chunkIndex, type, cellName },
+                id: { layerKey, chunkIndex, type, cellName, alsoTriangulate: currentEngine === 'webgl' },
                 buffer: buffer,
                 isBinary: true,
                 returnPolygons: true, // Always return polygons for highlighting
@@ -2736,6 +2743,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
             if (!startPoly) {
                 highlightedPolygons = [];
+                updateStatus("No object found at clicked location");
                 requestAnimationFrame(drawLabels);
                 return;
             }
