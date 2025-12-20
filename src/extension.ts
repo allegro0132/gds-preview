@@ -2954,6 +2954,62 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 }
             }
 
+            // Prepare unexpanded instances for dynamic expansion
+            const unexpandedInstances = [];
+            for (const cellName in instanceTransforms) {
+                const defBBox = definitionBBoxes[cellName];
+                if (!defBBox) continue;
+
+                const transforms = instanceTransforms[cellName];
+                for (const transformList of transforms) {
+                    const count = transformList.length / 9;
+                    for (let i = 0; i < count; i++) {
+                        const offset = i * 9;
+                        const m11 = transformList[offset + 0];
+                        const m21 = transformList[offset + 1];
+                        const m12 = transformList[offset + 3];
+                        const m22 = transformList[offset + 4];
+                        const tx  = transformList[offset + 6];
+                        const ty  = transformList[offset + 7];
+
+                        const matrix = [m11, m12, tx, m21, m22, ty];
+
+                        // Skip if this is the hit instance (already added)
+                        if (hitInstanceContext &&
+                            hitInstanceContext.cellName === cellName &&
+                            Math.abs(hitInstanceContext.matrix[2] - tx) < 1e-6 &&
+                            Math.abs(hitInstanceContext.matrix[5] - ty) < 1e-6) {
+                            continue;
+                        }
+
+                        // Calculate World BBox
+                        // Transform all 4 corners
+                        const corners = [
+                            {x: defBBox.minX, y: defBBox.minY},
+                            {x: defBBox.maxX, y: defBBox.minY},
+                            {x: defBBox.maxX, y: defBBox.maxY},
+                            {x: defBBox.minX, y: defBBox.maxY}
+                        ];
+
+                        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                        for(const p of corners) {
+                            const nx = m11*p.x + m12*p.y + tx;
+                            const ny = m21*p.x + m22*p.y + ty;
+                            if (nx < minX) minX = nx;
+                            if (nx > maxX) maxX = nx;
+                            if (ny < minY) minY = ny;
+                            if (ny > maxY) maxY = ny;
+                        }
+
+                        unexpandedInstances.push({
+                            cellName,
+                            matrix,
+                            bbox: { minX, minY, maxX, maxY }
+                        });
+                    }
+                }
+            }
+
             let head = 0;
             // Limit search to avoid freezing
             const MAX_SEARCH_STEPS = 5000;
@@ -2970,6 +3026,30 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
                     const current = queue[head++];
                     steps++;
+
+                    // Check for new instances to expand
+                    // Iterate backwards to allow removal
+                    for (let i = unexpandedInstances.length - 1; i >= 0; i--) {
+                        const inst = unexpandedInstances[i];
+                        if (bboxesIntersect(current.bbox, inst.bbox)) {
+                            // Expand!
+                            const defGeom = definitionGeometry[inst.cellName];
+                            if (defGeom) {
+                                for (const layerKey in defGeom) {
+                                    if (!activeLayers.has(layerKey)) continue;
+                                    for (const poly of defGeom[layerKey]) {
+                                        const worldPoly = transformPolygon(poly, inst.matrix);
+                                        candidates.push(worldPoly);
+                                    }
+                                }
+                            }
+                            // Remove from list (swap and pop for O(1))
+                            if (i < unexpandedInstances.length - 1) {
+                                unexpandedInstances[i] = unexpandedInstances[unexpandedInstances.length - 1];
+                            }
+                            unexpandedInstances.pop();
+                        }
+                    }
 
                     for (const other of candidates) {
                         if (visited.has(other)) continue;
