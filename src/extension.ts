@@ -145,8 +145,11 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 if (currentRenderingEngine !== 'svg') {
                     args.push(chunkSize.toString());
                     args.push(flowControlStep.toString());
-                    // Use instancing if WebGL and enabled
-                    args.push((currentRenderingEngine === 'webgl' && useInstancing) ? "1" : "0");
+                    // Use instancing if WebGL and enabled, BUT disable if in negative mode (requires flattening)
+                    const effectiveInstancing = (currentRenderingEngine === 'webgl' && useInstancing && !isNegativeMode);
+                    args.push(effectiveInstancing ? "1" : "0");
+                    // Negative mode flag
+                    args.push(isNegativeMode ? "1" : "0");
                 }
             }
 
@@ -209,7 +212,8 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                             webviewPanel.webview.postMessage({
                                 command: 'initialize',
                                 data: data,
-                                engine: currentRenderingEngine
+                                engine: currentRenderingEngine,
+                                isNegative: !!isNegativeMode
                             }).then(
                                 (success) => console.log(`[Webview Log] Initialize message delivery status: ${success}`),
                                 (err) => console.log(`[Webview Log] Initialize message delivery failed: ${err}`)
@@ -803,6 +807,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let isViewFitted = false;
         let hasUserInteracted = false;
         let isNegative = false;
+        let isNegativeData = false;
+        let pendingHighlight = null;
         let svgFragments = {};
         let highlightedPolygons = [];
         let searchRequestId = null;
@@ -1182,6 +1188,13 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     console.log("PROFILE: Total Worker Time (Cumulative):", perfMetrics.workerTime.toFixed(0), "ms");
                     console.log("PROFILE: Main Thread Parse Time:", perfMetrics.mainThreadParseTime.toFixed(0), "ms");
                 }
+
+                // Resume pending highlight if any
+                if (pendingHighlight) {
+                    const { x, y } = pendingHighlight;
+                    pendingHighlight = null;
+                    findAndHighlight(x, y);
+                }
             }
         }
 
@@ -1221,7 +1234,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 handleDataUpdate(message.data);
             } else if (message.command === 'initialize') {
                 handleEngineChange(message.engine);
-                handleInitialize(message.data);
+                // Pass new state to handleInitialize instead of setting global immediately
+                handleInitialize(message.data, !!message.isNegative);
             } else if (message.command === 'addLayerChunk') {
                 // console.log("Received layer chunk", message.layerKey);
                 handleAddLayerChunk(message.layerKey, message.data);
@@ -1489,13 +1503,33 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             return false;
         }
 
-        function handleInitialize(data) {
+        function handleInitialize(data, newIsNegativeData) {
             startTime = performance.now();
             pendingTasks = 0;
             pythonFinished = false;
             isViewFitted = false;
             hasUserInteracted = false;
             updateStatus("Initializing...");
+
+            // Capture previous state if this is a negative data reload (either entering or leaving negative mode)
+            // We preserve state if we were in negative mode OR if we are entering negative mode.
+            const preserveState = isNegativeData || newIsNegativeData;
+
+            // Update global state
+            isNegativeData = newIsNegativeData;
+
+            const previousActiveLayers = new Set(activeLayers);
+            const previousLayerColors = { ...layerColors };
+            const previousLayerOpacities = { ...layerOpacities };
+
+            // Capture View State
+            let previousViewState = null;
+            if (preserveState) {
+                previousViewState = {
+                    offsetX, offsetY, scale,
+                    isViewFitted
+                };
+            }
 
             // Reset state
             geometry = {};
@@ -1520,25 +1554,36 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             // Update Layers UI
             layersList.innerHTML = '';
             allLayers.forEach(layerKey => {
-                activeLayers.add(layerKey);
+                // Restore active state if preserving, otherwise default to active
+                if (preserveState && previousActiveLayers.has(layerKey)) {
+                    activeLayers.add(layerKey);
+                } else if (!preserveState) {
+                    activeLayers.add(layerKey);
+                }
 
                 // Determine color
                 let color = "#888888";
-                const parts = layerKey.split('_');
-                if (parts.length >= 1) {
-                    const layerNum = parseInt(parts[0]);
-                    if (!isNaN(layerNum)) {
-                        color = palette[layerNum % palette.length];
-                    } else {
-                        let hash = 0;
-                        for (let i = 0; i < layerKey.length; i++) {
-                            hash = layerKey.charCodeAt(i) + ((hash << 5) - hash);
+                if (preserveState && previousLayerColors[layerKey]) {
+                    color = previousLayerColors[layerKey];
+                } else {
+                    const parts = layerKey.split('_');
+                    if (parts.length >= 1) {
+                        const layerNum = parseInt(parts[0]);
+                        if (!isNaN(layerNum)) {
+                            color = palette[layerNum % palette.length];
+                        } else {
+                            let hash = 0;
+                            for (let i = 0; i < layerKey.length; i++) {
+                                hash = layerKey.charCodeAt(i) + ((hash << 5) - hash);
+                            }
+                            color = palette[Math.abs(hash) % palette.length];
                         }
-                        color = palette[Math.abs(hash) % palette.length];
                     }
                 }
                 layerColors[layerKey] = color;
-                layerOpacities[layerKey] = 0.8;
+                layerOpacities[layerKey] = (preserveState && previousLayerOpacities[layerKey] !== undefined)
+                    ? previousLayerOpacities[layerKey]
+                    : 0.8;
 
                 // Create UI
                 const div = document.createElement('div');
@@ -1576,10 +1621,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 });
 
                 div.innerHTML = \`
-                    <input type="checkbox" id="toggle-\${layerKey}" data-layer-id="\${layerKey}" checked>
+                    <input type="checkbox" id="toggle-\${layerKey}" data-layer-id="\${layerKey}" \${activeLayers.has(layerKey) ? 'checked' : ''}>
                     <label for="toggle-\${layerKey}">Layer \${layerKey.replace('_', ' / ')}</label>
                     <input type="color" id="color-\${layerKey}" data-layer-id="\${layerKey}" value="\${color}">
-                    <input type="range" min="0" max="1" step="0.1" value="0.8" class="opacity-slider" data-layer-id="\${layerKey}" style="width: 50px; margin-left: 5px;" title="Opacity">
+                    <input type="range" min="0" max="1" step="0.1" value="\${layerOpacities[layerKey]}" class="opacity-slider" data-layer-id="\${layerKey}" style="width: 50px; margin-left: 5px;" title="Opacity">
                 \`;
 
                 // Prevent drag when interacting with inputs
@@ -1618,7 +1663,15 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 svgContainer.style.display = 'none';
                 svgContainer.innerHTML = '';
                 resizeCanvas();
-                fitView();
+                if (preserveState && previousViewState) {
+                    offsetX = previousViewState.offsetX;
+                    offsetY = previousViewState.offsetY;
+                    scale = previousViewState.scale;
+                    isViewFitted = previousViewState.isViewFitted;
+                    draw();
+                } else {
+                    fitView();
+                }
             } else if (currentEngine === 'webgl') {
                 // Clear previous buffers
                 definitions = {};
@@ -1627,6 +1680,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 instanceTransforms = {};
                 definitionBBoxes = {};
                 setupWebGLMode({ geometry: {}, bbox: data.bbox, layers: [] });
+
+                if (preserveState && previousViewState) {
+                    offsetX = previousViewState.offsetX;
+                    offsetY = previousViewState.offsetY;
+                    scale = previousViewState.scale;
+                    isViewFitted = previousViewState.isViewFitted;
+                    requestAnimationFrame(drawWebGL);
+                } else {
+                    fitView();
+                }
             } else if (currentEngine === 'svg') {
                 // Ensure svgFragments is populated from data if available
                 if (data.svg_fragments) {
@@ -1905,8 +1968,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
             if (currentEngine === 'canvas') {
                 setupCanvasMode(data);
+                fitView();
             } else if (currentEngine === 'webgl') {
                 setupWebGLMode(data);
+                fitView();
             } else {
                 setupSvgMode(data);
                 updateTransform();
@@ -1940,7 +2005,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             }
 
             resizeCanvas();
-            fitView();
+            // fitView(); // Handled by caller or manual reset
         }
 
         function setupSvgMode(data) {
@@ -2209,7 +2274,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             }
 
             resizeCanvas();
-            fitView();
+            // fitView(); // Handled by caller or manual reset
         }
 
         function createShader(gl, type, source) {
@@ -2289,7 +2354,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
                 gl.uniform4f(colorLocation, r, g, b, a);
 
-                if (isNegative) {
+                if (isNegative && !isNegativeData) {
                     gl.clear(gl.STENCIL_BUFFER_BIT);
                     gl.colorMask(false, false, false, false);
                     gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
@@ -2370,7 +2435,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     gl.disableVertexAttribArray(instanceMatrixCol3Loc);
                 }
 
-                if (isNegative) {
+                if (isNegative && !isNegativeData) {
                     // Pass 2: Draw BBox where stencil != 1
                     gl.colorMask(true, true, true, true);
                     gl.stencilFunc(gl.NOTEQUAL, 1, 0xFF);
@@ -2604,7 +2669,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 const renderOrder = [...allLayers].reverse();
 
                 // Ensure scratch canvas size matches
-                if (isNegative) {
+                if (isNegative && !isNegativeData) {
                     if (scratchCanvas.width !== canvas.width || scratchCanvas.height !== canvas.height) {
                         scratchCanvas.width = canvas.width;
                         scratchCanvas.height = canvas.height;
@@ -2622,7 +2687,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
                     let targetCtx = ctx;
 
-                    if (isNegative) {
+                    if (isNegative && !isNegativeData) {
                         // Use scratch canvas for negative composition
                         targetCtx = scratchCtx;
                         targetCtx.clearRect(0, 0, targetCtx.canvas.width, targetCtx.canvas.height);
@@ -2764,6 +2829,17 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         }
 
         function findAndHighlight(x, y) {
+            // Check if we need to load negative data first
+            if (isNegative && !isNegativeData) {
+                pendingHighlight = { x, y };
+                updateStatus("Loading negative geometry...");
+                vscode.postMessage({
+                    command: 'reloadNegative',
+                    isNegative: true
+                });
+                return;
+            }
+
             // Helper to transform polygon
             function transformPolygon(poly, m) {
                 // m = [m0, m1, m2, m3, m4, m5]
@@ -3350,6 +3426,17 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     command: 'syncNegativeState',
                     isNegative: isNegative
                 });
+
+                // If we are switching back to positive mode and we have negative data loaded,
+                // we MUST reload the original data.
+                if (!isNegative && isNegativeData) {
+                    updateStatus("Reloading positive geometry...");
+                    vscode.postMessage({
+                        command: 'reloadNegative',
+                        isNegative: false
+                    });
+                    return;
+                }
 
                 if (currentEngine === 'canvas') requestAnimationFrame(draw);
                 else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);

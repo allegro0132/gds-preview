@@ -536,7 +536,8 @@ def gds_to_geometry(gds_path,
                     output_dir,
                     target_cell_name=None,
                     chunk_size=2000,
-                    flow_control_step=5):
+                    flow_control_step=5,
+                    negative_mode=0):
     """
     Converts a GDSII file into geometry data (polygons), one for each layer.
     Outputs a JSON object to stdout with the results.
@@ -639,6 +640,43 @@ def gds_to_geometry(gds_path,
             }),
                   file=sys.stderr)
             sys.exit(1)
+
+        # If negative mode, calculate negative geometry
+        if negative_mode:
+            t_neg_start = time.time()
+            universe = gdstk.rectangle(bbox[0], bbox[1])
+
+            # Group polygons by layer
+            layer_polys_map = {}
+            for poly in flattened_cell.polygons:
+                key = (poly.layer, poly.datatype)
+                if key not in layer_polys_map:
+                    layer_polys_map[key] = []
+                layer_polys_map[key].append(poly)
+
+            # Replace flattened_cell.polygons with negative polygons
+            new_polygons = []
+            for key, polys in layer_polys_map.items():
+                # Boolean NOT: Universe - Polygons
+                neg_polys = gdstk.boolean([universe], polys, 'not')
+                # Assign layer/datatype back to result
+                for p in neg_polys:
+                    p.layer = key[0]
+                    p.datatype = key[1]
+                    new_polygons.append(p)
+
+            # Create a new cell for negative geometry to replace the original
+            neg_cell = gdstk.Cell(f"{flattened_cell.name}_NEG")
+            neg_cell.add(*new_polygons)
+            # Copy labels from original cell
+            if flattened_cell.labels:
+                neg_cell.add(*flattened_cell.labels)
+
+            flattened_cell = neg_cell
+            t_neg_end = time.time()
+            print(
+                f"PROFILE: Negative Geometry Calc: {t_neg_end - t_neg_start:.4f}s",
+                file=sys.stderr)
 
         # Find all unique layers by iterating through the cell's geometry
         unique_layers_datatypes = set()
@@ -790,10 +828,11 @@ if __name__ == "__main__":
     chunk_size = int(sys.argv[4]) if len(sys.argv) > 4 else 2000
     flow_control_step = int(sys.argv[5]) if len(sys.argv) > 5 else 5
     use_instancing = int(sys.argv[6]) if len(sys.argv) > 6 else 0
+    negative_mode = int(sys.argv[7]) if len(sys.argv) > 7 else 0
 
     if use_instancing:
         gds_to_instanced_geometry(gds_input_path, output_dir_path, target_cell,
                                   chunk_size, flow_control_step)
     else:
         gds_to_geometry(gds_input_path, output_dir_path, target_cell,
-                        chunk_size, flow_control_step)
+                        chunk_size, flow_control_step, negative_mode)
