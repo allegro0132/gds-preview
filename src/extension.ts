@@ -638,7 +638,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
     <div id="controls">
         <h3>Cell Control</h3>
         <div class="control-group">
-            <label>Select Cell:</label>
             <div id="cell-tree" class="tree-view">Loading...</div>
             <div id="status-msg" style="font-size: 12px; color: #888; margin-top: 5px;">Initializing...</div>
         </div>
