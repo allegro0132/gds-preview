@@ -638,6 +638,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
     <div id="controls">
         <h3>Cell Control</h3>
         <div class="control-group">
+            <label>Select Cell:</label>
             <div id="cell-tree" class="tree-view">Loading...</div>
             <div id="status-msg" style="font-size: 12px; color: #888; margin-top: 5px;">Initializing...</div>
         </div>
@@ -914,9 +915,403 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             };
         \`;
 
+        const searchWorkerCode = \`
+            let geometry = {};
+            let definitionGeometry = {};
+            let instanceTransforms = {};
+            let definitionBBoxes = {};
+            let activeLayers = new Set();
+            let isSearching = false;
+            let searchState = null;
+
+            self.onmessage = function(e) {
+                const msg = e.data;
+                switch(msg.command) {
+                    case 'addGeometry':
+                        handleAddGeometry(msg);
+                        break;
+                    case 'addInstances':
+                        handleAddInstances(msg);
+                        break;
+                    case 'updateActiveLayers':
+                        activeLayers = new Set(msg.layers);
+                        // console.log("Worker: Active layers updated", activeLayers.size);
+                        break;
+                    case 'find':
+                        startSearch(msg.x, msg.y);
+                        break;
+                    case 'stop':
+                        isSearching = false;
+                        searchState = null;
+                        self.postMessage({ command: 'status', message: "Search stopped by user" });
+                        break;
+                    case 'clear':
+                        geometry = {};
+                        definitionGeometry = {};
+                        instanceTransforms = {};
+                        definitionBBoxes = {};
+                        activeLayers.clear();
+                        isSearching = false;
+                        searchState = null;
+                        break;
+                }
+            };
+
+            function handleAddGeometry(msg) {
+                const { layerKey, polygons, type, cellName } = msg;
+                // Calculate bboxes
+                for (const poly of polygons) {
+                    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                    const isFlat = poly instanceof Float32Array;
+                    const len = isFlat ? poly.length / 2 : poly.length;
+
+                    for (let i = 0; i < len; i++) {
+                        const x = isFlat ? poly[i*2] : poly[i][0];
+                        const y = isFlat ? poly[i*2+1] : poly[i][1];
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                    }
+                    poly.bbox = { minX, minY, maxX, maxY };
+                }
+
+                if (type === 'definition') {
+                    if (!definitionGeometry[cellName]) definitionGeometry[cellName] = {};
+                    if (!definitionGeometry[cellName][layerKey]) definitionGeometry[cellName][layerKey] = [];
+                    definitionGeometry[cellName][layerKey].push(...polygons);
+
+                    if (!definitionBBoxes[cellName]) definitionBBoxes[cellName] = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+                    const db = definitionBBoxes[cellName];
+                    for (const poly of polygons) {
+                        if (poly.bbox.minX < db.minX) db.minX = poly.bbox.minX;
+                        if (poly.bbox.minY < db.minY) db.minY = poly.bbox.minY;
+                        if (poly.bbox.maxX > db.maxX) db.maxX = poly.bbox.maxX;
+                        if (poly.bbox.maxY > db.maxY) db.maxY = poly.bbox.maxY;
+                    }
+                } else {
+                    if (!geometry[layerKey]) geometry[layerKey] = [];
+                    geometry[layerKey].push(...polygons);
+                }
+            }
+
+            function handleAddInstances(msg) {
+                const { cellName, transforms } = msg;
+                if (!instanceTransforms[cellName]) instanceTransforms[cellName] = [];
+                instanceTransforms[cellName].push(transforms);
+            }
+
+            function startSearch(x, y) {
+                let startPoly = null;
+                let hitInstanceContext = null;
+
+                // 1. Check Top-Level Geometry
+                for (const layerKey of activeLayers) {
+                    if (!geometry[layerKey]) continue;
+                    for (const poly of geometry[layerKey]) {
+                        if (pointInPolygon(x, y, poly)) {
+                            startPoly = poly;
+                            break;
+                        }
+                    }
+                    if (startPoly) break;
+                }
+
+                // 2. Check Instances
+                if (!startPoly) {
+                    for (const cellName in instanceTransforms) {
+                        const transforms = instanceTransforms[cellName];
+                        const defGeom = definitionGeometry[cellName];
+                        if (!defGeom) continue;
+
+                        let hasActiveLayer = false;
+                        for (const lk in defGeom) {
+                            if (activeLayers.has(lk)) {
+                                hasActiveLayer = true;
+                                break;
+                            }
+                        }
+                        if (!hasActiveLayer) continue;
+
+                        for (const transformList of transforms) {
+                            const count = transformList.length / 9;
+                            for (let i = 0; i < count; i++) {
+                                const offset = i * 9;
+                                const m11 = transformList[offset + 0];
+                                const m21 = transformList[offset + 1];
+                                const m12 = transformList[offset + 3];
+                                const m22 = transformList[offset + 4];
+                                const tx  = transformList[offset + 6];
+                                const ty  = transformList[offset + 7];
+
+                                const det = m11 * m22 - m12 * m21;
+                                if (Math.abs(det) < 1e-6) continue;
+
+                                const invDet = 1.0 / det;
+                                const dx = x - tx;
+                                const dy = y - ty;
+                                const localX = (m22 * dx - m12 * dy) * invDet;
+                                const localY = (m11 * dy - m21 * dx) * invDet;
+
+                                for (const layerKey in defGeom) {
+                                    if (!activeLayers.has(layerKey)) continue;
+                                    for (const poly of defGeom[layerKey]) {
+                                        if (pointInPolygon(localX, localY, poly)) {
+                                            startPoly = transformPolygon(poly, [m11, m12, tx, m21, m22, ty]);
+                                            hitInstanceContext = { cellName, matrix: [m11, m12, tx, m21, m22, ty], originPoly: poly };
+                                            break;
+                                        }
+                                    }
+                                    if (startPoly) break;
+                                }
+                                if (startPoly) break;
+                            }
+                            if (startPoly) break;
+                        }
+                        if (startPoly) break;
+                    }
+                }
+
+                if (!startPoly) {
+                    self.postMessage({ command: 'found', polygons: [] });
+                    return;
+                }
+
+                self.postMessage({ command: 'status', message: "Searching connected objects..." });
+
+                const queue = [startPoly];
+                const visited = new Set([startPoly]);
+                const result = [startPoly];
+
+                const candidates = [];
+                for (const layerKey of activeLayers) {
+                    if (geometry[layerKey]) {
+                        const layerPolys = geometry[layerKey];
+                        for (let i = 0; i < layerPolys.length; i++) {
+                            candidates.push(layerPolys[i]);
+                        }
+                    }
+                }
+
+                if (hitInstanceContext) {
+                    const { cellName, matrix, originPoly } = hitInstanceContext;
+                    const defGeom = definitionGeometry[cellName];
+                    if (defGeom) {
+                        for (const layerKey in defGeom) {
+                            if (!activeLayers.has(layerKey)) continue;
+                            for (const poly of defGeom[layerKey]) {
+                                if (poly === originPoly) {
+                                    candidates.push(startPoly);
+                                } else {
+                                    const worldPoly = transformPolygon(poly, matrix);
+                                    candidates.push(worldPoly);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                const unexpandedInstances = [];
+                for (const cellName in instanceTransforms) {
+                    const defBBox = definitionBBoxes[cellName];
+                    if (!defBBox) continue;
+
+                    const transforms = instanceTransforms[cellName];
+                    for (const transformList of transforms) {
+                        const count = transformList.length / 9;
+                        for (let i = 0; i < count; i++) {
+                            const offset = i * 9;
+                            const m11 = transformList[offset + 0];
+                            const m21 = transformList[offset + 1];
+                            const m12 = transformList[offset + 3];
+                            const m22 = transformList[offset + 4];
+                            const tx  = transformList[offset + 6];
+                            const ty  = transformList[offset + 7];
+
+                            const matrix = [m11, m12, tx, m21, m22, ty];
+
+                            if (hitInstanceContext &&
+                                hitInstanceContext.cellName === cellName &&
+                                Math.abs(hitInstanceContext.matrix[2] - tx) < 1e-6 &&
+                                Math.abs(hitInstanceContext.matrix[5] - ty) < 1e-6) {
+                                continue;
+                            }
+
+                            const corners = [
+                                {x: defBBox.minX, y: defBBox.minY},
+                                {x: defBBox.maxX, y: defBBox.minY},
+                                {x: defBBox.maxX, y: defBBox.maxY},
+                                {x: defBBox.minX, y: defBBox.maxY}
+                            ];
+
+                            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                            for(const p of corners) {
+                                const nx = m11*p.x + m12*p.y + tx;
+                                const ny = m21*p.x + m22*p.y + ty;
+                                if (nx < minX) minX = nx;
+                                if (nx > maxX) maxX = nx;
+                                if (ny < minY) minY = ny;
+                                if (ny > maxY) maxY = ny;
+                            }
+
+                            unexpandedInstances.push({
+                                cellName,
+                                matrix,
+                                bbox: { minX, minY, maxX, maxY }
+                            });
+                        }
+                    }
+                }
+
+                searchState = {
+                    queue,
+                    visited,
+                    result,
+                    candidates,
+                    unexpandedInstances,
+                    head: 0,
+                    steps: 0,
+                    maxSteps: 5000
+                };
+                isSearching = true;
+                processSearchChunk();
+            }
+
+            function processSearchChunk() {
+                if (!isSearching || !searchState) return;
+
+                const startTime = performance.now();
+                const { queue, visited, result, candidates, unexpandedInstances, maxSteps } = searchState;
+
+                while(searchState.head < queue.length && searchState.steps < maxSteps) {
+                    // Check time budget (e.g. 10ms)
+                    if (performance.now() - startTime > 10) {
+                        setTimeout(processSearchChunk, 0);
+                        return;
+                    }
+
+                    const current = queue[searchState.head++];
+                    searchState.steps++;
+
+                    for (let i = unexpandedInstances.length - 1; i >= 0; i--) {
+                        const inst = unexpandedInstances[i];
+                        if (bboxesIntersect(current.bbox, inst.bbox)) {
+                            const defGeom = definitionGeometry[inst.cellName];
+                            if (defGeom) {
+                                for (const layerKey in defGeom) {
+                                    if (!activeLayers.has(layerKey)) continue;
+                                    for (const poly of defGeom[layerKey]) {
+                                        const worldPoly = transformPolygon(poly, inst.matrix);
+                                        candidates.push(worldPoly);
+                                    }
+                                }
+                            }
+                            if (i < unexpandedInstances.length - 1) {
+                                unexpandedInstances[i] = unexpandedInstances[unexpandedInstances.length - 1];
+                            }
+                            unexpandedInstances.pop();
+                        }
+                    }
+
+                    for (const other of candidates) {
+                        if (visited.has(other)) continue;
+                        if (!bboxesIntersect(current.bbox, other.bbox)) continue;
+                        if (polygonsIntersect(current, other)) {
+                            visited.add(other);
+                            result.push(other);
+                            queue.push(other);
+                        }
+                    }
+                }
+
+                isSearching = false;
+                self.postMessage({ command: 'found', polygons: result, limitReached: searchState.steps >= maxSteps });
+                searchState = null;
+            }
+
+            function pointInPolygon(x, y, poly) {
+                let inside = false;
+                const isFlat = poly instanceof Float32Array;
+                const len = isFlat ? poly.length / 2 : poly.length;
+                for (let i = 0, j = len - 1; i < len; j = i++) {
+                    const xi = isFlat ? poly[i*2] : poly[i][0];
+                    const yi = isFlat ? poly[i*2+1] : poly[i][1];
+                    const xj = isFlat ? poly[j*2] : poly[j][0];
+                    const yj = isFlat ? poly[j*2+1] : poly[j][1];
+                    const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+                    if (intersect) inside = !inside;
+                }
+                return inside;
+            }
+
+            function bboxesIntersect(a, b) {
+                if (!a || !b) return false;
+                return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
+            }
+
+            function polygonsIntersect(poly1, poly2) {
+                const getPt = (poly, i) => {
+                    if (poly instanceof Float32Array) return {x: poly[i*2], y: poly[i*2+1]};
+                    return {x: poly[i][0], y: poly[i][1]};
+                };
+                const getLen = (poly) => poly instanceof Float32Array ? poly.length/2 : poly.length;
+                const len1 = getLen(poly1);
+                const len2 = getLen(poly2);
+                for(let i=0; i<len1; i++) {
+                    const p = getPt(poly1, i);
+                    if (pointInPolygon(p.x, p.y, poly2)) return true;
+                }
+                for(let i=0; i<len2; i++) {
+                    const p = getPt(poly2, i);
+                    if (pointInPolygon(p.x, p.y, poly1)) return true;
+                }
+                for(let i=0; i<len1; i++) {
+                    const p1 = getPt(poly1, i);
+                    const p2 = getPt(poly1, (i+1)%len1);
+                    for(let j=0; j<len2; j++) {
+                        const p3 = getPt(poly2, j);
+                        const p4 = getPt(poly2, (j+1)%len2);
+                        if (segmentsIntersect(p1, p2, p3, p4)) return true;
+                    }
+                }
+                return false;
+            }
+
+            function segmentsIntersect(a, b, c, d) {
+                const ccw = (p1, p2, p3) => (p3.y - p1.y) * (p2.x - p1.x) > (p2.y - p1.y) * (p3.x - p1.x);
+                return (ccw(a, c, d) !== ccw(b, c, d)) && (ccw(a, b, c) !== ccw(a, b, d));
+            }
+
+            function transformPolygon(poly, m) {
+                const isFlat = poly instanceof Float32Array;
+                const len = isFlat ? poly.length / 2 : poly.length;
+                const newPoints = new Float32Array(len * 2);
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                for(let i=0; i<len; i++) {
+                    const x = isFlat ? poly[i*2] : poly[i][0];
+                    const y = isFlat ? poly[i*2+1] : poly[i][1];
+                    const nx = m[0]*x + m[1]*y + m[2];
+                    const ny = m[3]*x + m[4]*y + m[5];
+                    newPoints[i*2] = nx;
+                    newPoints[i*2+1] = ny;
+                    if (nx < minX) minX = nx;
+                    if (nx > maxX) maxX = nx;
+                    if (ny < minY) minY = ny;
+                    if (ny > maxY) maxY = ny;
+                }
+                newPoints.bbox = { minX, minY, maxX, maxY };
+                return newPoints;
+            }
+        \`;
+
         const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
         const workerUrl = URL.createObjectURL(workerBlob);
         const workerPool = [];
+
+        const searchWorkerBlob = new Blob([searchWorkerCode], { type: 'application/javascript' });
+        const searchWorkerUrl = URL.createObjectURL(searchWorkerBlob);
+        const searchWorker = new Worker(searchWorkerUrl);
+        searchWorker.onmessage = handleSearchWorkerMessage;
 
         let maxWorkers = ${maxWorkersConfig};
         if (maxWorkers === -1) {
@@ -935,6 +1330,23 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 updateStatus(\`Worker error: \${e.message}\`);
             };
             workerPool.push(worker);
+        }
+
+        function handleSearchWorkerMessage(e) {
+            const msg = e.data;
+            if (msg.command === 'status') {
+                updateStatus(msg.message);
+            } else if (msg.command === 'found') {
+                highlightedPolygons = msg.polygons;
+                if (msg.limitReached) {
+                    updateStatus(\`Highlighted \${highlightedPolygons.length} objects (Search limit reached)\`);
+                } else if (highlightedPolygons.length === 0) {
+                    updateStatus("No object found at clicked location");
+                } else {
+                    updateStatus(\`Highlighted \${highlightedPolygons.length} connected objects\`);
+                }
+                requestAnimationFrame(drawLabels);
+            }
         }
 
         function handleWorkerMessage(e, workerIndex) {
@@ -957,6 +1369,15 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             const cellName = id.cellName;
 
             if (polygons) {
+                // Send to search worker
+                searchWorker.postMessage({
+                    command: 'addGeometry',
+                    layerKey,
+                    polygons,
+                    type,
+                    cellName
+                });
+
                 if (currentEngine === 'canvas' || currentEngine === 'webgl') {
                     // Pre-calculate bbox for flat polygons
                     for (const poly of polygons) {
@@ -1259,6 +1680,8 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 instanceTransforms = {};
                 definitionBBoxes = {};
 
+                searchWorker.postMessage({ command: 'clear' });
+
                 updateTransform();
                 // Reset toolbar position
                 const toolbar = document.getElementById('toolbar');
@@ -1284,6 +1707,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     searchRequestId = null;
                     updateStatus("Search stopped by user");
                 }
+                searchWorker.postMessage({ command: 'stop' });
                 vscode.postMessage({ command: 'stop' });
             }
         });
@@ -1509,6 +1933,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
             // Clear worker queue/state if needed?
             // Workers are stateless in our design, they just process what they get.
+            searchWorker.postMessage({ command: 'clear' });
 
             // Update Cell Tree
             buildTree(data.hierarchy, data.top_level_cells, data.all_cells, data.cell_name);
@@ -1719,6 +2144,13 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             // Let's store the Float32Array directly.
             instanceTransforms[key].push(transforms);
 
+            // Send to search worker
+            searchWorker.postMessage({
+                command: 'addInstances',
+                cellName: key,
+                transforms: transforms
+            });
+
             // Create buffer
             const glBuffer = gl.createBuffer();
             gl.bindBuffer(gl.ARRAY_BUFFER, glBuffer);
@@ -1737,6 +2169,17 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
         function handleAddLayerChunk(layerKey, data) {
             const polys = data.polygons;
+
+            if (polys && polys.length > 0) {
+                // Send to search worker regardless of engine
+                searchWorker.postMessage({
+                    command: 'addGeometry',
+                    layerKey,
+                    polygons: polys,
+                    type: 'flat',
+                    cellName: null
+                });
+            }
 
             // 1. Handle Geometry Storage (Canvas & WebGL)
             if (currentEngine === 'canvas' || currentEngine === 'webgl') {
@@ -1793,6 +2236,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             updateStatus("Rendering...");
 
             highlightedPolygons = [];
+            searchWorker.postMessage({ command: 'clear' });
 
             // Update Cell Tree
             buildTree(data.hierarchy, data.top_level_cells, data.all_cells, data.cell_name);
@@ -1923,6 +2367,18 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             geometry = data.geometry;
             bbox = data.bbox;
 
+            if (geometry) {
+                for (const layerKey in geometry) {
+                    searchWorker.postMessage({
+                        command: 'addGeometry',
+                        layerKey,
+                        polygons: geometry[layerKey],
+                        type: 'flat',
+                        cellName: null
+                    });
+                }
+            }
+
             // Pre-calculate bounding boxes for culling
             for (const layerKey in geometry) {
                 const polys = geometry[layerKey];
@@ -1959,6 +2415,19 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             svgContainer.style.display = 'block';
 
             geometry = data.geometry || {}; // Load geometry for highlighting
+
+            if (geometry) {
+                for (const layerKey in geometry) {
+                    searchWorker.postMessage({
+                        command: 'addGeometry',
+                        layerKey,
+                        polygons: geometry[layerKey],
+                        type: 'flat',
+                        cellName: null
+                    });
+                }
+            }
+
             // Calculate bboxes for SVG geometry
             for (const layerKey in geometry) {
                 const polys = geometry[layerKey];
@@ -2066,6 +2535,18 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
             geometry = data.geometry;
             bbox = data.bbox;
+
+            if (geometry) {
+                for (const layerKey in geometry) {
+                    searchWorker.postMessage({
+                        command: 'addGeometry',
+                        layerKey,
+                        polygons: geometry[layerKey],
+                        type: 'flat',
+                        cellName: null
+                    });
+                }
+            }
 
             gl = glCanvas.getContext('webgl', { stencil: true });
             if (!gl) {
@@ -2763,380 +3244,23 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         }
 
         function findAndHighlight(x, y) {
-            // Helper to transform polygon
-            function transformPolygon(poly, m) {
-                // m = [m0, m1, m2, m3, m4, m5]
-                const isFlat = poly instanceof Float32Array;
-                const len = isFlat ? poly.length / 2 : poly.length;
-                const newPoints = new Float32Array(len * 2);
-
-                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-
-                for(let i=0; i<len; i++) {
-                    const x = isFlat ? poly[i*2] : poly[i][0];
-                    const y = isFlat ? poly[i*2+1] : poly[i][1];
-
-                    const nx = m[0]*x + m[1]*y + m[2];
-                    const ny = m[3]*x + m[4]*y + m[5];
-
-                    newPoints[i*2] = nx;
-                    newPoints[i*2+1] = ny;
-
-                    if (nx < minX) minX = nx;
-                    if (nx > maxX) maxX = nx;
-                    if (ny < minY) minY = ny;
-                    if (ny > maxY) maxY = ny;
-                }
-                newPoints.bbox = { minX, minY, maxX, maxY };
-                return newPoints;
-            }
-
             if (searchRequestId) {
-                cancelAnimationFrame(searchRequestId);
+                // cancelAnimationFrame(searchRequestId);
                 searchRequestId = null;
             }
 
-            let startPoly = null;
+            // Sync active layers
+            searchWorker.postMessage({
+                command: 'updateActiveLayers',
+                layers: Array.from(activeLayers)
+            });
 
-            // 1. Check Top-Level Geometry
-            for (const layerKey of activeLayers) {
-                if (!geometry[layerKey]) continue;
-                for (const poly of geometry[layerKey]) {
-                    if (pointInPolygon(x, y, poly)) {
-                        startPoly = poly;
-                        break;
-                    }
-                }
-                if (startPoly) break;
-            }
+            searchWorker.postMessage({
+                command: 'find',
+                x, y
+            });
 
-            let hitInstanceContext = null;
-
-            // 2. Check Instances (if not found in top-level)
-            if (!startPoly) {
-                for (const cellName in instanceTransforms) {
-                    const transforms = instanceTransforms[cellName];
-                    const defGeom = definitionGeometry[cellName];
-                    if (!defGeom) continue;
-
-                    // Check if any layer in this definition is active
-                    let hasActiveLayer = false;
-                    for (const lk in defGeom) {
-                        if (activeLayers.has(lk)) {
-                            hasActiveLayer = true;
-                            break;
-                        }
-                    }
-                    if (!hasActiveLayer) continue;
-
-                    // Iterate instances
-                    for (const transformList of transforms) {
-                        // transformList is Float32Array of 9 floats per instance
-                        const count = transformList.length / 9;
-                        for (let i = 0; i < count; i++) {
-                            const offset = i * 9;
-                            // Matrix is 3x3 Column-Major (Transposed for WebGL):
-                            // m0 m3 m6
-                            // m1 m4 m7
-                            // m2 m5 m8
-                            //
-                            // Original (Row-Major):
-                            // m11 m12 tx
-                            // m21 m22 ty
-                            // 0   0   1
-                            //
-                            // Transposed Layout in Float32Array:
-                            // 0: m11
-                            // 1: m21
-                            // 2: 0
-                            // 3: m12
-                            // 4: m22
-                            // 5: 0
-                            // 6: tx
-                            // 7: ty
-                            // 8: 1
-
-                            const m11 = transformList[offset + 0];
-                            const m21 = transformList[offset + 1];
-                            const m12 = transformList[offset + 3];
-                            const m22 = transformList[offset + 4];
-                            const tx  = transformList[offset + 6];
-                            const ty  = transformList[offset + 7];
-
-                            // Inverse Transform (to map click point to local space)
-                            // det = m11*m22 - m12*m21
-                            const det = m11 * m22 - m12 * m21;
-                            if (Math.abs(det) < 1e-6) continue;
-
-                            const invDet = 1.0 / det;
-                            // x = (m22*(x' - tx) - m12*(y' - ty)) / det
-                            // y = (-m21*(x' - tx) + m11*(y' - ty)) / det
-
-                            const dx = x - tx;
-                            const dy = y - ty;
-
-                            const localX = (m22 * dx - m12 * dy) * invDet;
-                            const localY = (m11 * dy - m21 * dx) * invDet;
-
-                            // Check against definition geometry
-                            for (const layerKey in defGeom) {
-                                if (!activeLayers.has(layerKey)) continue;
-
-                                for (const poly of defGeom[layerKey]) {
-                                    if (pointInPolygon(localX, localY, poly)) {
-                                        // Found it!
-                                        // Transform polygon to world space
-                                        startPoly = transformPolygon(poly, [m11, m12, tx, m21, m22, ty]);
-                                        hitInstanceContext = { cellName, matrix: [m11, m12, tx, m21, m22, ty], originPoly: poly };
-                                        break;
-                                    }
-                                }
-                                if (startPoly) break;
-                            }
-                            if (startPoly) break;
-                        }
-                        if (startPoly) break;
-                    }
-                    if (startPoly) break;
-                }
-            }
-
-            if (!startPoly) {
-                highlightedPolygons = [];
-                updateStatus("No object found at clicked location");
-                requestAnimationFrame(drawLabels);
-                return;
-            }
-
-            const queue = [startPoly];
-            const visited = new Set([startPoly]);
-            const result = [startPoly];
-
-            updateStatus("Searching connected objects...");
-
-            // Build candidates list dynamically or use spatial query
-            // For now, we only search top-level geometry + the instance we found (if any)
-            // To support full connectivity, we would need a spatial index.
-            // Let's stick to top-level for now to avoid O(N^2) with instances.
-
-            const candidates = [];
-            for (const layerKey of activeLayers) {
-                if (geometry[layerKey]) {
-                    const layerPolys = geometry[layerKey];
-                    for (let i = 0; i < layerPolys.length; i++) {
-                        candidates.push(layerPolys[i]);
-                    }
-                }
-            }
-
-            // If startPoly came from an instance, it's already in world space but not in 'geometry'
-            // We should add it to candidates? No, it's already in queue.
-            // But we might want to add other polygons from the SAME instance to candidates?
-            // Yes, otherwise we can't trace inside the instance.
-            if (hitInstanceContext) {
-                const { cellName, matrix, originPoly } = hitInstanceContext;
-                const defGeom = definitionGeometry[cellName];
-                if (defGeom) {
-                    for (const layerKey in defGeom) {
-                        if (!activeLayers.has(layerKey)) continue;
-                        for (const poly of defGeom[layerKey]) {
-                            if (poly === originPoly) {
-                                // This is the polygon we already found and added to queue/visited.
-                                // Add the SAME object to candidates to ensure identity match in visited check.
-                                candidates.push(startPoly);
-                            } else {
-                                const worldPoly = transformPolygon(poly, matrix);
-                                candidates.push(worldPoly);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Prepare unexpanded instances for dynamic expansion
-            const unexpandedInstances = [];
-            for (const cellName in instanceTransforms) {
-                const defBBox = definitionBBoxes[cellName];
-                if (!defBBox) continue;
-
-                const transforms = instanceTransforms[cellName];
-                for (const transformList of transforms) {
-                    const count = transformList.length / 9;
-                    for (let i = 0; i < count; i++) {
-                        const offset = i * 9;
-                        const m11 = transformList[offset + 0];
-                        const m21 = transformList[offset + 1];
-                        const m12 = transformList[offset + 3];
-                        const m22 = transformList[offset + 4];
-                        const tx  = transformList[offset + 6];
-                        const ty  = transformList[offset + 7];
-
-                        const matrix = [m11, m12, tx, m21, m22, ty];
-
-                        // Skip if this is the hit instance (already added)
-                        if (hitInstanceContext &&
-                            hitInstanceContext.cellName === cellName &&
-                            Math.abs(hitInstanceContext.matrix[2] - tx) < 1e-6 &&
-                            Math.abs(hitInstanceContext.matrix[5] - ty) < 1e-6) {
-                            continue;
-                        }
-
-                        // Calculate World BBox
-                        // Transform all 4 corners
-                        const corners = [
-                            {x: defBBox.minX, y: defBBox.minY},
-                            {x: defBBox.maxX, y: defBBox.minY},
-                            {x: defBBox.maxX, y: defBBox.maxY},
-                            {x: defBBox.minX, y: defBBox.maxY}
-                        ];
-
-                        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                        for(const p of corners) {
-                            const nx = m11*p.x + m12*p.y + tx;
-                            const ny = m21*p.x + m22*p.y + ty;
-                            if (nx < minX) minX = nx;
-                            if (nx > maxX) maxX = nx;
-                            if (ny < minY) minY = ny;
-                            if (ny > maxY) maxY = ny;
-                        }
-
-                        unexpandedInstances.push({
-                            cellName,
-                            matrix,
-                            bbox: { minX, minY, maxX, maxY }
-                        });
-                    }
-                }
-            }
-
-            let head = 0;
-            // Limit search to avoid freezing
-            const MAX_SEARCH_STEPS = 5000;
-            let steps = 0;
-
-            const processChunk = () => {
-                const startTime = performance.now();
-                while(head < queue.length && steps < MAX_SEARCH_STEPS) {
-                    // Check time budget (e.g. 10ms)
-                    if (performance.now() - startTime > 10) {
-                        searchRequestId = requestAnimationFrame(processChunk);
-                        return;
-                    }
-
-                    const current = queue[head++];
-                    steps++;
-
-                    // Check for new instances to expand
-                    // Iterate backwards to allow removal
-                    for (let i = unexpandedInstances.length - 1; i >= 0; i--) {
-                        const inst = unexpandedInstances[i];
-                        if (bboxesIntersect(current.bbox, inst.bbox)) {
-                            // Expand!
-                            const defGeom = definitionGeometry[inst.cellName];
-                            if (defGeom) {
-                                for (const layerKey in defGeom) {
-                                    if (!activeLayers.has(layerKey)) continue;
-                                    for (const poly of defGeom[layerKey]) {
-                                        const worldPoly = transformPolygon(poly, inst.matrix);
-                                        candidates.push(worldPoly);
-                                    }
-                                }
-                            }
-                            // Remove from list (swap and pop for O(1))
-                            if (i < unexpandedInstances.length - 1) {
-                                unexpandedInstances[i] = unexpandedInstances[unexpandedInstances.length - 1];
-                            }
-                            unexpandedInstances.pop();
-                        }
-                    }
-
-                    for (const other of candidates) {
-                        if (visited.has(other)) continue;
-
-                        if (!bboxesIntersect(current.bbox, other.bbox)) continue;
-
-                        if (polygonsIntersect(current, other)) {
-                            visited.add(other);
-                            result.push(other);
-                            queue.push(other);
-                        }
-                    }
-                }
-
-                // Finished
-                searchRequestId = null;
-                highlightedPolygons = result;
-                if (steps >= MAX_SEARCH_STEPS) {
-                    updateStatus(\`Highlighted \${result.length} objects (Search limit reached)\`);
-                } else {
-                    updateStatus(\`Highlighted \${result.length} connected objects\`);
-                }
-                requestAnimationFrame(drawLabels);
-            };
-
-            processChunk();
-        }
-
-        function pointInPolygon(x, y, poly) {
-            let inside = false;
-            const isFlat = poly instanceof Float32Array;
-            const len = isFlat ? poly.length / 2 : poly.length;
-
-            for (let i = 0, j = len - 1; i < len; j = i++) {
-                const xi = isFlat ? poly[i*2] : poly[i][0];
-                const yi = isFlat ? poly[i*2+1] : poly[i][1];
-                const xj = isFlat ? poly[j*2] : poly[j][0];
-                const yj = isFlat ? poly[j*2+1] : poly[j][1];
-
-                const intersect = ((yi > y) !== (yj > y)) &&
-                    (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-                if (intersect) inside = !inside;
-            }
-            return inside;
-        }
-
-        function bboxesIntersect(a, b) {
-            if (!a || !b) return false;
-            return a.minX <= b.maxX && a.maxX >= b.minX &&
-                   a.minY <= b.maxY && a.maxY >= b.minY;
-        }
-
-        function polygonsIntersect(poly1, poly2) {
-            const getPt = (poly, i) => {
-                if (poly instanceof Float32Array) return {x: poly[i*2], y: poly[i*2+1]};
-                return {x: poly[i][0], y: poly[i][1]};
-            };
-            const getLen = (poly) => poly instanceof Float32Array ? poly.length/2 : poly.length;
-
-            const len1 = getLen(poly1);
-            const len2 = getLen(poly2);
-
-            for(let i=0; i<len1; i++) {
-                const p = getPt(poly1, i);
-                if (pointInPolygon(p.x, p.y, poly2)) return true;
-            }
-            for(let i=0; i<len2; i++) {
-                const p = getPt(poly2, i);
-                if (pointInPolygon(p.x, p.y, poly1)) return true;
-            }
-
-            for(let i=0; i<len1; i++) {
-                const p1 = getPt(poly1, i);
-                const p2 = getPt(poly1, (i+1)%len1);
-
-                for(let j=0; j<len2; j++) {
-                    const p3 = getPt(poly2, j);
-                    const p4 = getPt(poly2, (j+1)%len2);
-
-                    if (segmentsIntersect(p1, p2, p3, p4)) return true;
-                }
-            }
-            return false;
-        }
-
-        function segmentsIntersect(a, b, c, d) {
-            const ccw = (p1, p2, p3) => (p3.y - p1.y) * (p2.x - p1.x) > (p2.y - p1.y) * (p3.x - p1.x);
-            return (ccw(a, c, d) !== ccw(b, c, d)) && (ccw(a, b, c) !== ccw(a, b, d));
+            updateStatus("Searching...");
         }
 
         // Event Listeners
