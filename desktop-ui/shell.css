@@ -1,0 +1,134 @@
+body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: #252526; /* VS Code dark default */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    user-select: none;
+}
+
+::-webkit-scrollbar {
+    display: none;
+}
+
+/* Light theme overrides */
+body.light-theme {
+    background-color: #e8e8e8;
+}
+
+body.light-theme #tab-bar {
+    background-color: #f3f3f3;
+}
+
+body.light-theme .tab {
+    background-color: #ececec;
+    color: #616161;
+    border-right: 1px solid #cccccc;
+}
+
+body.light-theme .tab.active {
+    background-color: #ffffff;
+    color: #333333;
+}
+
+body.light-theme .tab:hover:not(.active) {
+    background-color: #ffffff;
+}
+
+#title-bar-drag-region {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 38px;
+    -webkit-app-region: drag;
+    z-index: -1;
+}
+
+#tab-bar {
+    height: 38px;
+    background-color: #252526;
+    display: flex;
+    align-items: flex-end;
+    padding-left: 80px; /* Space for traffic lights on macOS */
+    box-sizing: border-box;
+    overflow-x: auto;
+}
+
+#tabs-container {
+    display: flex;
+    align-items: flex-end;
+    height: 100%;
+}
+
+.tab {
+    height: 35px;
+    min-width: 120px;
+    max-width: 200px;
+    background-color: #2d2d2d;
+    color: #969696;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    border-right: 1px solid #1e1e1e;
+    cursor: pointer;
+    font-size: 13px;
+    position: relative;
+    -webkit-app-region: no-drag;
+}
+
+.tab.active {
+    background-color: #1e1e1e;
+    color: #ffffff;
+    height: 38px; /* Connect to content */
+    border-top: 1px solid #007acc; /* Active indicator */
+}
+
+.tab:hover:not(.active) {
+    background-color: #2d2d2d; 
+}
+
+.tab-title {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
+.tab-close {
+    width: 16px;
+    height: 16px;
+    margin-left: 5px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.1s;
+}
+
+.tab:hover .tab-close {
+    opacity: 1;
+}
+
+.tab-close:hover {
+    background-color: #444;
+    color: white;
+}
+
+body.light-theme .tab-close:hover {
+    background-color: #e4e4e4;
+    color: black;
+}
+
+.tab-close::before {
+    content: "×";
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.tab.dragging {
+    opacity: 0.5;
+    background-color: #222;
+}

@@ -12,6 +12,10 @@ html {
     font-size: var(--vscode-font-size);
 }
 
+::-webkit-scrollbar {
+    display: none;
+}
+
 #view-container {
     flex-grow: 1;
     position: relative;
@@ -133,6 +137,11 @@ html {
 .tree-content.selected {
     background-color: var(--vscode-list-activeSelectionBackground);
     color: var(--vscode-list-activeSelectionForeground);
+}
+
+body.dark-theme .tree-content.selected {
+    background-color: #003366; /* Deep blue */
+    color: #ffffff;
 }
 
 .tree-toggle {

@@ -1,0 +1,57 @@
+:root, .light-theme {
+    --vscode-editor-background: #ffffff;
+    --vscode-editor-foreground: #3b3b3b;
+    --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif;
+    --vscode-font-size: 13px;
+    --vscode-sideBar-background: #f3f3f3;
+    --vscode-sideBar-border: rgba(0, 0, 0, 0.1);
+    --vscode-button-background: #007acc;
+    --vscode-button-foreground: #ffffff;
+    --vscode-button-hoverBackground: #0062a3;
+    --vscode-dropdown-border: #cecece;
+    --vscode-dropdown-background: #ffffff;
+    --vscode-dropdown-foreground: #333333;
+    --vscode-list-hoverBackground: #e8e8e8;
+    --vscode-list-activeSelectionBackground: #0074e8;
+    --vscode-list-activeSelectionForeground: #ffffff;
+    --vscode-descriptionForeground: #717171;
+    --vscode-foreground: #616161;
+    --vscode-widget-border: #d4d4d4;
+    --vscode-icon-foreground: #424242;
+    --vscode-toolbar-hoverBackground: #e8e8e8;
+    --vscode-toolbar-activeBackground: #a6a6a6;
+    --vscode-input-border: #cecece;
+    --vscode-input-background: #ffffff;
+    --vscode-input-foreground: #333333;
+    --vscode-list-dropBackground: #d6ebff;
+    --vscode-focusBorder: #0090f1;
+}
+
+.dark-theme {
+    --vscode-editor-background: #1e1e1e;
+    --vscode-editor-foreground: #d4d4d4;
+    --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif;
+    --vscode-font-size: 13px;
+    --vscode-sideBar-background: #252526;
+    --vscode-sideBar-border: rgba(128, 128, 128, 0.35);
+    --vscode-button-background: #0e639c;
+    --vscode-button-foreground: #ffffff;
+    --vscode-button-hoverBackground: #1177bb;
+    --vscode-dropdown-border: #3c3c3c;
+    --vscode-dropdown-background: #3c3c3c;
+    --vscode-dropdown-foreground: #f0f0f0;
+    --vscode-list-hoverBackground: #2a2d2e;
+    --vscode-list-activeSelectionBackground: #37373d;
+    --vscode-list-activeSelectionForeground: #ffffff;
+    --vscode-descriptionForeground: #8b949e;
+    --vscode-foreground: #cccccc;
+    --vscode-widget-border: #454545;
+    --vscode-icon-foreground: #c5c5c5;
+    --vscode-toolbar-hoverBackground: #5a5d5e;
+    --vscode-toolbar-activeBackground: #636667;
+    --vscode-input-border: #3c3c3c;
+    --vscode-input-background: #3c3c3c;
+    --vscode-input-foreground: #cccccc;
+    --vscode-list-dropBackground: #383b3d;
+    --vscode-focusBorder: #007fd4;
+}

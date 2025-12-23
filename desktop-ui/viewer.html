@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval' 'unsafe-inline'; script-src 'nonce-oMAW6QTZoWCLvWIMARQGyXff7T7a9Q9x' 'unsafe-eval' 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://unpkg.com; img-src 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval' data: blob:; worker-src blob:;">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GDS Preview</title>
+    <link href="../webview-ui/style.css" rel="stylesheet" />
+    <script nonce="oMAW6QTZoWCLvWIMARQGyXff7T7a9Q9x">
+        window.vscode = acquireVsCodeApi();
+    </script>
+<link href="theme.css" rel="stylesheet" /></head>
+
+<body>
+    <div id="controls">
+        <h3>Cell Control</h3>
+        <div class="control-group">
+            <div id="cell-tree" class="tree-view">Loading...</div>
+            <div id="status-msg" style="font-size: 12px; color: #888; margin-top: 5px;">Initializing...</div>
+        </div>
+        <hr style="width: 100%; border-color: #444; margin: 15px 0;">
+        <h3 id="layer-control-header" style="cursor: pointer; user-select: none;"
+            title="Double click to select all layers">Layer Control</h3>
+        <div style="margin-top: 10px; display: flex; align-items: center;;">
+            <div style="display: flex; align-items: center;">
+                <input type="checkbox" id="show-labels-checkbox" style="margin-right: 4px;">
+                <label for="show-labels-checkbox">Labels</label>
+            </div>
+
+            <div style="margin-left: auto; display: flex; align-items: center; gap: 5px;">
+                <div style="display: flex; align-items: center;" title="Label Color">
+                    <!-- Hidden actual input -->
+                    <input type="color" id="label-color-picker" value="#ffffff"
+                        style="visibility: hidden; position: absolute; width: 0; height: 0;">
+
+                    <!-- Reset button (hidden by default) -->
+                    <div id="label-color-reset"
+                        style="display: none; margin-right: 4px; cursor: pointer; font-size: 14px;"
+                        title="Reset to layer colors">↺</div>
+
+                    <!-- Custom trigger -->
+                    <div id="label-color-trigger"
+                        style="width: 25px; height: 10px; border: 1px solid var(--vscode-input-border); cursor: pointer; background: linear-gradient(135deg, red, orange, yellow, green, blue, indigo, violet);"
+                        title="Click to set global color"></div>
+                </div>
+
+                <div style="display: flex; align-items: center;" title="Text Brightness">
+                    <input type="range" min="0" max="1" step="0.1" value="0.5" id="label-brightness-slider"
+                        style="width: 50px;">
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 5px; display: flex; align-items: center;">
+            <div style="display: flex; align-items: center;">
+                <input type="checkbox" id="show-ports-checkbox" style="margin-right: 4px;">
+                <label for="show-ports-checkbox">Ports</label>
+            </div>
+
+            <div style="margin-left: auto; display: flex; align-items: center; gap: 5px;">
+                <div style="display: flex; align-items: center;" title="Port Color">
+                    <!-- Hidden actual input -->
+                    <input type="color" id="port-color-picker" value="#FFFFFF"
+                        style="visibility: hidden; position: absolute; width: 0; height: 0;">
+
+                    <!-- Reset button (hidden by default) -->
+                    <div id="port-color-reset"
+                        style="display: none; margin-right: 4px; cursor: pointer; font-size: 14px;"
+                        title="Reset to layer colors">↺</div>
+
+                    <!-- Custom trigger -->
+                    <div id="port-color-trigger"
+                        style="width: 25px; height: 10px; border: 1px solid var(--vscode-input-border); cursor: pointer; background: linear-gradient(135deg, red, orange, yellow, green, blue, indigo, violet);"
+                        title="Click to set global color"></div>
+                </div>
+
+                <div style="display: flex; align-items: center;" title="Port Brightness">
+                    <input type="range" min="0" max="1" step="0.1" value="0.5" id="port-brightness-slider"
+                        style="width: 50px;">
+                </div>
+            </div>
+        </div>
+        <div id="layers-list"></div>
+    </div>
+    <div id="view-container">
+        <div id="toolbar" title="Drag to move">
+            <!-- Center View -->
+            <button id="recenter-btn" class="toolbar-btn" title="Center View">
+                <svg viewBox="0 0 24 24">
+                    <path
+                        d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
+                    <path d="M0 0h24v24H0z" fill="none" />
+                    <path
+                        d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm0 6c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z" />
+                </svg>
+            </button>
+
+            <div class="toolbar-separator"></div>
+
+            <!-- Flip H -->
+            <button id="flip-h-btn" class="toolbar-btn" title="Flip Horizontal">
+                <svg viewBox="0 0 24 24">
+                    <path
+                        d="M15 21h2v-2h-2v2zm4-12h2V7h-2v2zM3 5v14c0 1.1.9 2 2 2h4v-2H5V5h4V3H5c-1.1 0-2 .9-2 2zm16-2v2h2c0-1.1-.9-2-2-2zm-8 20h2V1h-2v22zm8-6h2v-2h-2v2zM15 5h2V3h-2v2zm4 8h2v-2h-2v2zm0 8c1.1 0 2-.9 2-2h-2v2z" />
+                </svg>
+            </button>
+            <!-- Flip V -->
+            <button id="flip-v-btn" class="toolbar-btn" title="Flip Vertical">
+                <svg viewBox="0 0 24 24">
+                    <path
+                        d="M3 15v2h2v-2H3zm10 4h2v-2h-2v2zm2-16H5c-1.1 0-2 .9-2 2v4h2V5h14v4h2V5c0-1.1-.9-2-2-2zm2 16h2v-2h-2v2zM1 11v2h22v-2H1zm4 8h2v-2H5v2zm4 0h2v-2H9v2zm8 0h2v-2h-2v2z" />
+                </svg>
+            </button>
+
+            <div class="toolbar-separator"></div>
+
+            <!-- Rotation Input -->
+            <input type="number" id="rot-angle-input" value="90"
+                style="width: 40px; padding: 2px; text-align: center; font-size: 10px; margin-right: 2px;"
+                title="Rotation Angle">
+
+            <!-- Rotate CW -->
+            <button id="rot-cw-btn" class="toolbar-btn" title="Rotate CW">
+                <svg viewBox="0 0 24 24">
+                    <path
+                        d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.48z" />
+                </svg>
+            </button>
+            <!-- Rotate CCW -->
+            <button id="rot-ccw-btn" class="toolbar-btn" title="Rotate CCW">
+                <svg viewBox="0 0 24 24">
+                    <path
+                        d="M8.45 5.55L13 1v3.07c3.94.49 7 3.85 7 7.93s-3.05 7.44-7 7.93v-2.02c2.84-.48 5-2.94 5-5.91s-2.16-5.43-5-5.91V10l-4.55-4.45zM4.07 11c.17-1.39.72-2.73 1.62-3.89l1.42 1.42c-.54.75-.88 1.6-1.02 2.47H4.07zm6.93 6.9v2.02c-1.39-.17-2.74-.71-3.9-1.61l1.44-1.44c.75.54 1.59.89 2.46 1.03zm-3.89-2.42l-1.42 1.41c-.9-1.16-1.45-2.5-1.62-3.89h2.02c.14.87.48 1.72 1.02 2.48z" />
+                </svg>
+            </button>
+
+            <div class="toolbar-separator"></div>
+
+            <!-- Negative View -->
+            <button id="negative-view-btn" class="toolbar-btn" title="Toggle Negative View">
+                <svg viewBox="0 0 24 24">
+                    <path d="M4 4h16v16H4z M8 8h8v8H8z" fill="currentColor" fill-rule="evenodd" />
+                </svg>
+            </button>
+        </div>
+
+        <button id="toggle-controls-btn" title="Toggle Sidebar">❮</button>
+        <button id="toggle-config-btn" title="Toggle Configuration">⚙</button>
+
+        <div id="config-panel">
+            <h3>Configuration</h3>
+            <div class="control-group">
+                <label for="engine-select">Rendering Engine:</label>
+                <select id="engine-select">
+                    <option value="webgl">WebGL (GPU)</option>
+                    <option value="canvas">Canvas (CPU)</option>
+                    <option value="svg">SVG (Vector)</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="fast-mode-input">Fast Mode Threshold:</label>
+                <input type="number" id="fast-mode-input" value="" min="1" step="1">
+            </div>
+            <div class="control-group">
+                <label for="max-workers-input">Max Workers:</label>
+                <input type="number" id="max-workers-input" value="" min="-1" step="1" title="-1 for auto">
+            </div>
+            <div class="control-group">
+                <label for="chunk-size-input">Chunk Size:</label>
+                <input type="number" id="chunk-size-input" value="" min="100" step="100">
+            </div>
+            <div class="control-group">
+                <label for="flow-control-step-input">Flow Control Step:</label>
+                <input type="number" id="flow-control-step-input" value="" min="-1" step="1" title="-1 to disable">
+            </div>
+            <div class="control-group">
+                <label for="use-instancing-input">Use Instancing (WebGL):</label>
+                <input type="checkbox" id="use-instancing-input">
+            </div>
+            <div class="control-group">
+                <label for="font-size-input">Label Font Size:</label>
+                <input type="number" id="font-size-input" value="" min="1" step="1">
+            </div>
+            <div class="control-group">
+                <label for="port-font-size-input">Port Font Size:</label>
+                <input type="number" id="port-font-size-input" value="" min="1" step="1">
+            </div>
+            <div class="control-group">
+                <label for="port-arrow-scale-input">Port Arrow Scale:</label>
+                <input type="number" id="port-arrow-scale-input" value="" min="0.1" step="0.1">
+            </div>
+            <div class="control-group">
+                <label for="python-path-input">Python Path:</label>
+                <input type="text" id="python-path-input" value="">
+            </div>
+        </div>
+
+        <!-- Canvas for 'canvas' mode -->
+        <canvas id="gds-canvas" style="display: none;"></canvas>
+        <!-- WebGL Canvas -->
+        <canvas id="gds-webgl-canvas" style="display: none;"></canvas>
+        <!-- SVG container for 'svg' mode -->
+        <div id="svg-container" style="display: none; width: 100%; height: 100%;"></div>
+        <!-- Text Overlay Canvas -->
+        <canvas id="text-canvas"
+            style="position: absolute; top: 0; left: 0; pointer-events: none; z-index: 100;"></canvas>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+    <script src="https://unpkg.com/earcut@2.2.4/dist/earcut.min.js"></script>
+    <script nonce="oMAW6QTZoWCLvWIMARQGyXff7T7a9Q9x">
+        window.gdsConfig = {"engine":"webgl","fastModeThreshold":10,"labelFontSize":12,"portFontSize":12,"portArrowScale":1,"maxSteps":5000,"maxWorkers":-1,"chunkSize":2000,"pythonPath":"python","enableProfiling":false,"flowControlStep":5,"useInstancing":true,"workerCode":"const earcutCdn = \"https://unpkg.com/earcut@2.2.4/dist/earcut.min.js\";\ntry {\n    importScripts(earcutCdn);\n} catch (e) {\n    console.error(\"Worker: Failed to load earcut\", e);\n    self.postMessage({ type: 'log', message: \"Worker failed to load earcut: \" + e });\n}\n\nself.onmessage = function (e) {\n    const t0 = performance.now();\n    try {\n        let polygons;\n        if (e.data.isBinary) {\n            // Parse binary buffer\n            const buffer = e.data.buffer;\n            const dataView = new DataView(buffer);\n            let offset = 0;\n\n            // First 4 bytes is total polygons count\n            const totalPolys = dataView.getUint32(offset, true); // Little endian\n            offset += 4;\n\n            polygons = [];\n            for (let i = 0; i < totalPolys; i++) {\n                if (offset + 4 > buffer.byteLength) break;\n                const nPoints = dataView.getUint32(offset, true);\n                offset += 4;\n\n                // Create Float32Array view for points\n                // nPoints * 2 floats * 4 bytes\n                const byteLen = nPoints * 2 * 4;\n\n                if (offset + byteLen > buffer.byteLength) {\n                    console.error(\"Worker: Buffer overflow detected\", offset, byteLen, buffer.byteLength);\n                    break;\n                }\n\n                // Safety check for huge polygons (likely garbage)\n                if (nPoints > 1000000) {\n                    console.error(\"Worker: Huge polygon detected, skipping\", nPoints);\n                    offset += byteLen; // Try to skip? Or just break?\n                    // If nPoints is garbage, byteLen is garbage, so skipping is unsafe.\n                    break;\n                }\n\n                const points = new Float32Array(buffer, offset, nPoints * 2);\n                polygons.push(points);\n                offset += byteLen;\n            }\n        } else if (e.data.isRaw) {\n            polygons = JSON.parse(e.data.polygonsString);\n        } else {\n            polygons = e.data.polygons;\n        }\n\n        const { id } = e.data;\n\n        if (e.data.returnPolygons) {\n            const t1 = performance.now();\n            // Return raw polygons (Float32Arrays)\n            // If binary, we can transfer the buffer back to save memory\n            // BUT if we also need to triangulate (for WebGL), we cannot transfer the buffer yet!\n            const transfer = (e.data.isBinary && !e.data.alsoTriangulate) ? [e.data.buffer] : [];\n            self.postMessage({ id, polygons, duration: t1 - t0 }, transfer);\n\n            if (!e.data.alsoTriangulate) return;\n        }\n\n        if (!self.earcut) {\n            throw new Error(\"Earcut library not loaded\");\n        }\n\n        const vertices = [];\n        let triCount = 0;\n        for (const flat of polygons) {\n            // Polygons are already flat [x,y,x,y...] from Python\n            const triangles = earcut(flat);\n            triCount += triangles.length / 3;\n            for (let i = 0; i < triangles.length; i++) {\n                const index = triangles[i];\n                vertices.push(flat[index * 2], flat[index * 2 + 1]);\n            }\n        }\n\n        const floatArray = new Float32Array(vertices);\n        const t1 = performance.now();\n        self.postMessage({ id, vertices: floatArray, duration: t1 - t0, triCount }, [floatArray.buffer]);\n    } catch (err) {\n        console.error(\"Worker processing error:\", err);\n        self.postMessage({ type: 'error', id: e.data.id, error: err.toString() });\n    }\n};\n","searchWorkerCode":"let geometry = {};\nlet definitionGeometry = {};\nlet instanceTransforms = {};\nlet definitionBBoxes = {};\nlet activeLayers = new Set();\nlet isSearching = false;\nlet searchState = null;\nlet maxSteps = 5000;\n\nself.onmessage = function (e) {\n    const msg = e.data;\n    switch (msg.command) {\n        case 'addGeometry':\n            handleAddGeometry(msg);\n            break;\n        case 'addInstances':\n            handleAddInstances(msg);\n            break;\n        case 'updateActiveLayers':\n            activeLayers = new Set(msg.layers);\n            // console.log(\"Worker: Active layers updated\", activeLayers.size);\n            break;\n        case 'updateConfig':\n            if (msg.maxSteps !== undefined) maxSteps = msg.maxSteps;\n            break;\n        case 'find':\n            startSearch(msg.x, msg.y);\n            break;\n        case 'stop':\n            isSearching = false;\n            searchState = null;\n            self.postMessage({ command: 'status', message: \"Search stopped by user\" });\n            break;\n        case 'clear':\n            geometry = {};\n            definitionGeometry = {};\n            instanceTransforms = {};\n            definitionBBoxes = {};\n            activeLayers.clear();\n            isSearching = false;\n            searchState = null;\n            break;\n    }\n};\n\nfunction handleAddGeometry(msg) {\n    const { layerKey, polygons, type, cellName } = msg;\n    // Calculate bboxes\n    for (const poly of polygons) {\n        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;\n        const isFlat = poly instanceof Float32Array;\n        const len = isFlat ? poly.length / 2 : poly.length;\n\n        for (let i = 0; i < len; i++) {\n            const x = isFlat ? poly[i * 2] : poly[i][0];\n            const y = isFlat ? poly[i * 2 + 1] : poly[i][1];\n            if (x < minX) minX = x;\n            if (x > maxX) maxX = x;\n            if (y < minY) minY = y;\n            if (y > maxY) maxY = y;\n        }\n        poly.bbox = { minX, minY, maxX, maxY };\n    }\n\n    if (type === 'definition') {\n        if (!definitionGeometry[cellName]) definitionGeometry[cellName] = {};\n        if (!definitionGeometry[cellName][layerKey]) definitionGeometry[cellName][layerKey] = [];\n        definitionGeometry[cellName][layerKey].push(...polygons);\n\n        if (!definitionBBoxes[cellName]) definitionBBoxes[cellName] = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };\n        const db = definitionBBoxes[cellName];\n        for (const poly of polygons) {\n            if (poly.bbox.minX < db.minX) db.minX = poly.bbox.minX;\n            if (poly.bbox.minY < db.minY) db.minY = poly.bbox.minY;\n            if (poly.bbox.maxX > db.maxX) db.maxX = poly.bbox.maxX;\n            if (poly.bbox.maxY > db.maxY) db.maxY = poly.bbox.maxY;\n        }\n    } else {\n        if (!geometry[layerKey]) geometry[layerKey] = [];\n        geometry[layerKey].push(...polygons);\n    }\n}\n\nfunction handleAddInstances(msg) {\n    const { cellName, transforms } = msg;\n    if (!instanceTransforms[cellName]) instanceTransforms[cellName] = [];\n    instanceTransforms[cellName].push(transforms);\n}\n\nfunction startSearch(x, y) {\n    let startPoly = null;\n    let hitInstanceContext = null;\n\n    // 1. Check Top-Level Geometry\n    for (const layerKey of activeLayers) {\n        if (!geometry[layerKey]) continue;\n        for (const poly of geometry[layerKey]) {\n            if (pointInPolygon(x, y, poly)) {\n                startPoly = poly;\n                break;\n            }\n        }\n        if (startPoly) break;\n    }\n\n    // 2. Check Instances\n    if (!startPoly) {\n        for (const cellName in instanceTransforms) {\n            const transforms = instanceTransforms[cellName];\n            const defGeom = definitionGeometry[cellName];\n            if (!defGeom) continue;\n\n            let hasActiveLayer = false;\n            for (const lk in defGeom) {\n                if (activeLayers.has(lk)) {\n                    hasActiveLayer = true;\n                    break;\n                }\n            }\n            if (!hasActiveLayer) continue;\n\n            for (const transformList of transforms) {\n                const count = transformList.length / 9;\n                for (let i = 0; i < count; i++) {\n                    const offset = i * 9;\n                    const m11 = transformList[offset + 0];\n                    const m21 = transformList[offset + 1];\n                    const m12 = transformList[offset + 3];\n                    const m22 = transformList[offset + 4];\n                    const tx = transformList[offset + 6];\n                    const ty = transformList[offset + 7];\n\n                    const det = m11 * m22 - m12 * m21;\n                    if (Math.abs(det) < 1e-6) continue;\n\n                    const invDet = 1.0 / det;\n                    const dx = x - tx;\n                    const dy = y - ty;\n                    const localX = (m22 * dx - m12 * dy) * invDet;\n                    const localY = (m11 * dy - m21 * dx) * invDet;\n\n                    for (const layerKey in defGeom) {\n                        if (!activeLayers.has(layerKey)) continue;\n                        for (const poly of defGeom[layerKey]) {\n                            if (pointInPolygon(localX, localY, poly)) {\n                                startPoly = transformPolygon(poly, [m11, m12, tx, m21, m22, ty]);\n                                hitInstanceContext = { cellName, matrix: [m11, m12, tx, m21, m22, ty], originPoly: poly };\n                                break;\n                            }\n                        }\n                        if (startPoly) break;\n                    }\n                    if (startPoly) break;\n                }\n                if (startPoly) break;\n            }\n            if (startPoly) break;\n        }\n    }\n\n    if (!startPoly) {\n        self.postMessage({ command: 'found', polygons: [] });\n        return;\n    }\n\n    self.postMessage({ command: 'status', message: \"Searching connected objects...\" });\n\n    const queue = [startPoly];\n    const visited = new Set([startPoly]);\n    const result = [startPoly];\n\n    const candidates = [];\n    for (const layerKey of activeLayers) {\n        if (geometry[layerKey]) {\n            const layerPolys = geometry[layerKey];\n            for (let i = 0; i < layerPolys.length; i++) {\n                candidates.push(layerPolys[i]);\n            }\n        }\n    }\n\n    if (hitInstanceContext) {\n        const { cellName, matrix, originPoly } = hitInstanceContext;\n        const defGeom = definitionGeometry[cellName];\n        if (defGeom) {\n            for (const layerKey in defGeom) {\n                if (!activeLayers.has(layerKey)) continue;\n                for (const poly of defGeom[layerKey]) {\n                    if (poly === originPoly) {\n                        candidates.push(startPoly);\n                    } else {\n                        const worldPoly = transformPolygon(poly, matrix);\n                        candidates.push(worldPoly);\n                    }\n                }\n            }\n        }\n    }\n\n    const unexpandedInstances = [];\n    for (const cellName in instanceTransforms) {\n        const defBBox = definitionBBoxes[cellName];\n        if (!defBBox) continue;\n\n        const transforms = instanceTransforms[cellName];\n        for (const transformList of transforms) {\n            const count = transformList.length / 9;\n            for (let i = 0; i < count; i++) {\n                const offset = i * 9;\n                const m11 = transformList[offset + 0];\n                const m21 = transformList[offset + 1];\n                const m12 = transformList[offset + 3];\n                const m22 = transformList[offset + 4];\n                const tx = transformList[offset + 6];\n                const ty = transformList[offset + 7];\n\n                const matrix = [m11, m12, tx, m21, m22, ty];\n\n                if (hitInstanceContext &&\n                    hitInstanceContext.cellName === cellName &&\n                    Math.abs(hitInstanceContext.matrix[2] - tx) < 1e-6 &&\n                    Math.abs(hitInstanceContext.matrix[5] - ty) < 1e-6) {\n                    continue;\n                }\n\n                const corners = [\n                    { x: defBBox.minX, y: defBBox.minY },\n                    { x: defBBox.maxX, y: defBBox.minY },\n                    { x: defBBox.maxX, y: defBBox.maxY },\n                    { x: defBBox.minX, y: defBBox.maxY }\n                ];\n\n                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;\n                for (const p of corners) {\n                    const nx = m11 * p.x + m12 * p.y + tx;\n                    const ny = m21 * p.x + m22 * p.y + ty;\n                    if (nx < minX) minX = nx;\n                    if (nx > maxX) maxX = nx;\n                    if (ny < minY) minY = ny;\n                    if (ny > maxY) maxY = ny;\n                }\n\n                unexpandedInstances.push({\n                    cellName,\n                    matrix,\n                    bbox: { minX, minY, maxX, maxY }\n                });\n            }\n        }\n    }\n\n    searchState = {\n        queue,\n        visited,\n        result,\n        candidates,\n        unexpandedInstances,\n        head: 0,\n        steps: 0,\n        maxSteps: maxSteps\n    };\n    isSearching = true;\n    processSearchChunk();\n}\n\nfunction processSearchChunk() {\n    if (!isSearching || !searchState) return;\n\n    const startTime = performance.now();\n    const { queue, visited, result, candidates, unexpandedInstances, maxSteps } = searchState;\n\n    while (searchState.head < queue.length && searchState.steps < maxSteps) {\n        // Check time budget (e.g. 10ms)\n        if (performance.now() - startTime > 10) {\n            setTimeout(processSearchChunk, 0);\n            return;\n        }\n\n        const current = queue[searchState.head++];\n        searchState.steps++;\n\n        for (let i = unexpandedInstances.length - 1; i >= 0; i--) {\n            const inst = unexpandedInstances[i];\n            if (bboxesIntersect(current.bbox, inst.bbox)) {\n                const defGeom = definitionGeometry[inst.cellName];\n                if (defGeom) {\n                    for (const layerKey in defGeom) {\n                        if (!activeLayers.has(layerKey)) continue;\n                        for (const poly of defGeom[layerKey]) {\n                            const worldPoly = transformPolygon(poly, inst.matrix);\n                            candidates.push(worldPoly);\n                        }\n                    }\n                }\n                if (i < unexpandedInstances.length - 1) {\n                    unexpandedInstances[i] = unexpandedInstances[unexpandedInstances.length - 1];\n                }\n                unexpandedInstances.pop();\n            }\n        }\n\n        for (const other of candidates) {\n            if (visited.has(other)) continue;\n            if (!bboxesIntersect(current.bbox, other.bbox)) continue;\n            if (polygonsIntersect(current, other)) {\n                visited.add(other);\n                result.push(other);\n                queue.push(other);\n            }\n        }\n    }\n\n    isSearching = false;\n    self.postMessage({ command: 'found', polygons: result, limitReached: searchState.steps >= maxSteps });\n    searchState = null;\n}\n\nfunction pointInPolygon(x, y, poly) {\n    let inside = false;\n    const isFlat = poly instanceof Float32Array;\n    const len = isFlat ? poly.length / 2 : poly.length;\n    for (let i = 0, j = len - 1; i < len; j = i++) {\n        const xi = isFlat ? poly[i * 2] : poly[i][0];\n        const yi = isFlat ? poly[i * 2 + 1] : poly[i][1];\n        const xj = isFlat ? poly[j * 2] : poly[j][0];\n        const yj = isFlat ? poly[j * 2 + 1] : poly[j][1];\n        const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);\n        if (intersect) inside = !inside;\n    }\n    return inside;\n}\n\nfunction bboxesIntersect(a, b) {\n    if (!a || !b) return false;\n    return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;\n}\n\nfunction polygonsIntersect(poly1, poly2) {\n    const getPt = (poly, i) => {\n        if (poly instanceof Float32Array) return { x: poly[i * 2], y: poly[i * 2 + 1] };\n        return { x: poly[i][0], y: poly[i][1] };\n    };\n    const getLen = (poly) => poly instanceof Float32Array ? poly.length / 2 : poly.length;\n    const len1 = getLen(poly1);\n    const len2 = getLen(poly2);\n    for (let i = 0; i < len1; i++) {\n        const p = getPt(poly1, i);\n        if (pointInPolygon(p.x, p.y, poly2)) return true;\n    }\n    for (let i = 0; i < len2; i++) {\n        const p = getPt(poly2, i);\n        if (pointInPolygon(p.x, p.y, poly1)) return true;\n    }\n    for (let i = 0; i < len1; i++) {\n        const p1 = getPt(poly1, i);\n        const p2 = getPt(poly1, (i + 1) % len1);\n        for (let j = 0; j < len2; j++) {\n            const p3 = getPt(poly2, j);\n            const p4 = getPt(poly2, (j + 1) % len2);\n            if (segmentsIntersect(p1, p2, p3, p4)) return true;\n        }\n    }\n    return false;\n}\n\nfunction segmentsIntersect(a, b, c, d) {\n    const ccw = (p1, p2, p3) => (p3.y - p1.y) * (p2.x - p1.x) > (p2.y - p1.y) * (p3.x - p1.x);\n    return (ccw(a, c, d) !== ccw(b, c, d)) && (ccw(a, b, c) !== ccw(a, b, d));\n}\n\nfunction transformPolygon(poly, m) {\n    const isFlat = poly instanceof Float32Array;\n    const len = isFlat ? poly.length / 2 : poly.length;\n    const newPoints = new Float32Array(len * 2);\n    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;\n    for (let i = 0; i < len; i++) {\n        const x = isFlat ? poly[i * 2] : poly[i][0];\n        const y = isFlat ? poly[i * 2 + 1] : poly[i][1];\n        const nx = m[0] * x + m[1] * y + m[2];\n        const ny = m[3] * x + m[4] * y + m[5];\n        newPoints[i * 2] = nx;\n        newPoints[i * 2 + 1] = ny;\n        if (nx < minX) minX = nx;\n        if (nx > maxX) maxX = nx;\n        if (ny < minY) minY = ny;\n        if (ny > maxY) maxY = ny;\n    }\n    newPoints.bbox = { minX, minY, maxX, maxY };\n    return newPoints;\n}\n"};
+
+        // Initialize inputs from config
+        document.getElementById('fast-mode-input').value = window.gdsConfig.fastModeThreshold;
+        document.getElementById('max-workers-input').value = window.gdsConfig.maxWorkers;
+        document.getElementById('chunk-size-input').value = window.gdsConfig.chunkSize;
+        document.getElementById('flow-control-step-input').value = window.gdsConfig.flowControlStep;
+        document.getElementById('use-instancing-input').checked = window.gdsConfig.useInstancing;
+        document.getElementById('font-size-input').value = window.gdsConfig.labelFontSize;
+        document.getElementById('port-font-size-input').value = window.gdsConfig.portFontSize;
+        document.getElementById('port-arrow-scale-input').value = window.gdsConfig.portArrowScale;
+        document.getElementById('python-path-input').value = window.gdsConfig.pythonPath;
+    </script>
+    <script type="module" src="../webview-ui/main.js"></script>
+</body>
+
+</html>
