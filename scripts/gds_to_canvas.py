@@ -6,39 +6,9 @@ import gdstk
 import shutil
 import struct
 import numpy as np
-import base64
 
-
-class NumpyEncoder(json.JSONEncoder):
-
-    def default(self, obj):
-        if hasattr(obj, "tolist"):
-            return obj.tolist()
-        return json.JSONEncoder.default(self, obj)
-
-
-def get_transform_matrix(rotation, magnification, x_reflection, origin):
-    c = np.cos(rotation)
-    s = np.sin(rotation)
-
-    m11 = magnification * c
-    m12 = -magnification * s
-    m21 = magnification * s
-    m22 = magnification * c
-
-    if x_reflection:
-        m12 *= -1
-        m22 *= -1
-
-    return np.array([[m11, m12, origin[0]], [m21, m22, origin[1]], [0, 0, 1]])
-
-
-def send_binary_chunk(msg, binary_data, chunk_index, flow_control_step):
-    msg['data'] = base64.b64encode(binary_data).decode('ascii')
-    print("CHUNK_B64|" + json.dumps(msg, separators=(',', ':')))
-    sys.stdout.flush()
-    if flow_control_step != -1 and chunk_index % flow_control_step == 0:
-        sys.stdin.readline()
+from data_stream import NumpyEncoder, send_binary_chunk
+from parser import extract_ports, get_transform_matrix
 
 
 def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
@@ -522,6 +492,16 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
                 send_binary_chunk(msg, full_binary, i // instance_chunk_size,
                                   flow_control_step)
 
+        # 6. Extract and Stream Ports
+        ports = extract_ports(main_cell, gds_path)
+        if ports:
+            print(
+                json.dumps({
+                    "type": "ports",
+                    "ports": ports
+                }, cls=NumpyEncoder))
+            sys.stdout.flush()
+
         t_end = time.time()
         print(f"PROFILE: Instanced Streaming: {t_end - t_read:.4f}s",
               file=sys.stderr)
@@ -759,6 +739,16 @@ def gds_to_geometry(gds_path,
                 }
                 send_binary_chunk(msg, full_binary, i // chunk_size,
                                   flow_control_step)
+
+        # Extract and Stream Ports
+        ports = extract_ports(main_cell, gds_path)
+        if ports:
+            print(
+                json.dumps({
+                    "type": "ports",
+                    "ports": ports
+                }, cls=NumpyEncoder))
+            sys.stdout.flush()
 
         t_end = time.time()
         print(f"PROFILE: Streaming: {t_end - t_meta:.4f}s", file=sys.stderr)

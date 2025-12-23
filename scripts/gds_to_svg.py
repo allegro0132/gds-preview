@@ -5,14 +5,8 @@ import gdstk
 import re
 import shutil  # For rmtree
 
-
-class NumpyEncoder(json.JSONEncoder):
-
-    def default(self, obj):
-        if hasattr(obj, "tolist"):
-            return obj.tolist()
-        return json.JSONEncoder.default(self, obj)
-
+from data_stream import NumpyEncoder
+from parser import extract_ports
 
 def gds_to_layered_svgs(gds_path,
                         output_dir,
@@ -89,6 +83,9 @@ def gds_to_layered_svgs(gds_path,
 
         # Log selected cell for debugging
         print(f"Final selected cell: {main_cell.name}", file=sys.stderr)
+
+        # Extract ports
+        ports = extract_ports(main_cell, gds_path)
 
         # A deep copy is needed to avoid modifying the original library cell
         flattened_cell = main_cell.copy(f"{main_cell.name}_flat")
@@ -248,6 +245,7 @@ def gds_to_layered_svgs(gds_path,
 
         result = {
             "cell_name": main_cell.name,
+            "ports": ports,
             "all_cells": all_cell_names,
             "top_level_cells": top_level_cells,
             "hierarchy": hierarchy,

@@ -95,6 +95,8 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
         const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
         const labelFontSize = config.get<number>('labelFontSize', 12);
+        const portFontSize = config.get<number>('portFontSize', 12);
+        const maxSteps = config.get<number>('maxSteps', 5000);
         const maxWorkers = config.get<number>('maxWorkers', -1);
         const chunkSize = config.get<number>('chunkSize', 2000);
         const pythonPath = config.get<string>('pythonPath', 'python');
@@ -215,6 +217,11 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                                 (err) => console.log(`[Webview Log] Initialize message delivery failed: ${err}`)
                             );
                             isFirstLine = false;
+                        } else if (data.type === 'ports') {
+                            webviewPanel.webview.postMessage({
+                                command: 'addPorts',
+                                ports: data.ports
+                            });
                         } else if (data.layerKey && data.labels) {
                             // Label chunk (still JSON)
                             webviewPanel.webview.postMessage({
@@ -249,6 +256,12 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         vscode.window.showErrorMessage("Python module 'gdstk' is missing.", "Install gdstk").then(selection => {
                             if (selection === "Install gdstk") {
                                 installGdstk(pythonPath);
+                            }
+                        });
+                    } else if (stderr.includes("ModuleNotFoundError") && stderr.includes("klayout")) {
+                        vscode.window.showErrorMessage("Python module 'klayout' is missing. It is required for port extraction.", "Install klayout").then(selection => {
+                            if (selection === "Install klayout") {
+                                installKlayout(pythonPath);
                             }
                         });
                     } else {
@@ -331,20 +344,26 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             this.context.subscriptions
         );
 
-        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
+        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, portFontSize, maxSteps, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
         console.log("Webview HTML set");
 
         // Listen for configuration changes
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('gdsPreview.fastModeThreshold') ||
-                e.affectsConfiguration('gdsPreview.labelFontSize')) {
+                e.affectsConfiguration('gdsPreview.labelFontSize') ||
+                e.affectsConfiguration('gdsPreview.portFontSize') ||
+                e.affectsConfiguration('gdsPreview.maxSteps')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
                 const newThreshold = config.get<number>('fastModeThreshold', 10);
                 const newFontSize = config.get<number>('labelFontSize', 12);
+                const newPortFontSize = config.get<number>('portFontSize', 12);
+                const newMaxSteps = config.get<number>('maxSteps', 5000);
                 webviewPanel.webview.postMessage({
                     command: 'updateSettings',
                     fastModeThreshold: newThreshold,
                     labelFontSize: newFontSize,
+                    portFontSize: newPortFontSize,
+                    maxSteps: newMaxSteps
                 });
             }
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {
@@ -355,6 +374,8 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
                 const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
                 const labelFontSize = config.get<number>('labelFontSize', 12);
+                const portFontSize = config.get<number>('portFontSize', 12);
+                const maxSteps = config.get<number>('maxSteps', 5000);
                 const maxWorkers = config.get<number>('maxWorkers', -1);
                 const chunkSize = config.get<number>('chunkSize', 2000);
                 const pythonPath = config.get<string>('pythonPath', 'python');
@@ -362,13 +383,13 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 const flowControlStep = config.get<number>('flowControlStep', 5);
                 const useInstancing = config.get<boolean>('useInstancing', true);
 
-                webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
+                webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, portFontSize, maxSteps, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
             }
         }, null, this.context.subscriptions);
     }
 }
 
-function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string, enableProfiling: boolean, flowControlStep: number, useInstancing: boolean): string {
+function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, portFontSize: number, maxSteps: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string, enableProfiling: boolean, flowControlStep: number, useInstancing: boolean): string {
     const nonce = getNonce();
     const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
     const earcutCdn = "https://unpkg.com/earcut@2.2.4/dist/earcut.min.js";
@@ -642,7 +663,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             <div id="status-msg" style="font-size: 12px; color: #888; margin-top: 5px;">Initializing...</div>
         </div>
         <hr style="width: 100%; border-color: #444; margin: 15px 0;">
-        <h3>Layer Control</h3>
+        <h3 id="layer-control-header" style="cursor: pointer; user-select: none;" title="Double click to select all layers">Layer Control</h3>
         <div style="margin-top: 10px; display: flex; align-items: center;;">
             <div style="display: flex; align-items: center;">
                 <input type="checkbox" id="show-labels-checkbox" style="margin-right: 4px;">
@@ -663,6 +684,30 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
 
                 <div style="display: flex; align-items: center;" title="Text Brightness">
                     <input type="range" min="0" max="1" step="0.1" value="0.5" id="label-brightness-slider" style="width: 50px;">
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 5px; display: flex; align-items: center;">
+            <div style="display: flex; align-items: center;">
+                <input type="checkbox" id="show-ports-checkbox" style="margin-right: 4px;">
+                <label for="show-ports-checkbox">Ports</label>
+            </div>
+
+            <div style="margin-left: auto; display: flex; align-items: center; gap: 5px;">
+                <div style="display: flex; align-items: center;" title="Port Color">
+                    <!-- Hidden actual input -->
+                    <input type="color" id="port-color-picker" value="#FFFFFF" style="visibility: hidden; position: absolute; width: 0; height: 0;">
+
+                    <!-- Reset button (hidden by default) -->
+                    <div id="port-color-reset" style="display: none; margin-right: 4px; cursor: pointer; font-size: 14px;" title="Reset to layer colors">↺</div>
+
+                    <!-- Custom trigger -->
+                    <div id="port-color-trigger" style="width: 25px; height: 10px; border: 1px solid var(--vscode-input-border); cursor: pointer; background: linear-gradient(135deg, red, orange, yellow, green, blue, indigo, violet);" title="Click to set global color"></div>
+                </div>
+
+                <div style="display: flex; align-items: center;" title="Port Brightness">
+                    <input type="range" min="0" max="1" step="0.1" value="0.5" id="port-brightness-slider" style="width: 50px;">
                 </div>
             </div>
         </div>
@@ -746,6 +791,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 <input type="number" id="font-size-input" value="${labelFontSize}" min="1" step="1">
             </div>
             <div class="control-group">
+                <label for="port-font-size-input">Port Font Size:</label>
+                <input type="number" id="port-font-size-input" value="${portFontSize}" min="1" step="1">
+            </div>
+            <div class="control-group">
                 <label for="python-path-input">Python Path:</label>
                 <input type="text" id="python-path-input" value="${pythonPath}">
             </div>
@@ -782,17 +831,22 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let pythonFinished = false;
         let geometry = {};
         let labels = {};
+        let ports = [];
         let bbox = { x_min: 0, x_max: 0, y_min: 0, y_max: 0 };
         let activeLayers = new Set();
         let allLayers = [];
         let layerColors = {};
         let layerOpacities = {};
         let showLabels = false;
+        let labelFontSize = ${labelFontSize};
+        let portFontSize = ${portFontSize};
+        let showPorts = false;
+        let globalPortColor = null;
+        let portBrightness = 0.5;
         let labelBrightness = 0.5;
         let globalLabelColor = null;
         let currentEngine = '${engine}';
         let fastModeThreshold = ${fastModeThreshold};
-        let labelFontSize = ${labelFontSize};
         let enableProfiling = ${enableProfiling};
         let flowControlStep = ${flowControlStep};
         let useInstancing = ${useInstancing};
@@ -922,6 +976,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             let activeLayers = new Set();
             let isSearching = false;
             let searchState = null;
+            let maxSteps = ${maxSteps};
 
             self.onmessage = function(e) {
                 const msg = e.data;
@@ -935,6 +990,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     case 'updateActiveLayers':
                         activeLayers = new Set(msg.layers);
                         // console.log("Worker: Active layers updated", activeLayers.size);
+                        break;
+                    case 'updateConfig':
+                        if (msg.maxSteps !== undefined) maxSteps = msg.maxSteps;
                         break;
                     case 'find':
                         startSearch(msg.x, msg.y);
@@ -1170,7 +1228,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     unexpandedInstances,
                     head: 0,
                     steps: 0,
-                    maxSteps: 5000
+                    maxSteps: maxSteps
                 };
                 isSearching = true;
                 processSearchChunk();
@@ -1502,6 +1560,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         const flowControlStepInput = document.getElementById('flow-control-step-input');
         const useInstancingInput = document.getElementById('use-instancing-input');
         const fontSizeInput = document.getElementById('font-size-input');
+        const portFontSizeInput = document.getElementById('port-font-size-input');
         const minZoomInput = document.getElementById('min-zoom-input');
         const pythonPathInput = document.getElementById('python-path-input');
 
@@ -1577,6 +1636,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             });
         }
 
+        if (portFontSizeInput) {
+            portFontSizeInput.addEventListener('change', (e) => {
+                vscode.postMessage({
+                    command: 'updateConfig',
+                    key: 'portFontSize',
+                    value: parseFloat(e.target.value)
+                });
+            });
+        }
+
         if (pythonPathInput) {
             pythonPathInput.addEventListener('change', (e) => {
                 vscode.postMessage({
@@ -1646,6 +1715,9 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 handleAddLayerChunk(message.layerKey, message.data);
             } else if (message.command === 'addLayerChunkB64') {
                 handleAddLayerChunkB64(message.layerKey, message.chunkIndex, message.totalChunks, message.data, message.type, message.cellName);
+            } else if (message.command === 'addPorts') {
+                ports = message.ports;
+                requestAnimationFrame(drawLabels);
             } else if (message.command === 'updateSettings') {
                 if (message.fastModeThreshold !== undefined) {
                     fastModeThreshold = message.fastModeThreshold;
@@ -1657,6 +1729,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     if (fontSizeInput) fontSizeInput.value = labelFontSize;
                     console.log("Updated labelFontSize to:", labelFontSize);
                     requestAnimationFrame(drawLabels);
+                }
+                if (message.portFontSize !== undefined) {
+                    portFontSize = message.portFontSize;
+                    if (portFontSizeInput) portFontSizeInput.value = portFontSize;
+                    console.log("Updated portFontSize to:", portFontSize);
+                    requestAnimationFrame(drawLabels);
+                }
+                if (message.maxSteps !== undefined) {
+                    searchWorker.postMessage({ command: 'updateConfig', maxSteps: message.maxSteps });
+                    console.log("Updated maxSteps to:", message.maxSteps);
                 }
             } else if (message.command === 'status') {
                 updateStatus(message.message);
@@ -1924,6 +2006,12 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             labels = {};
             highlightedPolygons = [];
             bbox = data.bbox;
+            if (data.ports) {
+                ports = data.ports;
+                console.log(\`[Webview] Received \${ports.length} ports in initialize\`);
+            } else {
+                ports = [];
+            }
             activeLayers.clear();
             hasUserInteracted = false;
             layerColors = {};
@@ -2449,9 +2537,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             // GDS is Y-up, SVG is Y-down.
             // We use a nested group structure:
             // SVG -> Viewport (controlled by pan-zoom) -> FlipGroup (controlled by us) -> Layers
-            const viewBoxString = \`\${data.bbox.x_min} \${-data.bbox.y_max} \${bboxWidth} \${bboxHeight}\`;
+            // Note: We DO NOT use viewBox here because it complicates the coordinate mapping for the overlay canvas.
+            // Instead, we rely on svg-pan-zoom's 'fit' and 'center' to handle the initial view.
 
-            let svgContent = \`<svg id="root-svg-for-panzoom" viewBox="\${viewBoxString}" width="100%" height="100%">\`;
+            let svgContent = \`<svg id="root-svg-for-panzoom" width="100%" height="100%">\`;
 
             // 1. Viewport Group (for svg-pan-zoom)
             svgContent += \`<g id="svg-pan-zoom-viewport">\`;
@@ -2962,26 +3051,6 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 drawHighlights(ctx);
             }
 
-            if (!showLabels) return;
-
-            // Viewport culling for labels (in world coordinates)
-            // Screen: 0,0 -> W,H
-            // WorldX = (ScreenX - offsetX) / scale
-            // WorldY = (ScreenY - offsetY) / -scale
-            const viewMinX = (0 - offsetX) / scale;
-            const viewMaxX = (textCanvas.width - offsetX) / scale;
-            const viewMaxY = (0 - offsetY) / -scale;
-            const viewMinY = (textCanvas.height - offsetY) / -scale;
-
-            const vMinX = Math.min(viewMinX, viewMaxX);
-            const vMaxX = Math.max(viewMinX, viewMaxX);
-            const vMinY = Math.min(viewMinY, viewMaxY);
-            const vMaxY = Math.max(viewMinY, viewMaxY);
-
-            ctx.font = \`\${labelFontSize}px sans-serif\`;
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-
             // Helper to darken color
             const darken = (hex, factor) => {
                 let r = parseInt(hex.slice(1, 3), 16);
@@ -2993,45 +3062,163 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
             };
 
-            for (const layerKey in labels) {
-                if (!activeLayers.has(layerKey)) continue;
+            if (showLabels) {
+                // Viewport culling for labels (in world coordinates)
+                // Screen: 0,0 -> W,H
+                // WorldX = (ScreenX - offsetX) / scale
+                // WorldY = (ScreenY - offsetY) / -scale
+                const viewMinX = (0 - offsetX) / scale;
+                const viewMaxX = (textCanvas.width - offsetX) / scale;
+                const viewMaxY = (0 - offsetY) / -scale;
+                const viewMinY = (textCanvas.height - offsetY) / -scale;
 
-                const layerLabels = labels[layerKey];
+                const vMinX = Math.min(viewMinX, viewMaxX);
+                const vMaxX = Math.max(viewMinX, viewMaxX);
+                const vMinY = Math.min(viewMinY, viewMaxY);
+                const vMaxY = Math.max(viewMinY, viewMaxY);
 
-                if (globalLabelColor) {
-                    ctx.fillStyle = darken(globalLabelColor, labelBrightness);
-                } else {
-                    const baseColor = layerColors[layerKey] || '#ffffff';
-                    ctx.fillStyle = darken(baseColor, labelBrightness);
+                ctx.font = \`\${labelFontSize}px sans-serif\`;
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+
+                for (const layerKey in labels) {
+                    if (!activeLayers.has(layerKey)) continue;
+
+                    const layerLabels = labels[layerKey];
+
+                    if (globalLabelColor) {
+                        ctx.fillStyle = darken(globalLabelColor, labelBrightness);
+                    } else {
+                        const baseColor = layerColors[layerKey] || '#ffffff';
+                        ctx.fillStyle = darken(baseColor, labelBrightness);
+                    }
+
+                    for (const label of layerLabels) {
+                        // label: { text, x, y, ... }
+                        const x = label.x;
+                        const y = label.y;
+                        const text = label.text;
+
+                        // Project to screen coordinates manually
+                        // World -> Rotation -> UserFlip -> BaseFlip -> Scale -> Offset
+
+                        // 1. User Rotation
+                        const rad = rotationState * Math.PI / 180;
+                        const c = Math.cos(rad);
+                        const s = Math.sin(rad);
+                        const rx = x * c - y * s;
+                        const ry = x * s + y * c;
+
+                        // 2. User Flip
+                        let wx = rx * flipState.x;
+                        let wy = ry * flipState.y;
+
+                        // 3. Base Flip (Y-up to Y-down) + Scale + Offset
+                        // ScreenX = wx * scale + offsetX
+                        // ScreenY = wy * -scale + offsetY
+                        const screenX = wx * scale + offsetX;
+                        const screenY = wy * -scale + offsetY;
+
+                        ctx.fillText(text, screenX, screenY);
+                    }
                 }
+            }
 
-                for (const label of layerLabels) {
-                    // label: { text, x, y, ... }
-                    const x = label.x;
-                    const y = label.y;
-                    const text = label.text;
+            // Draw Ports
+            if (showPorts && ports && ports.length > 0) {
+                ctx.lineWidth = 2;
+                ctx.font = \`\${portFontSize}px sans-serif\`;
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
 
-                    // Project to screen coordinates manually
-                    // World -> Rotation -> UserFlip -> BaseFlip -> Scale -> Offset
+                for (const port of ports) {
+                    // Check visibility: if any layer starting with port.layer_ is active
+                    const layerPrefix = port.layer + '_';
+                    const isVisible = Array.from(activeLayers).some(k => k.startsWith(layerPrefix));
+                    if (!isVisible) continue;
 
-                    // 1. User Rotation
+                    // Determine color
+                    let color;
+                    if (globalPortColor) {
+                        color = darken(globalPortColor, portBrightness);
+                    } else {
+                        // Try to find layer color
+                        // port.layer is a number. layerColors keys are "layer_datatype"
+                        // We try to find a key that starts with "port.layer_"
+                        let baseColor = '#FFFFFF'; // Default white
+
+                        // Check exact match for datatype 0 first
+                        if (layerColors[layerPrefix + '0']) {
+                            baseColor = layerColors[layerPrefix + '0'];
+                        } else {
+                            // Find any match
+                            const match = Object.keys(layerColors).find(k => k.startsWith(layerPrefix));
+                            if (match) {
+                                baseColor = layerColors[match];
+                            }
+                        }
+                        color = darken(baseColor, portBrightness);
+                    }
+
+                    ctx.strokeStyle = color;
+                    ctx.fillStyle = color;
+
+                    const x = port.x;
+                    const y = port.y;
+                    const rot = port.rotation; // radians
+
+                    // Project position
                     const rad = rotationState * Math.PI / 180;
                     const c = Math.cos(rad);
                     const s = Math.sin(rad);
                     const rx = x * c - y * s;
                     const ry = x * s + y * c;
 
-                    // 2. User Flip
                     let wx = rx * flipState.x;
                     let wy = ry * flipState.y;
 
-                    // 3. Base Flip (Y-up to Y-down) + Scale + Offset
-                    // ScreenX = wx * scale + offsetX
-                    // ScreenY = wy * -scale + offsetY
                     const screenX = wx * scale + offsetX;
                     const screenY = wy * -scale + offsetY;
 
-                    ctx.fillText(text, screenX, screenY);
+                    // Culling
+                    if (screenX < 0 || screenX > textCanvas.width || screenY < 0 || screenY > textCanvas.height) {
+                        continue;
+                    }
+
+                    // Draw Arrow
+                    const arrowLen = 20;
+                    const pdx = Math.cos(rot);
+                    const pdy = Math.sin(rot);
+
+                    const rdx = pdx * c - pdy * s;
+                    const rdy = pdx * s + pdy * c;
+
+                    const wdx = rdx * flipState.x;
+                    const wdy = rdy * flipState.y;
+
+                    const sdx = wdx;
+                    const sdy = -wdy;
+
+                    const len = Math.sqrt(sdx*sdx + sdy*sdy);
+                    const ndx = sdx / len;
+                    const ndy = sdy / len;
+
+                    const endX = screenX + ndx * arrowLen;
+                    const endY = screenY + ndy * arrowLen;
+
+                    ctx.beginPath();
+                    ctx.moveTo(screenX, screenY);
+                    ctx.lineTo(endX, endY);
+
+                    const headLen = 5;
+                    const angle = Math.atan2(ndy, ndx);
+                    ctx.lineTo(endX - headLen * Math.cos(angle - Math.PI / 6), endY - headLen * Math.sin(angle - Math.PI / 6));
+                    ctx.moveTo(endX, endY);
+                    ctx.lineTo(endX - headLen * Math.cos(angle + Math.PI / 6), endY - headLen * Math.sin(angle + Math.PI / 6));
+
+                    ctx.stroke();
+
+                    ctx.fillText(port.name, screenX, screenY - 5);
                 }
             }
         }
@@ -3370,6 +3557,32 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             requestAnimationFrame(drawLabels);
         });
 
+        const layerControlHeader = document.getElementById('layer-control-header');
+        if (layerControlHeader) {
+            layerControlHeader.addEventListener('dblclick', () => {
+                // Select all layers
+                allLayers.forEach(layerKey => activeLayers.add(layerKey));
+
+                // Update UI
+                const checkboxes = document.querySelectorAll('#layers-list input[type="checkbox"]');
+                checkboxes.forEach(cb => {
+                    cb.checked = true;
+                });
+
+                // Redraw
+                if (currentEngine === 'canvas') draw();
+                else if (currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
+                requestAnimationFrame(drawLabels);
+
+                if (currentEngine === 'svg') {
+                    allLayers.forEach(key => {
+                        const el = document.getElementById('layer-group-' + key);
+                        if (el) el.style.display = 'block';
+                    });
+                }
+            });
+        }
+
         controls.addEventListener('click', function(event) {
             const target = event.target;
             if (target.id === 'label-color-trigger') {
@@ -3378,6 +3591,15 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
             if (target.id === 'label-color-reset') {
                 globalLabelColor = null;
                 document.getElementById('label-color-trigger').style.background = 'linear-gradient(135deg, red, orange, yellow, green, blue, indigo, violet)';
+                target.style.display = 'none';
+                requestAnimationFrame(drawLabels);
+            }
+            if (target.id === 'port-color-trigger') {
+                document.getElementById('port-color-picker').click();
+            }
+            if (target.id === 'port-color-reset') {
+                globalPortColor = null;
+                document.getElementById('port-color-trigger').style.background = 'linear-gradient(135deg, red, orange, yellow, green, blue, indigo, violet)';
                 target.style.display = 'none';
                 requestAnimationFrame(drawLabels);
             }
@@ -3403,6 +3625,26 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 globalLabelColor = target.value;
                 document.getElementById('label-color-trigger').style.background = globalLabelColor;
                 document.getElementById('label-color-reset').style.display = 'inline-block';
+                requestAnimationFrame(drawLabels);
+                return;
+            }
+
+            if (target.id === 'show-ports-checkbox') {
+                showPorts = target.checked;
+                requestAnimationFrame(drawLabels);
+                return;
+            }
+
+            if (target.id === 'port-color-picker') {
+                globalPortColor = target.value;
+                document.getElementById('port-color-trigger').style.background = globalPortColor;
+                document.getElementById('port-color-reset').style.display = 'inline-block';
+                requestAnimationFrame(drawLabels);
+                return;
+            }
+
+            if (target.id === 'port-brightness-slider') {
+                portBrightness = parseFloat(target.value);
                 requestAnimationFrame(drawLabels);
                 return;
             }
@@ -3661,6 +3903,28 @@ function installGdstk(pythonPath: string) {
                     reject(err);
                 } else {
                     vscode.window.showInformationMessage("Successfully installed gdstk. Please reopen the GDS file to view it.");
+                    resolve();
+                }
+            });
+        });
+    });
+}
+
+function installKlayout(pythonPath: string) {
+    vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Installing klayout...",
+        cancellable: false
+    }, (progress, token) => {
+        return new Promise<void>((resolve, reject) => {
+            const command = `"${pythonPath}" -m pip install klayout`;
+            cp.exec(command, (err, stdout, stderr) => {
+                if (err) {
+                    vscode.window.showErrorMessage(`Failed to install klayout: ${err.message}`);
+                    console.error(stderr);
+                    reject(err);
+                } else {
+                    vscode.window.showInformationMessage("Successfully installed klayout. Please reopen the GDS file to view it.");
                     resolve();
                 }
             });
