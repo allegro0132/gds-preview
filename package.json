@@ -82,6 +82,11 @@
           "default": 12,
           "description": "Font size for port labels in pixels."
         },
+        "gdsPreview.portArrowScale": {
+          "type": "number",
+          "default": 1.0,
+          "description": "Scale factor for port arrows."
+        },
         "gdsPreview.maxSteps": {
           "type": "number",
           "default": 5000,

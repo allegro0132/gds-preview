@@ -96,6 +96,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
         const labelFontSize = config.get<number>('labelFontSize', 12);
         const portFontSize = config.get<number>('portFontSize', 12);
+        const portArrowScale = config.get<number>('portArrowScale', 1.0);
         const maxSteps = config.get<number>('maxSteps', 5000);
         const maxWorkers = config.get<number>('maxWorkers', -1);
         const chunkSize = config.get<number>('chunkSize', 2000);
@@ -344,7 +345,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             this.context.subscriptions
         );
 
-        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, portFontSize, maxSteps, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
+        webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, portFontSize, portArrowScale, maxSteps, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
         console.log("Webview HTML set");
 
         // Listen for configuration changes
@@ -352,17 +353,20 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             if (e.affectsConfiguration('gdsPreview.fastModeThreshold') ||
                 e.affectsConfiguration('gdsPreview.labelFontSize') ||
                 e.affectsConfiguration('gdsPreview.portFontSize') ||
+                e.affectsConfiguration('gdsPreview.portArrowScale') ||
                 e.affectsConfiguration('gdsPreview.maxSteps')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
                 const newThreshold = config.get<number>('fastModeThreshold', 10);
                 const newFontSize = config.get<number>('labelFontSize', 12);
                 const newPortFontSize = config.get<number>('portFontSize', 12);
+                const newPortArrowScale = config.get<number>('portArrowScale', 1.0);
                 const newMaxSteps = config.get<number>('maxSteps', 5000);
                 webviewPanel.webview.postMessage({
                     command: 'updateSettings',
                     fastModeThreshold: newThreshold,
                     labelFontSize: newFontSize,
                     portFontSize: newPortFontSize,
+                    portArrowScale: newPortArrowScale,
                     maxSteps: newMaxSteps
                 });
             }
@@ -375,6 +379,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
                 const labelFontSize = config.get<number>('labelFontSize', 12);
                 const portFontSize = config.get<number>('portFontSize', 12);
+                const portArrowScale = config.get<number>('portArrowScale', 1.0);
                 const maxSteps = config.get<number>('maxSteps', 5000);
                 const maxWorkers = config.get<number>('maxWorkers', -1);
                 const chunkSize = config.get<number>('chunkSize', 2000);
@@ -383,13 +388,13 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 const flowControlStep = config.get<number>('flowControlStep', 5);
                 const useInstancing = config.get<boolean>('useInstancing', true);
 
-                webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, portFontSize, maxSteps, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
+                webviewPanel.webview.html = getWebviewContent(initialRenderingEngine, fastModeThreshold, labelFontSize, portFontSize, portArrowScale, maxSteps, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
             }
         }, null, this.context.subscriptions);
     }
 }
 
-function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, portFontSize: number, maxSteps: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string, enableProfiling: boolean, flowControlStep: number, useInstancing: boolean): string {
+function getWebviewContent(engine: string, fastModeThreshold: number, labelFontSize: number, portFontSize: number, portArrowScale: number, maxSteps: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string, enableProfiling: boolean, flowControlStep: number, useInstancing: boolean): string {
     const nonce = getNonce();
     const svgPanZoomCdn = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
     const earcutCdn = "https://unpkg.com/earcut@2.2.4/dist/earcut.min.js";
@@ -795,6 +800,10 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 <input type="number" id="port-font-size-input" value="${portFontSize}" min="1" step="1">
             </div>
             <div class="control-group">
+                <label for="port-arrow-scale-input">Port Arrow Scale:</label>
+                <input type="number" id="port-arrow-scale-input" value="${portArrowScale}" min="0.1" step="0.1">
+            </div>
+            <div class="control-group">
                 <label for="python-path-input">Python Path:</label>
                 <input type="text" id="python-path-input" value="${pythonPath}">
             </div>
@@ -840,6 +849,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         let showLabels = false;
         let labelFontSize = ${labelFontSize};
         let portFontSize = ${portFontSize};
+        let portArrowScale = ${portArrowScale};
         let showPorts = false;
         let globalPortColor = null;
         let portBrightness = 0.5;
@@ -1561,6 +1571,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         const useInstancingInput = document.getElementById('use-instancing-input');
         const fontSizeInput = document.getElementById('font-size-input');
         const portFontSizeInput = document.getElementById('port-font-size-input');
+        const portArrowScaleInput = document.getElementById('port-arrow-scale-input');
         const minZoomInput = document.getElementById('min-zoom-input');
         const pythonPathInput = document.getElementById('python-path-input');
 
@@ -1641,6 +1652,16 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                 vscode.postMessage({
                     command: 'updateConfig',
                     key: 'portFontSize',
+                    value: parseFloat(e.target.value)
+                });
+            });
+        }
+
+        if (portArrowScaleInput) {
+            portArrowScaleInput.addEventListener('change', (e) => {
+                vscode.postMessage({
+                    command: 'updateConfig',
+                    key: 'portArrowScale',
                     value: parseFloat(e.target.value)
                 });
             });
@@ -1734,6 +1755,12 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     portFontSize = message.portFontSize;
                     if (portFontSizeInput) portFontSizeInput.value = portFontSize;
                     console.log("Updated portFontSize to:", portFontSize);
+                    requestAnimationFrame(drawLabels);
+                }
+                if (message.portArrowScale !== undefined) {
+                    portArrowScale = message.portArrowScale;
+                    if (portArrowScaleInput) portArrowScaleInput.value = portArrowScale;
+                    console.log("Updated portArrowScale to:", portArrowScale);
                     requestAnimationFrame(drawLabels);
                 }
                 if (message.maxSteps !== undefined) {
@@ -3186,7 +3213,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     }
 
                     // Draw Arrow
-                    const arrowLen = 20;
+                    const arrowLen = 20 * portArrowScale;
                     const pdx = Math.cos(rot);
                     const pdy = Math.sin(rot);
 
@@ -3210,7 +3237,7 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
                     ctx.moveTo(screenX, screenY);
                     ctx.lineTo(endX, endY);
 
-                    const headLen = 5;
+                    const headLen = 5 * portArrowScale;
                     const angle = Math.atan2(ndy, ndx);
                     ctx.lineTo(endX - headLen * Math.cos(angle - Math.PI / 6), endY - headLen * Math.sin(angle - Math.PI / 6));
                     ctx.moveTo(endX, endY);

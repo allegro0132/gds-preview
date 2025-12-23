@@ -114,32 +114,4 @@ def extract_ports(cell, gds_path):
     if ports:
         return ports
 
-    # 2. Fallback to gdstk properties (JSON)
-    if cell.properties:
-        for prop in cell.properties:
-            try:
-                # gdsfactory stores ports in a 'ports' key in JSON properties
-                # But properties are list of lists/tuples?
-                # gdstk properties are usually list of [key, value] or similar?
-                # Actually gdstk.Cell.properties is a list of lists of values?
-                # Let's assume it might be a JSON string in one of the properties
-                pass
-            except:
-                pass
-
-    # 3. Fallback to Labels on specific layers
-    # Layers: 1/0 (optical), 71/0 (electrical?), 66/0 (labels?)
-    target_layers = [(1, 0), (71, 0), (66, 0), (1, 10)]
-
-    for label in cell.labels:
-        if (label.layer, label.texttype) in target_layers:
-            ports.append({
-                "name": label.text,
-                "x": label.origin[0],
-                "y": label.origin[1],
-                "rotation": label.rotation,  # gdstk uses radians
-                "layer": label.layer,
-                "port_type": "optical" if label.layer == 1 else "electrical"
-            })
-
     return ports
