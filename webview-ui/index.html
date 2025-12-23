@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}' 'unsafe-eval' {{cspSource}} https://cdn.jsdelivr.net https://unpkg.com; img-src {{cspSource}} data: blob:; worker-src blob:;">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GDS Preview</title>
+    <link href="{{styleUri}}" rel="stylesheet" />
+    <script nonce="{{nonce}}">
+        window.vscode = acquireVsCodeApi();
+    </script>
+</head>
+
+<body>
+    <div id="controls">
+        <h3>Cell Control</h3>
+        <div class="control-group">
+            <div id="cell-tree" class="tree-view">Loading...</div>
+            <div id="status-msg" style="font-size: 12px; color: #888; margin-top: 5px;">Initializing...</div>
+        </div>
+        <hr style="width: 100%; border-color: #444; margin: 15px 0;">
+        <h3 id="layer-control-header" style="cursor: pointer; user-select: none;"
+            title="Double click to select all layers">Layer Control</h3>
+        <div style="margin-top: 10px; display: flex; align-items: center;;">
+            <div style="display: flex; align-items: center;">
+                <input type="checkbox" id="show-labels-checkbox" style="margin-right: 4px;">
+                <label for="show-labels-checkbox">Labels</label>
+            </div>
+
+            <div style="margin-left: auto; display: flex; align-items: center; gap: 5px;">
+                <div style="display: flex; align-items: center;" title="Label Color">
+                    <!-- Hidden actual input -->
+                    <input type="color" id="label-color-picker" value="#ffffff"
+                        style="visibility: hidden; position: absolute; width: 0; height: 0;">
+
+                    <!-- Reset button (hidden by default) -->
+                    <div id="label-color-reset"
+                        style="display: none; margin-right: 4px; cursor: pointer; font-size: 14px;"
+                        title="Reset to layer colors">↺</div>
+
+                    <!-- Custom trigger -->
+                    <div id="label-color-trigger"
+                        style="width: 25px; height: 10px; border: 1px solid var(--vscode-input-border); cursor: pointer; background: linear-gradient(135deg, red, orange, yellow, green, blue, indigo, violet);"
+                        title="Click to set global color"></div>
+                </div>
+
+                <div style="display: flex; align-items: center;" title="Text Brightness">
+                    <input type="range" min="0" max="1" step="0.1" value="0.5" id="label-brightness-slider"
+                        style="width: 50px;">
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 5px; display: flex; align-items: center;">
+            <div style="display: flex; align-items: center;">
+                <input type="checkbox" id="show-ports-checkbox" style="margin-right: 4px;">
+                <label for="show-ports-checkbox">Ports</label>
+            </div>
+
+            <div style="margin-left: auto; display: flex; align-items: center; gap: 5px;">
+                <div style="display: flex; align-items: center;" title="Port Color">
+                    <!-- Hidden actual input -->
+                    <input type="color" id="port-color-picker" value="#FFFFFF"
+                        style="visibility: hidden; position: absolute; width: 0; height: 0;">
+
+                    <!-- Reset button (hidden by default) -->
+                    <div id="port-color-reset"
+                        style="display: none; margin-right: 4px; cursor: pointer; font-size: 14px;"
+                        title="Reset to layer colors">↺</div>
+
+                    <!-- Custom trigger -->
+                    <div id="port-color-trigger"
+                        style="width: 25px; height: 10px; border: 1px solid var(--vscode-input-border); cursor: pointer; background: linear-gradient(135deg, red, orange, yellow, green, blue, indigo, violet);"
+                        title="Click to set global color"></div>
+                </div>
+
+                <div style="display: flex; align-items: center;" title="Port Brightness">
+                    <input type="range" min="0" max="1" step="0.1" value="0.5" id="port-brightness-slider"
+                        style="width: 50px;">
+                </div>
+            </div>
+        </div>
+        <div id="layers-list"></div>
+    </div>
+    <div id="view-container">
+        <div id="toolbar" title="Drag to move">
+            <!-- Center View -->
+            <button id="recenter-btn" class="toolbar-btn" title="Center View">
+                <svg viewBox="0 0 24 24">
+                    <path
+                        d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
+                    <path d="M0 0h24v24H0z" fill="none" />
+                    <path
+                        d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm0 6c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z" />
+                </svg>
+            </button>
+
+            <div class="toolbar-separator"></div>
+
+            <!-- Flip H -->
+            <button id="flip-h-btn" class="toolbar-btn" title="Flip Horizontal">
+                <svg viewBox="0 0 24 24">
+                    <path
+                        d="M15 21h2v-2h-2v2zm4-12h2V7h-2v2zM3 5v14c0 1.1.9 2 2 2h4v-2H5V5h4V3H5c-1.1 0-2 .9-2 2zm16-2v2h2c0-1.1-.9-2-2-2zm-8 20h2V1h-2v22zm8-6h2v-2h-2v2zM15 5h2V3h-2v2zm4 8h2v-2h-2v2zm0 8c1.1 0 2-.9 2-2h-2v2z" />
+                </svg>
+            </button>
+            <!-- Flip V -->
+            <button id="flip-v-btn" class="toolbar-btn" title="Flip Vertical">
+                <svg viewBox="0 0 24 24">
+                    <path
+                        d="M3 15v2h2v-2H3zm10 4h2v-2h-2v2zm2-16H5c-1.1 0-2 .9-2 2v4h2V5h14v4h2V5c0-1.1-.9-2-2-2zm2 16h2v-2h-2v2zM1 11v2h22v-2H1zm4 8h2v-2H5v2zm4 0h2v-2H9v2zm8 0h2v-2h-2v2z" />
+                </svg>
+            </button>
+
+            <div class="toolbar-separator"></div>
+
+            <!-- Rotation Input -->
+            <input type="number" id="rot-angle-input" value="90"
+                style="width: 40px; padding: 2px; text-align: center; font-size: 10px; margin-right: 2px;"
+                title="Rotation Angle">
+
+            <!-- Rotate CW -->
+            <button id="rot-cw-btn" class="toolbar-btn" title="Rotate CW">
+                <svg viewBox="0 0 24 24">
+                    <path
+                        d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.48z" />
+                </svg>
+            </button>
+            <!-- Rotate CCW -->
+            <button id="rot-ccw-btn" class="toolbar-btn" title="Rotate CCW">
+                <svg viewBox="0 0 24 24">
+                    <path
+                        d="M8.45 5.55L13 1v3.07c3.94.49 7 3.85 7 7.93s-3.05 7.44-7 7.93v-2.02c2.84-.48 5-2.94 5-5.91s-2.16-5.43-5-5.91V10l-4.55-4.45zM4.07 11c.17-1.39.72-2.73 1.62-3.89l1.42 1.42c-.54.75-.88 1.6-1.02 2.47H4.07zm6.93 6.9v2.02c-1.39-.17-2.74-.71-3.9-1.61l1.44-1.44c.75.54 1.59.89 2.46 1.03zm-3.89-2.42l-1.42 1.41c-.9-1.16-1.45-2.5-1.62-3.89h2.02c.14.87.48 1.72 1.02 2.48z" />
+                </svg>
+            </button>
+
+            <div class="toolbar-separator"></div>
+
+            <!-- Negative View -->
+            <button id="negative-view-btn" class="toolbar-btn" title="Toggle Negative View">
+                <svg viewBox="0 0 24 24">
+                    <path d="M4 4h16v16H4z M8 8h8v8H8z" fill="currentColor" fill-rule="evenodd" />
+                </svg>
+            </button>
+        </div>
+
+        <button id="toggle-controls-btn" title="Toggle Sidebar">❮</button>
+        <button id="toggle-config-btn" title="Toggle Configuration">⚙</button>
+
+        <div id="config-panel">
+            <h3>Configuration</h3>
+            <div class="control-group">
+                <label for="engine-select">Rendering Engine:</label>
+                <select id="engine-select">
+                    <option value="webgl">WebGL (GPU)</option>
+                    <option value="canvas">Canvas (CPU)</option>
+                    <option value="svg">SVG (Vector)</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="fast-mode-input">Fast Mode Threshold:</label>
+                <input type="number" id="fast-mode-input" value="" min="1" step="1">
+            </div>
+            <div class="control-group">
+                <label for="max-workers-input">Max Workers:</label>
+                <input type="number" id="max-workers-input" value="" min="-1" step="1" title="-1 for auto">
+            </div>
+            <div class="control-group">
+                <label for="chunk-size-input">Chunk Size:</label>
+                <input type="number" id="chunk-size-input" value="" min="100" step="100">
+            </div>
+            <div class="control-group">
+                <label for="flow-control-step-input">Flow Control Step:</label>
+                <input type="number" id="flow-control-step-input" value="" min="-1" step="1" title="-1 to disable">
+            </div>
+            <div class="control-group">
+                <label for="use-instancing-input">Use Instancing (WebGL):</label>
+                <input type="checkbox" id="use-instancing-input">
+            </div>
+            <div class="control-group">
+                <label for="font-size-input">Label Font Size:</label>
+                <input type="number" id="font-size-input" value="" min="1" step="1">
+            </div>
+            <div class="control-group">
+                <label for="port-font-size-input">Port Font Size:</label>
+                <input type="number" id="port-font-size-input" value="" min="1" step="1">
+            </div>
+            <div class="control-group">
+                <label for="port-arrow-scale-input">Port Arrow Scale:</label>
+                <input type="number" id="port-arrow-scale-input" value="" min="0.1" step="0.1">
+            </div>
+            <div class="control-group">
+                <label for="python-path-input">Python Path:</label>
+                <input type="text" id="python-path-input" value="">
+            </div>
+        </div>
+
+        <!-- Canvas for 'canvas' mode -->
+        <canvas id="gds-canvas" style="display: none;"></canvas>
+        <!-- WebGL Canvas -->
+        <canvas id="gds-webgl-canvas" style="display: none;"></canvas>
+        <!-- SVG container for 'svg' mode -->
+        <div id="svg-container" style="display: none; width: 100%; height: 100%;"></div>
+        <!-- Text Overlay Canvas -->
+        <canvas id="text-canvas"
+            style="position: absolute; top: 0; left: 0; pointer-events: none; z-index: 100;"></canvas>
+    </div>
+
+    <script src="{{svgPanZoomUri}}"></script>
+    <script src="{{earcutUri}}"></script>
+    <script nonce="{{nonce}}">
+        window.gdsConfig = {{gdsConfig}};
+
+        // Initialize inputs from config
+        document.getElementById('fast-mode-input').value = window.gdsConfig.fastModeThreshold;
+        document.getElementById('max-workers-input').value = window.gdsConfig.maxWorkers;
+        document.getElementById('chunk-size-input').value = window.gdsConfig.chunkSize;
+        document.getElementById('flow-control-step-input').value = window.gdsConfig.flowControlStep;
+        document.getElementById('use-instancing-input').checked = window.gdsConfig.useInstancing;
+        document.getElementById('font-size-input').value = window.gdsConfig.labelFontSize;
+        document.getElementById('port-font-size-input').value = window.gdsConfig.portFontSize;
+        document.getElementById('port-arrow-scale-input').value = window.gdsConfig.portArrowScale;
+        document.getElementById('python-path-input').value = window.gdsConfig.pythonPath;
+    </script>
+    <script type="module" src="{{scriptUri}}"></script>
+</body>
+
+</html>
