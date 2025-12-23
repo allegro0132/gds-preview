@@ -79,7 +79,23 @@ class GdsView {
         let args = [];
 
         if (app.isPackaged) {
-             executable = path.join(process.resourcesPath, 'resources', 'gds-engine')
+             let execName = 'gds-engine';
+             if (process.platform === 'win32') {
+                 execName = 'gds-engine.exe';
+             }
+
+             const possiblePaths = [
+                 path.join(process.resourcesPath, execName),
+                 path.join(process.resourcesPath, 'resources', execName)
+             ];
+
+             executable = possiblePaths.find(p => fs.existsSync(p));
+
+             if (!executable) {
+                 console.error(`[Error] gds-engine executable not found. Searched in: ${possiblePaths.join(', ')}`);
+                 executable = path.join(process.resourcesPath, execName);
+             }
+
              args = [scriptName, this.filePath, tempDir];
         } else {
              const rootDir = path.resolve(__dirname, '..');
@@ -605,6 +621,7 @@ function createWindow() {
         height: 800,
         titleBarStyle: 'hiddenInset',
         trafficLightPosition: { x: 10, y: 10 },
+        icon: path.join(__dirname, 'icon.png'),
         webPreferences: {
             preload: path.join(__dirname, 'shell-preload.js'),
             nodeIntegration: false,
@@ -620,9 +637,17 @@ function createWindow() {
 
         // If we have a default file open, create a tab for it
         if (viewManager.views.size === 0) {
-             const defaultFile = path.resolve(__dirname, '../test.gds');
-             if (fs.existsSync(defaultFile)) {
-                 viewManager.createTab(defaultFile);
+             // Extract blank.gds from ASAR if needed, as Python cannot read from ASAR
+             const blankSource = path.join(__dirname, 'blank.gds');
+             const blankDest = path.join(app.getPath('userData'), 'blank.gds');
+
+             try {
+                 if (fs.existsSync(blankSource)) {
+                     fs.copyFileSync(blankSource, blankDest);
+                     viewManager.createTab(blankDest);
+                 }
+             } catch (e) {
+                 console.error("Failed to extract blank.gds:", e);
              }
         }
     });

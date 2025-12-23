@@ -8,9 +8,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-macos:
-    name: Build macOS (Apple Silicon)
-    runs-on: macos-14 # Uses M1/M2 runners for native ARM64 build
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-13, ubuntu-latest, windows-latest]
 
     steps:
       - name: Checkout code
@@ -28,11 +32,17 @@ jobs:
           pip install --upgrade pip
           pip install numpy gdstk klayout pyinstaller
 
-      - name: Build Python Backend
+      - name: Build Python Backend (Unix)
+        if: runner.os != 'Windows'
         run: |
-          chmod +x build_python.sh
-          ./build_python.sh
-        # This generates desktop-ui/resources/gds-engine
+          mkdir -p desktop-ui/resources
+          pyinstaller --clean --noconfirm --distpath desktop-ui/resources --workpath build/pyinstaller gds-engine.spec
+
+      - name: Build Python Backend (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          New-Item -ItemType Directory -Force -Path desktop-ui/resources
+          pyinstaller --clean --noconfirm --distpath desktop-ui/resources --workpath build/pyinstaller gds-engine.spec
 
       # --- Electron App Build ---
       - name: Setup Node.js
@@ -53,13 +63,16 @@ jobs:
         run: |
           cd desktop-ui
           npm run dist
-        # 'dist' builds the distribution packages (dmg/zip) based on package.json config
 
       # --- Upload Artifacts ---
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: GDS-Preview-macOS-arm64
+          name: GDS-Preview-${{ matrix.os }}
           path: |
             desktop-ui/dist/*.dmg
             desktop-ui/dist/*.zip
+            desktop-ui/dist/*.exe
+            desktop-ui/dist/*.AppImage
+            desktop-ui/dist/*.snap
+            desktop-ui/dist/*.deb
