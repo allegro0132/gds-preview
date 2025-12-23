@@ -270,7 +270,7 @@ def gds_to_layered_svgs(gds_path,
         sys.exit(1)
 
 
-if __name__ == "__main__":
+def main():
     if len(sys.argv) < 3:
         print(json.dumps({
             "error":
@@ -294,3 +294,6 @@ if __name__ == "__main__":
 
     gds_to_layered_svgs(gds_input_path, output_dir_path, target_cell,
                         is_negative)
+
+if __name__ == "__main__":
+    main()

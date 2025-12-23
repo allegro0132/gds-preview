@@ -8,3 +8,11 @@ contextBridge.exposeInMainWorld('shellAPI', {
     onUpdateTabs: (callback) => ipcRenderer.on('shell-update-tabs', (event, tabs) => callback(tabs)),
     onThemeChange: (callback) => ipcRenderer.on('theme-change', (event, theme) => callback(theme))
 });
+
+ipcRenderer.on('main-process-log', (event, type, message) => {
+    if (console[type]) {
+        console[type](`[Main] ${message}`);
+    } else {
+        console.log(`[Main] ${message}`);
+    }
+});

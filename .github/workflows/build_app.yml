@@ -1,0 +1,65 @@
+name: Build and Release GDS Preview
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    name: Build macOS (Apple Silicon)
+    runs-on: macos-14 # Uses M1/M2 runners for native ARM64 build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # --- Python Backend Build ---
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install numpy gdstk klayout pyinstaller
+
+      - name: Build Python Backend
+        run: |
+          chmod +x build_python.sh
+          ./build_python.sh
+        # This generates desktop-ui/resources/gds-engine
+
+      # --- Electron App Build ---
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: desktop-ui/package-lock.json
+
+      - name: Install Node Dependencies
+        run: |
+          cd desktop-ui
+          npm ci
+
+      - name: Build and Package Electron App
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd desktop-ui
+          npm run dist
+        # 'dist' builds the distribution packages (dmg/zip) based on package.json config
+
+      # --- Upload Artifacts ---
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GDS-Preview-macOS-arm64
+          path: |
+            desktop-ui/dist/*.dmg
+            desktop-ui/dist/*.zip

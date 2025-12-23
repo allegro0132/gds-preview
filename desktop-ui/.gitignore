@@ -1,2 +1,4 @@
 node_modules
 index.html
+resources/gds-engine
+dist/

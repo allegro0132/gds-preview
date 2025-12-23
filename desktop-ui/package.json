@@ -4,9 +4,32 @@
   "description": "Desktop version of GDS Preview",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
   },
-  "dependencies": {
-    "electron": "^28.0.0"
-  }
+  "build": {
+    "appId": "com.vsgds.preview",
+    "productName": "GDS Preview",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": ["dmg", "zip"]
+    },
+    "files": [
+      "**/*",
+      {
+        "from": "../webview-ui",
+        "to": "webview-ui",
+        "filter": ["**/*"]
+      }
+    ],
+    "extraResources": [
+      "resources/gds-engine"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "dependencies": {}
 }

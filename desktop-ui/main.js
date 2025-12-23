@@ -16,7 +16,7 @@ class GdsView {
         this.currentCell = undefined;
         this.isNegative = false;
         this.process = null;
-        
+
         this.browserView = new BrowserView({
             webPreferences: {
                 preload: path.join(__dirname, 'preload.js'),
@@ -25,7 +25,7 @@ class GdsView {
                 webSecurity: false
             }
         });
-        
+
         // Load the viewer HTML
         // We assume viewer.html is already generated or we generate it now if missing
         if (!fs.existsSync(path.join(__dirname, 'viewer.html'))) {
@@ -48,24 +48,22 @@ class GdsView {
         if (this.process) {
             this.process.kill();
         }
-        // BrowserView destruction is handled by removing from window and letting GC collect it, 
+        // BrowserView destruction is handled by removing from window and letting GC collect it,
         // effectively (though we should nullify references)
         if (mainWindow) {
             mainWindow.removeBrowserView(this.browserView);
         }
         this.browserView.webContents.destroy();
     }
-    
+
     runPython(targetCell, isNegativeMode) {
         if (this.process) {
             this.process.kill();
             this.process = undefined;
         }
 
-        const rootDir = path.resolve(__dirname, '..');
-        const scriptsDir = path.join(rootDir, 'scripts');
         const tempDir = path.join(os.tmpdir(), `gds_preview_data_${Date.now()}_${this.id}`);
-        
+
         // Ensure file exists
         if (!fs.existsSync(this.filePath)) {
             console.error(`GDS file not found: ${this.filePath}`);
@@ -77,8 +75,19 @@ class GdsView {
             scriptName = 'gds_to_svg.py';
         }
 
-        const pythonScriptPath = path.join(scriptsDir, scriptName);
-        const args = [pythonScriptPath, this.filePath, tempDir];
+        let executable = gdsConfig.pythonPath;
+        let args = [];
+
+        if (app.isPackaged) {
+             executable = path.join(process.resourcesPath, 'gds-engine');
+             args = [scriptName, this.filePath, tempDir];
+        } else {
+             const rootDir = path.resolve(__dirname, '..');
+             const scriptsDir = path.join(rootDir, 'scripts');
+             const pythonScriptPath = path.join(scriptsDir, scriptName);
+             args = [pythonScriptPath, this.filePath, tempDir];
+        }
+
         args.push(targetCell || "");
 
         if (gdsConfig.renderingEngine === 'svg' && isNegativeMode) {
@@ -89,10 +98,10 @@ class GdsView {
             args.push((gdsConfig.renderingEngine === 'webgl' && gdsConfig.useInstancing) ? "1" : "0");
         }
 
-        console.log(`[View ${this.id}] Running python: ${gdsConfig.pythonPath} ${args.join(' ')}`);
+        console.log(`[View ${this.id}] Running: ${executable} ${args.join(' ')}`);
 
         try {
-            const process = cp.spawn(gdsConfig.pythonPath, args);
+            const process = cp.spawn(executable, args);
             this.process = process;
             let stderr = '';
 
@@ -112,7 +121,7 @@ class GdsView {
             rl.on('line', (line) => {
                 // Check if view is still valid
                 if (this.browserView.webContents.isDestroyed()) return;
-                
+
                 try {
                     if (!line.trim()) return;
 
@@ -131,7 +140,7 @@ class GdsView {
                         console.log(`[View ${this.id} Python Log] ${line}`);
                     } else {
                         const data = JSON.parse(line);
-                        
+
                         if (isFirstLine) {
                              // Initialize
                              this.browserView.webContents.send('webview-message', {
@@ -162,7 +171,7 @@ class GdsView {
                 if (this.process !== process) return;
                 this.process = undefined;
                 if (this.browserView.webContents.isDestroyed()) return;
-                
+
                 if (code !== 0) {
                     console.error(`Python script exited with code ${code}`);
                 } else {
@@ -188,25 +197,25 @@ class ViewManager {
         const view = new GdsView(id, filePath, mainWindow);
         this.views.set(id, view);
         this.viewOrder.push(id);
-        
+
         // Initially add browser view but might not be visible or top?
         // Actually we only attach the active one usually, or attach all and manage visibility?
         // Attaching only active is better for performance usually, but attaching all allows background processing?
         // Electron recommends attaching all but using setTopBrowserView.
         mainWindow.addBrowserView(view.browserView);
-        
+
         this.updateShell();
         this.setActiveTab(id);
     }
-    
+
     closeTab(id) {
         const view = this.views.get(id);
         if (!view) return;
-        
+
         view.destroy();
         this.views.delete(id);
         this.viewOrder = this.viewOrder.filter(vId => vId !== id);
-        
+
         if (this.activeViewId === id) {
             // Switch to another tab
             if (this.viewOrder.length > 0) {
@@ -218,22 +227,22 @@ class ViewManager {
         }
         this.updateShell();
     }
-    
+
     setActiveTab(id) {
         if (!this.views.has(id)) return;
-        
+
         this.activeViewId = id;
-        
+
         // Bring to top
         const view = this.views.get(id);
         mainWindow.setTopBrowserView(view.browserView);
-        
+
         // Resize
         this.resizeActiveView();
-        
+
         this.updateShell();
     }
-    
+
     reorderTabs(newOrderIds) {
         // Validate IDs
         const validIds = newOrderIds.filter(id => this.views.has(id));
@@ -246,13 +255,13 @@ class ViewManager {
         this.viewOrder = validIds;
         this.updateShell();
     }
-    
+
     resizeActiveView() {
         if (!this.activeViewId || !mainWindow) return;
         const view = this.views.get(this.activeViewId);
         const bounds = mainWindow.getBounds();
-        const contentBounds = mainWindow.getContentBounds(); 
-        
+        const contentBounds = mainWindow.getContentBounds();
+
         // Shell height is 38px
         view.browserView.setBounds({
             x: 0,
@@ -276,11 +285,11 @@ class ViewManager {
         });
         mainWindow.webContents.send('shell-update-tabs', tabs);
     }
-    
+
     getActiveView() {
         return this.views.get(this.activeViewId);
     }
-    
+
     getViewByWebContentsId(id) {
         for (const view of this.views.values()) {
             if (view.browserView.webContents.id === id) {
@@ -289,12 +298,12 @@ class ViewManager {
         }
         return null;
     }
-    
+
     broadcastConfigChange() {
         // Regenerate HTML
         const html = generateHtml();
         fs.writeFileSync(path.join(__dirname, 'viewer.html'), html);
-        
+
         // Reload all views? Or just update settings?
         // If structural change (workers), reload.
         for (const view of this.views.values()) {
@@ -304,6 +313,47 @@ class ViewManager {
 }
 
 const viewManager = new ViewManager();
+
+// --- Log Forwarding ---
+const originalLog = console.log;
+const originalError = console.error;
+const originalWarn = console.warn;
+
+function broadcastLog(type, args) {
+    // Basic formatting
+    const message = args.map(a => {
+        if (a instanceof Error) return a.stack || a.message;
+        if (typeof a === 'object') return JSON.stringify(a);
+        return String(a);
+    }).join(' ');
+
+    // Send to Shell (Main Window)
+    if (mainWindow && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('main-process-log', type, message);
+    }
+
+    // Send to Active View
+    const activeView = viewManager.getActiveView();
+    if (activeView && !activeView.browserView.webContents.isDestroyed()) {
+         activeView.browserView.webContents.send('main-process-log', type, message);
+    }
+}
+
+console.log = function(...args) {
+    originalLog.apply(console, args);
+    broadcastLog('log', args);
+};
+
+console.error = function(...args) {
+    originalError.apply(console, args);
+    broadcastLog('error', args);
+};
+
+console.warn = function(...args) {
+    originalWarn.apply(console, args);
+    broadcastLog('warn', args);
+};
+// ----------------------
 
 // Configuration
 const gdsConfig = {
@@ -331,13 +381,17 @@ function getNonce() {
 }
 
 function generateHtml() {
-    const rootDir = path.resolve(__dirname, '..');
-    const webviewDir = path.join(rootDir, 'webview-ui');
-    
+    let webviewDir;
+    if (app.isPackaged) {
+        webviewDir = path.join(__dirname, 'webview-ui');
+    } else {
+        webviewDir = path.resolve(__dirname, '../webview-ui');
+    }
+
     // Read workers
     const geometryWorkerPath = path.join(webviewDir, 'workers', 'geometry.js');
     const searchWorkerPath = path.join(webviewDir, 'workers', 'search.js');
-    
+
     const svgPanZoomUri = "https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js";
     const earcutUri = "https://unpkg.com/earcut@2.2.4/dist/earcut.min.js";
 
@@ -368,7 +422,7 @@ function generateHtml() {
     };
 
     const nonce = getNonce();
-    
+
     // Relative paths from desktop-ui/viewer.html to webview-ui
     const styleUri = "../webview-ui/style.css";
     const scriptUri = "../webview-ui/main.js";
@@ -393,11 +447,11 @@ function updateTheme() {
     if (theme === 'auto') {
         theme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
     }
-    
+
     if (mainWindow) {
         mainWindow.webContents.send('theme-change', theme);
     }
-    
+
     // Propagate to all views
     if (viewManager) {
         for (const view of viewManager.views.values()) {
@@ -444,7 +498,36 @@ function createMenu() {
             submenu: [
                 { role: 'reload' },
                 { role: 'forceReload' },
-                { role: 'toggleDevTools' }
+                { type: 'separator' },
+                {
+                    label: 'Toggle Shell DevTools',
+                    accelerator: 'CmdOrCtrl+Shift+I',
+                    click: () => {
+                         if (mainWindow) {
+                             const wc = mainWindow.webContents;
+                             if (wc.isDevToolsOpened()) {
+                                 wc.closeDevTools();
+                             } else {
+                                 wc.openDevTools({ mode: 'detach' });
+                             }
+                         }
+                    }
+                },
+                {
+                    label: 'Toggle View DevTools',
+                    accelerator: 'CmdOrCtrl+Shift+U',
+                    click: () => {
+                        const view = viewManager.getActiveView();
+                        if (view) {
+                             const wc = view.browserView.webContents;
+                             if (wc.isDevToolsOpened()) {
+                                 wc.closeDevTools();
+                             } else {
+                                 wc.openDevTools({ mode: 'detach' });
+                             }
+                        }
+                    }
+                }
             ]
         },
         {
@@ -528,7 +611,7 @@ function createWindow() {
 
     mainWindow.webContents.on('did-finish-load', () => {
         updateTheme();
-        
+
         // If we have a default file open, create a tab for it
         if (viewManager.views.size === 0) {
              const defaultFile = path.resolve(__dirname, '../test.gds');
@@ -537,7 +620,7 @@ function createWindow() {
              }
         }
     });
-    
+
     mainWindow.on('resize', () => {
         viewManager.resizeActiveView();
     });
@@ -606,7 +689,7 @@ ipcMain.on('vscode-message', (event, message) => {
              if (message.key && message.value !== undefined) {
                  console.log(`Config Update: ${message.key} = ${message.value}`);
                  gdsConfig[message.key] = message.value;
-                 
+
                  if (['maxWorkers', 'chunkSize', 'flowControlStep', 'useInstancing'].includes(message.key)) {
                      viewManager.broadcastConfigChange();
                  } else if (['renderingEngine', 'pythonPath'].includes(message.key)) {

@@ -762,7 +762,7 @@ def gds_to_geometry(gds_path,
         sys.exit(1)
 
 
-if __name__ == "__main__":
+def main():
     if len(sys.argv) < 3:
         print(json.dumps({
             "error":
@@ -787,3 +787,6 @@ if __name__ == "__main__":
     else:
         gds_to_geometry(gds_input_path, output_dir_path, target_cell,
                         chunk_size, flow_control_step)
+
+if __name__ == "__main__":
+    main()

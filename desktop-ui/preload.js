@@ -25,6 +25,14 @@ ipcRenderer.on('theme-change', (event, theme) => {
     }
 });
 
+ipcRenderer.on('main-process-log', (event, type, message) => {
+    if (console[type]) {
+        console[type](`[Main] ${message}`);
+    } else {
+        console.log(`[Main] ${message}`);
+    }
+});
+
 window.addEventListener('dragover', (e) => {
     e.preventDefault();
     e.stopPropagation();
