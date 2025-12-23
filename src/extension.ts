@@ -3559,25 +3559,93 @@ function getWebviewContent(engine: string, fastModeThreshold: number, labelFontS
         });
 
         viewContainer.addEventListener('wheel', e => {
-            if (currentEngine !== 'canvas' && currentEngine !== 'webgl') return;
+            if (currentEngine !== 'canvas' && currentEngine !== 'webgl' && currentEngine !== 'svg') return;
+
+            if (currentEngine === 'svg') {
+                if (e.metaKey || e.shiftKey) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!panZoomInstance) return;
+
+                    const delta = -(e.deltaY || e.deltaX);
+                    if (e.metaKey) {
+                        panZoomInstance.panBy({x: delta, y: 0});
+                    } else {
+                        panZoomInstance.panBy({x: 0, y: delta});
+                    }
+
+                    const pan = panZoomInstance.getPan();
+                    const sizes = panZoomInstance.getSizes();
+                    offsetX = pan.x;
+                    offsetY = pan.y;
+                    scale = sizes.realZoom;
+                    requestAnimationFrame(drawLabels);
+                }
+                return;
+            }
+
             e.preventDefault();
             onInteraction();
-            const zoomIntensity = 0.1;
-            const delta = e.deltaY < 0 ? 1 : -1;
-            const zoomFactor = Math.exp(delta * zoomIntensity);
+
+            if (e.metaKey) {
+                offsetX -= (e.deltaY || e.deltaX);
+            } else if (e.shiftKey) {
+                offsetY -= (e.deltaY || e.deltaX);
+            } else {
+                const zoomIntensity = 0.1;
+                const delta = e.deltaY < 0 ? 1 : -1;
+                const zoomFactor = Math.exp(delta * zoomIntensity);
+
+                const rect = viewContainer.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                const worldX = (mouseX - offsetX) / scale;
+                const worldY = (mouseY - offsetY) / -scale;
+
+                scale *= zoomFactor;
+                scale = Math.max(scale, 1e-5);
+
+                offsetX = mouseX - worldX * scale;
+                offsetY = mouseY - worldY * -scale;
+            }
+
+            if (currentEngine === 'canvas') requestAnimationFrame(draw);
+            else requestAnimationFrame(drawWebGL);
+            requestAnimationFrame(drawLabels);
+        }, { capture: true });
+
+        viewContainer.addEventListener('contextmenu', e => {
+            if (currentEngine !== 'canvas' && currentEngine !== 'webgl' && currentEngine !== 'svg') return;
+            e.preventDefault();
+            onInteraction();
 
             const rect = viewContainer.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
+            const centerX = rect.width / 2;
+            const centerY = rect.height / 2;
+
+            if (currentEngine === 'svg') {
+                if (!panZoomInstance) return;
+                const dx = centerX - mouseX;
+                const dy = centerY - mouseY;
+                panZoomInstance.panBy({x: dx, y: dy});
+
+                const pan = panZoomInstance.getPan();
+                const sizes = panZoomInstance.getSizes();
+                offsetX = pan.x;
+                offsetY = pan.y;
+                scale = sizes.realZoom;
+                requestAnimationFrame(drawLabels);
+                return;
+            }
 
             const worldX = (mouseX - offsetX) / scale;
             const worldY = (mouseY - offsetY) / -scale;
 
-            scale *= zoomFactor;
-            scale = Math.max(scale, 1e-5);
-
-            offsetX = mouseX - worldX * scale;
-            offsetY = mouseY - worldY * -scale;
+            offsetX = centerX - worldX * scale;
+            offsetY = centerY - worldY * -scale;
 
             if (currentEngine === 'canvas') requestAnimationFrame(draw);
             else requestAnimationFrame(drawWebGL);

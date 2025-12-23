@@ -4,6 +4,24 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.3.3] - 2025-12-23
+
+### Added
+- **Port Visualization**:
+  - Added support for visualizing ports in all rendering modes (Canvas, WebGL, SVG).
+  - Ports are extracted from `kfactory:ports` metadata or fallback to labels on specific layers.
+  - Ports are rendered with arrows indicating orientation and text labels.
+  - Added UI controls for ports:
+    - Visibility toggle ("Ports" checkbox).
+    - Color picker (with "Reset" to layer color).
+    - Brightness slider.
+  - Added configuration settings:
+    - `gdsPreview.portFontSize`: Font size for port labels.
+    - `gdsPreview.portArrowScale`: Scale factor for port arrows.
+- **UI Improvements**:
+  - Added "Select All Layers" functionality by double-clicking the "Layer Control" header.
+  - Added "Port Arrow Scale" and "Port Font Size" inputs to the configuration panel.
+
 ## [0.3.0] - 2025-12-21
 
 ### Added

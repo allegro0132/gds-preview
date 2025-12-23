@@ -7,6 +7,10 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
 - **High-Performance Rendering**: View large GDSII layouts smoothly directly within VS Code.
 - **Multi-Engine Support**: Choose between WebGL (GPU), Canvas (CPU), or SVG rendering.
 - **Text Rendering**: Displays text labels and annotations within the GDSII layout, with customizable colors.
+- **Port Visualization**:
+  - Visualizes ports with orientation arrows and labels.
+  - Supports `kfactory` metadata and standard layer-based ports.
+  - Customizable visibility, color, size, and arrow scale.
 - **Layer Management**: Toggle layer visibility, customize layer colors, and reorder layers via drag-and-drop.
 - **Negative View**: Inspect mask polarities with negative view mode.
 - **Cell Navigation**: Inspect different cells within the GDS library.
@@ -71,6 +75,12 @@ This extension contributes the following settings:
 * `gdsPreview.labelFontSize`: (Default: `12`)
   * Font size for text labels in pixels.
 
+* `gdsPreview.portFontSize`: (Default: `12`)
+  * Font size for port labels in pixels.
+
+* `gdsPreview.portArrowScale`: (Default: `1.0`)
+  * Scale factor for port arrows.
+
 * `gdsPreview.maxWorkers`: (Default: `-1`)
   * Number of Web Workers to use for parallel processing.
   * Set to `-1` to automatically use all available CPU cores.
@@ -88,12 +98,19 @@ This extension contributes the following settings:
   * Path to the Python executable used for parsing GDSII files.
   * Useful if you have multiple Python installations or use a virtual environment.
 
+* `gdsPreview.maxSteps`: (Default: `5000`)
+  * The max steps for connected objects finding algorithm.
+  * Adjusting this can help cutoff heavy finding problem.
+
 ## Requirements
 
 - **Python 3**: Required for parsing GDSII files.
 - **gdstk**: Python library for GDSII manipulation.
   - The extension will attempt to automatically install `gdstk` if it is missing (`pip install gdstk`).
   - You can also install it manually using `pip install gdstk`.
+- **klayout**: Python library (`klayout.db`) required for advanced port extraction (e.g., `kfactory` metadata).
+  - The extension will attempt to automatically install missing dependencies.
+  - You can also install them manually using `pip install gdstk klayout`.
 
 ## Known Issues
 
