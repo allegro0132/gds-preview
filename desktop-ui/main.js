@@ -85,6 +85,10 @@ class GdsView {
              }
 
              const possiblePaths = [
+                 // Check for onedir structure (folder/executable)
+                 path.join(process.resourcesPath, 'gds-engine', execName),
+                 path.join(process.resourcesPath, 'resources', 'gds-engine', execName),
+                 // Fallback for onefile structure
                  path.join(process.resourcesPath, execName),
                  path.join(process.resourcesPath, 'resources', execName)
              ];
@@ -93,7 +97,7 @@ class GdsView {
 
              if (!executable) {
                  console.error(`[Error] gds-engine executable not found. Searched in: ${possiblePaths.join(', ')}`);
-                 executable = path.join(process.resourcesPath, execName);
+                 executable = path.join(process.resourcesPath, 'gds-engine', execName);
              }
 
              args = [scriptName, this.filePath, tempDir];
