@@ -202,6 +202,8 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                             type: chunkInfo.type,
                             cellName: chunkInfo.cellName
                         });
+                    } else if (line.startsWith("Warning:") || line.startsWith("INFO:")) {
+                        console.log(`[Python Log] ${line}`);
                     } else {
                         // Legacy/Metadata handling
                         const data = JSON.parse(line);
