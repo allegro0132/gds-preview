@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "Desktop version of GDS Preview",
   "main": "main.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/allegro0132/gds-preview.git"
+  },
   "scripts": {
     "start": "electron .",
     "pack": "electron-builder --dir",
