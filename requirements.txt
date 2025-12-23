@@ -1,0 +1,4 @@
+numpy
+gdstk
+klayout
+pyinstaller
