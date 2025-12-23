@@ -3,7 +3,7 @@
   "displayName": "GDSII Preview",
   "description": "A high-performance GDSII/OASIS file viewer for VS Code with WebGL acceleration.",
   "icon": "icon.png",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "AllegroMorphic",
   "repository": {
     "type": "git",
@@ -84,7 +84,7 @@
         },
         "gdsPreview.portArrowScale": {
           "type": "number",
-          "default": 1.0,
+          "default": 1,
           "description": "Scale factor for port arrows."
         },
         "gdsPreview.maxSteps": {
