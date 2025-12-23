@@ -27,12 +27,12 @@ class GdsView {
         });
 
         // Load the viewer HTML
-        // We assume viewer.html is already generated or we generate it now if missing
-        if (!fs.existsSync(path.join(__dirname, 'viewer.html'))) {
-            const html = generateHtml();
-            fs.writeFileSync(path.join(__dirname, 'viewer.html'), html);
-        }
-        this.browserView.webContents.loadFile(path.join(__dirname, 'viewer.html'));
+        // Generate viewer.html in userData to avoid ASAR write issues and ensure correct paths
+        const viewerPath = path.join(app.getPath('userData'), 'viewer.html');
+        const html = generateHtml();
+        fs.writeFileSync(viewerPath, html);
+
+        this.browserView.webContents.loadFile(viewerPath);
 
         // Handle Theme
         this.browserView.webContents.on('did-finish-load', () => {
@@ -79,7 +79,7 @@ class GdsView {
         let args = [];
 
         if (app.isPackaged) {
-             executable = path.join(process.resourcesPath, 'gds-engine');
+             executable = path.join(process.resourcesPath, 'resources', 'gds-engine')
              args = [scriptName, this.filePath, tempDir];
         } else {
              const rootDir = path.resolve(__dirname, '..');
@@ -302,7 +302,8 @@ class ViewManager {
     broadcastConfigChange() {
         // Regenerate HTML
         const html = generateHtml();
-        fs.writeFileSync(path.join(__dirname, 'viewer.html'), html);
+        const viewerPath = path.join(app.getPath('userData'), 'viewer.html');
+        fs.writeFileSync(viewerPath, html);
 
         // Reload all views? Or just update settings?
         // If structural change (workers), reload.
@@ -423,15 +424,20 @@ function generateHtml() {
 
     const nonce = getNonce();
 
-    // Relative paths from desktop-ui/viewer.html to webview-ui
-    const styleUri = "../webview-ui/style.css";
-    const scriptUri = "../webview-ui/main.js";
+    // Use absolute paths for resources to support loading from userData
+    const stylePath = path.join(webviewDir, 'style.css');
+    const scriptPath = path.join(webviewDir, 'main.js');
+    const themePath = path.join(__dirname, 'theme.css');
+
+    const styleUri = `file://${stylePath}`;
+    const scriptUri = `file://${scriptPath}`;
+    const themeUri = `file://${themePath}`;
 
     html = html.replace(/{{nonce}}/g, nonce);
-    html = html.replace(/{{cspSource}}/g, "'self' https: data: blob: 'unsafe-inline' 'unsafe-eval'");
+    html = html.replace(/{{cspSource}}/g, "'self' https: data: blob: 'unsafe-inline' 'unsafe-eval' file:");
     html = html.replace(/{{styleUri}}/g, styleUri);
     // Note: theme.css is injected here, make sure it applies to viewer
-    html = html.replace('</head>', '<link href="theme.css" rel="stylesheet" /></head>');
+    html = html.replace('</head>', `<link href="${themeUri}" rel="stylesheet" /></head>`);
     html = html.replace(/{{scriptUri}}/g, scriptUri);
     html = html.replace(/{{svgPanZoomUri}}/g, svgPanZoomUri);
     html = html.replace(/{{earcutUri}}/g, earcutUri);
