@@ -4,6 +4,21 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.3.4] - 2025-12-24
+
+### Added
+- **Desktop Application**:
+  - Released a standalone desktop version of GDS Preview (`desktop-ui`).
+  - Supports Windows (x64, ARM64, x86), Linux (x64, ARM64), and macOS (Apple Silicon, Intel).
+  - Bundles the high-performance Rust backend for all platforms.
+- **Cross-Platform Support**:
+  - Implemented a full CI/CD pipeline to cross-compile the Rust backend for 6 targets.
+  - VS Code extension now automatically downloads and uses the correct binary for the user's OS and architecture.
+
+### Fixed
+- **macOS Permissions**:
+  - Fixed `EACCES` permission errors by automatically setting executable permissions for the Rust binary on macOS and Linux.
+
 ## [0.3.3] - 2025-12-23
 
 ### Added

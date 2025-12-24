@@ -98,6 +98,24 @@ This extension contributes the following settings:
   * Path to the Python executable used for parsing GDSII files.
   * Useful if you have multiple Python installations or use a virtual environment.
 
+## Desktop Application
+
+A standalone desktop version of GDS Preview is available for Windows, Linux, and macOS.
+
+### macOS Installation Note
+
+The macOS desktop application is not notarized by Apple. If you encounter a "damaged" error when trying to open it:
+
+> "GDSII Preview" is damaged and can’t be opened. You should move it to the Trash.
+
+Please run the following command in your terminal to clear the quarantine attribute:
+
+```bash
+xattr -cr "/Applications/GDSII Preview.app"
+```
+
+(Replace `/Applications/GDSII Preview.app` with the actual path to the app if you installed it elsewhere).
+
 * `gdsPreview.maxSteps`: (Default: `5000`)
   * The max steps for connected objects finding algorithm.
   * Adjusting this can help cutoff heavy finding problem.
