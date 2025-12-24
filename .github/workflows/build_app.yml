@@ -265,10 +265,10 @@ jobs:
           pattern: desktop-*
           merge-multiple: true
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            extensions/*.vsix
-            desktop-dist/*
-          generate_release_notes: true
+      # - name: Create Release
+      #   uses: softprops/action-gh-release@v1
+      #   with:
+      #     files: |
+      #       extensions/*.vsix
+      #       desktop-dist/*
+      #     generate_release_notes: true
