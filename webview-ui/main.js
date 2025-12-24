@@ -24,16 +24,28 @@ initializeState();
 const workerCode = state.config.workerCode;
 const searchWorkerCode = state.config.searchWorkerCode;
 
-const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
-const workerUrl = URL.createObjectURL(workerBlob);
+let workerUrl;
+if (state.config.workerUrl) {
+    workerUrl = state.config.workerUrl;
+} else if (workerCode) {
+    const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
+    workerUrl = URL.createObjectURL(workerBlob);
+}
 
-const searchWorkerBlob = new Blob([searchWorkerCode], { type: 'application/javascript' });
-const searchWorkerUrl = URL.createObjectURL(searchWorkerBlob);
-state.searchWorker = new Worker(searchWorkerUrl);
-state.searchWorker.onmessage = handleSearchWorkerMessage;
+let searchWorkerUrl;
+if (state.config.searchWorkerUrl) {
+    searchWorkerUrl = state.config.searchWorkerUrl;
+} else if (searchWorkerCode) {
+    const searchWorkerBlob = new Blob([searchWorkerCode], { type: 'application/javascript' });
+    searchWorkerUrl = URL.createObjectURL(searchWorkerBlob);
+}
 
-// Initialize search worker config
-state.searchWorker.postMessage({ command: 'updateConfig', maxSteps: state.config.maxSteps });
+if (searchWorkerUrl) {
+    state.searchWorker = new Worker(searchWorkerUrl);
+    state.searchWorker.onmessage = handleSearchWorkerMessage;
+    // Initialize search worker config
+    state.searchWorker.postMessage({ command: 'updateConfig', maxSteps: state.config.maxSteps });
+}
 
 let maxWorkers = state.config.maxWorkers;
 if (maxWorkers === -1) {
@@ -42,14 +54,16 @@ if (maxWorkers === -1) {
 
 console.log(`Initializing worker pool with ${maxWorkers} workers`);
 
-for (let i = 0; i < maxWorkers; i++) {
-    const worker = new Worker(workerUrl);
-    worker.onmessage = (e) => handleWorkerMessage(e, i);
-    worker.onerror = (e) => {
-        console.error(`Worker ${i} error:`, e);
-        updateStatus(`Worker error: ${e.message}`);
-    };
-    state.workerPool.push(worker);
+if (workerUrl) {
+    for (let i = 0; i < maxWorkers; i++) {
+        const worker = new Worker(workerUrl);
+        worker.onmessage = (e) => handleWorkerMessage(e, i);
+        worker.onerror = (e) => {
+            console.error(`Worker ${i} error:`, e);
+            updateStatus(`Worker error: ${e.message}`);
+        };
+        state.workerPool.push(worker);
+    }
 }
 
 // Setup Event Listeners

@@ -421,6 +421,13 @@ function generateHtml() {
 
     const searchWorkerCode = fs.readFileSync(searchWorkerPath, 'utf-8');
 
+    // Write workers to disk
+    const geometryWorkerDest = path.join(app.getPath('userData'), 'geometry-worker.js');
+    fs.writeFileSync(geometryWorkerDest, geometryWorkerCode);
+
+    const searchWorkerDest = path.join(app.getPath('userData'), 'search-worker.js');
+    fs.writeFileSync(searchWorkerDest, searchWorkerCode);
+
     // Read HTML
     const htmlPath = path.join(webviewDir, 'index.html');
     let html = fs.readFileSync(htmlPath, 'utf-8');
@@ -438,9 +445,13 @@ function generateHtml() {
         enableProfiling: gdsConfig.enableProfiling,
         flowControlStep: gdsConfig.flowControlStep,
         useInstancing: gdsConfig.useInstancing,
-        workerCode: geometryWorkerCode,
-        searchWorkerCode: searchWorkerCode
+        workerUrl: `file://${geometryWorkerDest}`,
+        searchWorkerUrl: `file://${searchWorkerDest}`
     };
+
+    const configContent = `window.gdsConfig = ${JSON.stringify(config)};`;
+    const configPath = path.join(app.getPath('userData'), 'config.js');
+    fs.writeFileSync(configPath, configContent);
 
     const nonce = getNonce();
 
@@ -452,6 +463,7 @@ function generateHtml() {
     const styleUri = `file://${stylePath}`;
     const scriptUri = `file://${scriptPath}`;
     const themeUri = `file://${themePath}`;
+    const configUri = `file://${configPath}`;
 
     html = html.replace(/{{nonce}}/g, nonce);
     html = html.replace(/{{cspSource}}/g, "'self' https: data: blob: 'unsafe-inline' 'unsafe-eval' file:");
@@ -460,8 +472,9 @@ function generateHtml() {
     html = html.replace('</head>', `<link href="${themeUri}" rel="stylesheet" /></head>`);
     html = html.replace(/{{scriptUri}}/g, scriptUri);
     html = html.replace(/{{svgPanZoomUri}}/g, svgPanZoomUri);
+    html = html.replace(/{{earcutUri}}"><\/script>/g, `{{earcutUri}}"></script><script src="${configUri}"></script>`);
     html = html.replace(/{{earcutUri}}/g, earcutUri);
-    html = html.replace(/{{gdsConfig}}/g, JSON.stringify(config));
+    html = html.replace(/window.gdsConfig = {{gdsConfig}};/g, '// Config loaded from config.js');
 
     return html;
 }
@@ -684,6 +697,36 @@ ipcMain.on('shell-reorder-tabs', (event, newOrderIds) => {
 
 ipcMain.on('view-file-drop', (event, filePaths) => {
     filePaths.forEach(fp => viewManager.createTab(fp));
+});
+
+ipcMain.on('shell-open-dialog', async () => {
+    console.log('IPC: shell-open-dialog');
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile', 'multiSelections'],
+        filters: [
+            { name: 'GDS Files', extensions: ['gds', 'gds2', 'oas'] },
+            { name: 'All Files', extensions: ['*'] }
+        ]
+    });
+    if (!canceled && filePaths.length > 0) {
+        filePaths.forEach(fp => viewManager.createTab(fp));
+    }
+});
+
+ipcMain.on('shell-reload-active-view', () => {
+    console.log('IPC: shell-reload-active-view');
+    const view = viewManager.getActiveView();
+    if (view) {
+        view.browserView.webContents.send('webview-message', { command: 'reset' });
+    }
+});
+
+ipcMain.on('shell-stop-active-view', () => {
+    console.log('IPC: shell-stop-active-view');
+    const view = viewManager.getActiveView();
+    if (view) {
+        view.browserView.webContents.send('webview-message', { command: 'stop' });
+    }
 });
 
 // IPC Handlers from Viewers
