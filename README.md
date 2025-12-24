@@ -94,8 +94,13 @@ This extension contributes the following settings:
   * Helps prevent the extension host from being overwhelmed by data.
   * Set to `-1` to disable flow control.
 
+* `gdsPreview.maxSteps`: (Default: `5000`)
+  * The max steps for connected objects finding algorithm.
+  * Adjusting this can help cutoff heavy finding problem.
+
 * `gdsPreview.pythonPath`: (Default: `python`)
   * Path to the Python executable used for parsing GDSII files.
+  * Required when `engineType` is set to `python`.
   * Useful if you have multiple Python installations or use a virtual environment.
 
 * `gdsPreview.engineType`: (Default: `rust`)
@@ -145,13 +150,14 @@ xattr -cr "/Applications/GDSII Preview.app"
 
 (Replace `/Applications/GDSII Preview.app` with the actual path to the app if you installed it elsewhere).
 
-* `gdsPreview.maxSteps`: (Default: `5000`)
-  * The max steps for connected objects finding algorithm.
-  * Adjusting this can help cutoff heavy finding problem.
-
 ## Requirements
 
-- **Python 3**: Required for parsing GDSII files.
+### For Rust Backend (Default)
+- **No external dependencies required**
+  - The Rust backend is a standalone binary that will be automatically downloaded for your platform.
+
+### For Python Backend
+- **Python 3**: Required when using the Python backend (`gdsPreview.engineType: python`).
 - **gdstk**: Python library for GDSII manipulation.
   - The extension will attempt to automatically install `gdstk` if it is missing (`pip install gdstk`).
   - You can also install it manually using `pip install gdstk`.
