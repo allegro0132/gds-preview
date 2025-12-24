@@ -98,6 +98,35 @@ This extension contributes the following settings:
   * Path to the Python executable used for parsing GDSII files.
   * Useful if you have multiple Python installations or use a virtual environment.
 
+* `gdsPreview.engineType`: (Default: `rust`)
+  * Choose which backend engine to use for GDS file processing.
+  * `rust` (Default): Experimental Rust-based backend with faster performance.
+  * `python`: Original Python-based backend using `gdstk`.
+  * The Rust backend provides better performance but is still experimental. Switch to Python if you encounter issues.
+
+## Backend Engines
+
+This extension supports two backend engines for processing GDSII/OASIS files:
+
+### Rust Backend (Default & Recommended)
+- **Status**: Experimental, actively developed
+- **Performance**: Significantly faster than Python for large files
+- **Compatibility**: Cross-platform (Windows, Linux, macOS) with automatic binary downloads
+- **Dependencies**: None (standalone binary)
+- **Best For**: Large files, production use (once stable)
+
+### Python Backend
+- **Status**: Stable, original implementation
+- **Performance**: Good for most files
+- **Dependencies**: Requires Python 3 and `gdstk` library
+- **Best For**: Maximum compatibility, debugging, or if Rust backend encounters issues
+
+To switch between backends, change the `gdsPreview.engineType` setting in VS Code:
+1. Open VS Code Settings (File → Preferences → Settings)
+2. Search for `gdsPreview.engineType`
+3. Select either `rust` or `python`
+4. Reload the GDS file to use the new backend
+
 ## Desktop Application
 
 A standalone desktop version of GDS Preview is available for Windows, Linux, and macOS.
