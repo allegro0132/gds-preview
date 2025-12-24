@@ -2,7 +2,10 @@
   "name": "gds-preview-desktop",
   "version": "0.3.3",
   "description": "Desktop version of GDS Preview",
-  "email": "34514398+allegro0132@users.noreply.github.com",
+  "author": {
+    "name": "AllegroMorphic",
+    "email": "34514398+allegro0132@users.noreply.github.com"
+  },
   "main": "main.js",
   "repository": {
     "type": "git",

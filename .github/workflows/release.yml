@@ -230,6 +230,10 @@ jobs:
           name: binaries-${{ matrix.platform }}-${{ matrix.arch }}
           path: bin
 
+      - name: Set Binary Permissions
+        if: matrix.platform != 'win32'
+        run: chmod +x bin/gds-engine-rust-*
+
       - name: Install dependencies
         run: npm ci
 

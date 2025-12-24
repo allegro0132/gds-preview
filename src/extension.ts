@@ -147,6 +147,16 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                     }
                 }
                 processCmd = rustPath;
+
+                // Ensure executable permissions on non-Windows platforms
+                if (!isWindows && fs.existsSync(processCmd)) {
+                    try {
+                        fs.chmodSync(processCmd, '755');
+                    } catch (err) {
+                        console.warn(`Failed to set executable permissions for ${processCmd}:`, err);
+                    }
+                }
+
                 args = [filePath, tempDir, cellName || "", chunkSize.toString(), flowControlStep.toString()];
                 args.push((currentRenderingEngine === 'webgl' && useInstancing) ? "1" : "0");
                 if (isNegativeMode) {

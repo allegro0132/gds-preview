@@ -36,6 +36,9 @@ cargo.on('close', (code) => {
 
     try {
         fs.copyFileSync(targetPath, destPath);
+        if (!isWindows) {
+            fs.chmodSync(destPath, '755');
+        }
         console.log(`Binary copied to ${destPath}`);
     } catch (err) {
         console.error('Failed to copy binary:', err);
