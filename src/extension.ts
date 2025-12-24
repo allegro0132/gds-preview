@@ -129,13 +129,22 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
             if (engineType === 'rust') {
                 const isWindows = process.platform === 'win32';
-                const binName = isWindows ? 'gds-engine-rust.exe' : 'gds-engine-rust';
+                const platform = process.platform;
+                const arch = process.arch;
 
-                // Try to find it in the development path
-                let rustPath = this.context.asAbsolutePath(path.join('gds-engine-rust', 'target', 'release', binName));
+                // Priority 1: Dev build (standard cargo output)
+                const devBinName = isWindows ? 'gds-engine-rust.exe' : 'gds-engine-rust';
+                let rustPath = this.context.asAbsolutePath(path.join('gds-engine-rust', 'target', 'release', devBinName));
+
                 if (!fs.existsSync(rustPath)) {
-                    // Fallback to the bundled bin directory
-                    rustPath = this.context.asAbsolutePath(path.join('bin', binName));
+                    // Priority 2: Platform specific bundled binary
+                    const specificBinName = `gds-engine-rust-${platform}-${arch}${isWindows ? '.exe' : ''}`;
+                    rustPath = this.context.asAbsolutePath(path.join('bin', specificBinName));
+
+                    if (!fs.existsSync(rustPath)) {
+                        // Priority 3: Generic bundled binary (fallback)
+                        rustPath = this.context.asAbsolutePath(path.join('bin', devBinName));
+                    }
                 }
                 processCmd = rustPath;
                 args = [filePath, tempDir, cellName || "", chunkSize.toString(), flowControlStep.toString()];

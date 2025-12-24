@@ -4,41 +4,224 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build-binaries:
+    name: Build ${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: win32
+            arch: x64
+            use_cross: false
+            ext: .exe
+          # Windows ARM64
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            platform: win32
+            arch: arm64
+            use_cross: false
+            ext: .exe
+          # Linux x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux
+            arch: x64
+            use_cross: false
+            ext: ""
+          # Linux ARM64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            platform: linux
+            arch: arm64
+            use_cross: true
+            ext: ""
+          # macOS ARM64 (Apple Silicon)
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin
+            arch: arm64
+            use_cross: false
+            ext: ""
+          # macOS x64 (Intel)
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: darwin
+            arch: x64
+            use_cross: false
+            ext: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Cross
+        if: matrix.use_cross
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross
+        shell: bash
+
+      - name: Build
+        working-directory: ./gds-engine-rust
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+        shell: bash
+
+      - name: Rename Binary
+        run: |
+          mkdir -p ../bin
+          src="target/${{ matrix.target }}/release/gds-engine-rust${{ matrix.ext }}"
+          dst="../bin/gds-engine-rust-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}"
+          cp "$src" "$dst"
+        working-directory: ./gds-engine-rust
+        shell: bash
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.platform }}-${{ matrix.arch }}
+          path: bin/gds-engine-rust-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
+
+  build-desktop:
+    needs: build-binaries
+    name: Build Desktop ${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows x64
+          - os: windows-latest
+            platform: win32
+            arch: x64
+            electron_args: --x64
+            ext: .exe
+          # Windows ARM64
+          - os: windows-latest
+            platform: win32
+            arch: arm64
+            electron_args: --arm64
+            ext: .exe
+          # Linux x64
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            electron_args: --x64
+            ext: ""
+          # Linux ARM64
+          - os: ubuntu-latest
+            platform: linux
+            arch: arm64
+            electron_args: --arm64
+            ext: ""
+          # macOS ARM64 (Apple Silicon)
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+            electron_args: --arm64
+            ext: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download Rust Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ matrix.platform }}-${{ matrix.arch }}
+          path: desktop-ui/resources/gds-engine
+
+      - name: Prepare Binary
+        run: |
+          cd desktop-ui/resources/gds-engine
+          # Handle potential directory structure from artifact download
+          find . -name "gds-engine-rust-*" -exec mv {} gds-engine${{ matrix.ext }} \;
+          chmod +x gds-engine${{ matrix.ext }}
+        shell: bash
+
+      - name: Install Dependencies
+        run: |
+          cd desktop-ui
+          npm install
+
+      - name: Build Desktop App
+        run: |
+          cd desktop-ui
+          npm run dist -- ${{ matrix.electron_args }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Desktop Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            desktop-ui/dist/*.exe
+            desktop-ui/dist/*.dmg
+            desktop-ui/dist/*.AppImage
+            desktop-ui/dist/*.deb
+
+  package-and-release:
+    needs: [build-binaries, build-desktop]
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: 20
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: bin
+          pattern: binaries-*
+          merge-multiple: true
 
-    - name: Setup Rust
-      uses: dtolnay/rust-toolchain@stable
+      - name: Download Desktop Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: desktop-dist
+          pattern: desktop-*
+          merge-multiple: true
 
-    - name: Install dependencies
-      run: npm ci
+      - name: List binaries
+        run: |
+          ls -R bin
+          ls -R desktop-dist
 
-    - name: Build Rust Engine
-      run: |
-        cd gds-engine-rust
-        cargo build --release
-        cd ..
-        mkdir -p bin
-        cp gds-engine-rust/target/release/gds-engine-rust bin/gds-engine-rust
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-    - name: Package Extension
-      run: npx @vscode/vsce package
+      - name: Install dependencies
+        run: npm ci
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: "*.vsix"
-        generate_release_notes: true
+      - name: Package Extension
+        run: npx @vscode/vsce package
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            *.vsix
+            desktop-dist/*
+          generate_release_notes: true

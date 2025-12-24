@@ -20,6 +20,13 @@
       "category": "public.app-category.developer-tools",
       "target": ["dmg", "zip"]
     },
+    "win": {
+      "target": ["nsis", "zip"]
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development"
+    },
     "files": [
       "**/*",
       {
