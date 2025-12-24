@@ -56,7 +56,7 @@ class GdsView {
         this.browserView.webContents.destroy();
     }
 
-    runPython(targetCell, isNegativeMode) {
+    runEngine(targetCell, isNegativeMode) {
         if (this.process) {
             this.process.kill();
             this.process = undefined;
@@ -70,52 +70,48 @@ class GdsView {
             return;
         }
 
-        let scriptName = 'gds_to_canvas.py';
-        if (gdsConfig.renderingEngine === 'svg') {
-            scriptName = 'gds_to_svg.py';
-        }
-
-        let executable = gdsConfig.pythonPath;
+        let executable;
         let args = [];
+        const isWindows = process.platform === 'win32';
+        const binName = isWindows ? 'gds-engine-rust.exe' : 'gds-engine-rust';
+        const packagedBinName = isWindows ? 'gds-engine.exe' : 'gds-engine';
 
         if (app.isPackaged) {
-             let execName = 'gds-engine';
-             if (process.platform === 'win32') {
-                 execName = 'gds-engine.exe';
-             }
-
              const possiblePaths = [
-                 // Check for onedir structure (folder/executable)
-                 path.join(process.resourcesPath, 'gds-engine', execName),
-                 path.join(process.resourcesPath, 'resources', 'gds-engine', execName),
-                 // Fallback for onefile structure
-                 path.join(process.resourcesPath, execName),
-                 path.join(process.resourcesPath, 'resources', execName)
+                 path.join(process.resourcesPath, 'gds-engine', packagedBinName),
+                 path.join(process.resourcesPath, 'resources', 'gds-engine', packagedBinName),
              ];
 
              executable = possiblePaths.find(p => fs.existsSync(p));
 
              if (!executable) {
                  console.error(`[Error] gds-engine executable not found. Searched in: ${possiblePaths.join(', ')}`);
-                 executable = path.join(process.resourcesPath, 'gds-engine', execName);
+                 executable = path.join(process.resourcesPath, 'gds-engine', packagedBinName);
              }
-
-             args = [scriptName, this.filePath, tempDir];
         } else {
+             // Development mode: look in ../bin/
              const rootDir = path.resolve(__dirname, '..');
-             const scriptsDir = path.join(rootDir, 'scripts');
-             const pythonScriptPath = path.join(scriptsDir, scriptName);
-             args = [pythonScriptPath, this.filePath, tempDir];
+             executable = path.join(rootDir, 'bin', binName);
+
+             if (!fs.existsSync(executable)) {
+                 console.warn(`Rust binary not found at ${executable}, trying target dir...`);
+                 executable = path.join(rootDir, 'gds-engine-rust', 'target', 'release', binName);
+             }
         }
 
-        args.push(targetCell || "");
+        // Rust Engine Arguments:
+        // input, output_dir, cell_name, chunk_size, flow_control_step, use_instancing, [--negative]
+        args = [
+            this.filePath,
+            tempDir,
+            targetCell || "",
+            gdsConfig.chunkSize.toString(),
+            gdsConfig.flowControlStep.toString(),
+            (gdsConfig.renderingEngine === 'webgl' && gdsConfig.useInstancing) ? "1" : "0"
+        ];
 
-        if (gdsConfig.renderingEngine === 'svg' && isNegativeMode) {
+        if (isNegativeMode) {
             args.push("--negative");
-        } else if (gdsConfig.renderingEngine !== 'svg') {
-            args.push(gdsConfig.chunkSize.toString());
-            args.push(gdsConfig.flowControlStep.toString());
-            args.push((gdsConfig.renderingEngine === 'webgl' && gdsConfig.useInstancing) ? "1" : "0");
         }
 
         console.log(`[View ${this.id}] Running: ${executable} ${args.join(' ')}`);
@@ -128,7 +124,7 @@ class GdsView {
             process.stderr.on('data', (data) => {
                 const msg = data.toString();
                 stderr += msg;
-                console.log(`[View ${this.id} Python Stderr] ${msg}`);
+                console.log(`[View ${this.id} Rust Stderr] ${msg}`);
             });
 
             const rl = readline.createInterface({
@@ -737,19 +733,19 @@ ipcMain.on('vscode-message', (event, message) => {
     switch (message.command) {
         case 'ready':
             console.log(`Webview ready (View ${view.id})`);
-            view.runPython(view.currentCell, view.isNegative);
+            view.runEngine(view.currentCell, view.isNegative);
             break;
         case 'changeCell':
             view.currentCell = message.cellName;
-            view.runPython(view.currentCell, view.isNegative);
+            view.runEngine(view.currentCell, view.isNegative);
             break;
         case 'reloadNegative':
             view.isNegative = message.isNegative;
-            view.runPython(view.currentCell, view.isNegative);
+            view.runEngine(view.currentCell, view.isNegative);
             break;
         case 'reset':
             view.isNegative = false;
-            view.runPython(view.currentCell);
+            view.runEngine(view.currentCell);
             break;
         case 'stop':
             if (view.process) {
@@ -772,7 +768,7 @@ ipcMain.on('vscode-message', (event, message) => {
                      viewManager.broadcastConfigChange();
                  } else if (['renderingEngine', 'pythonPath'].includes(message.key)) {
                      // For these we should probably just reload the current view's python
-                     view.runPython(view.currentCell, view.isNegative);
+                     view.runEngine(view.currentCell, view.isNegative);
                  } else if (['fastModeThreshold', 'labelFontSize', 'portFontSize', 'portArrowScale', 'maxSteps'].includes(message.key)) {
                      const settings = {};
                      settings[message.key] = message.value;

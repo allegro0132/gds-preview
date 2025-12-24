@@ -171,6 +171,7 @@ jobs:
           npm run dist -- ${{ matrix.electron_args }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SKIP_RUST_BUILD: true
 
       - name: Upload Desktop Artifacts
         uses: actions/upload-artifact@v4

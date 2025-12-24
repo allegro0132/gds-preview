@@ -9,9 +9,9 @@
     "url": "https://github.com/allegro0132/gds-preview.git"
   },
   "scripts": {
-    "start": "electron .",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "start": "node scripts/prepare_resources.js && electron .",
+    "pack": "node scripts/prepare_resources.js && electron-builder --dir",
+    "dist": "node scripts/prepare_resources.js && electron-builder"
   },
   "build": {
     "appId": "com.allegromorphic.gdspreview",
