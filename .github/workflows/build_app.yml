@@ -132,6 +132,12 @@ jobs:
             arch: arm64
             electron_args: --arm64
             ext: ""
+          # macOS x64 (Intel)
+          - os: macos-latest
+            platform: darwin
+            arch: x64
+            electron_args: --x64
+            ext: ""
           # macOS ARM64 (Apple Silicon)
           - os: macos-latest
             platform: darwin
@@ -230,6 +236,10 @@ jobs:
         with:
           name: binaries-${{ matrix.platform }}-${{ matrix.arch }}
           path: bin
+
+      - name: Set Binary Permissions
+        if: matrix.platform != 'win32'
+        run: chmod +x bin/gds-engine-rust-*
 
       - name: Install dependencies
         run: npm ci
