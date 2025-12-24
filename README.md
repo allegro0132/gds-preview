@@ -94,9 +94,43 @@ This extension contributes the following settings:
   * Helps prevent the extension host from being overwhelmed by data.
   * Set to `-1` to disable flow control.
 
+* `gdsPreview.maxSteps`: (Default: `5000`)
+  * The max steps for connected objects finding algorithm.
+  * Adjusting this can help cut off heavy finding problems.
+
 * `gdsPreview.pythonPath`: (Default: `python`)
   * Path to the Python executable used for parsing GDSII files.
+  * Required when `engineType` is set to `python`.
   * Useful if you have multiple Python installations or use a virtual environment.
+
+* `gdsPreview.engineType`: (Default: `rust`)
+  * Choose which backend engine to use for GDS file processing.
+  * `rust` (Default): Experimental Rust-based backend with faster performance.
+  * `python`: Original Python-based backend using `gdstk`.
+  * The Rust backend provides better performance but is still experimental. Switch to Python if you encounter issues.
+
+## Backend Engines
+
+This extension supports two backend engines for processing GDSII/OASIS files:
+
+### Rust Backend (Default & Recommended)
+- **Status**: Experimental, actively developed
+- **Performance**: Significantly faster than Python for large files
+- **Compatibility**: Cross-platform (Windows, Linux, macOS) with automatic binary downloads
+- **Dependencies**: None (standalone binary)
+- **Best For**: Large files, production use (once stable)
+
+### Python Backend
+- **Status**: Stable, original implementation
+- **Performance**: Good for most files
+- **Dependencies**: Requires Python 3 and `gdstk` library
+- **Best For**: Maximum compatibility, debugging, or if Rust backend encounters issues
+
+To switch between backends, change the `gdsPreview.engineType` setting in VS Code:
+1. Open VS Code Settings (File → Preferences → Settings)
+2. Search for `gdsPreview.engineType`
+3. Select either `rust` or `python`
+4. Close and reopen the GDS file to apply the new backend
 
 ## Desktop Application
 
@@ -116,13 +150,14 @@ xattr -cr "/Applications/GDSII Preview.app"
 
 (Replace `/Applications/GDSII Preview.app` with the actual path to the app if you installed it elsewhere).
 
-* `gdsPreview.maxSteps`: (Default: `5000`)
-  * The max steps for connected objects finding algorithm.
-  * Adjusting this can help cutoff heavy finding problem.
-
 ## Requirements
 
-- **Python 3**: Required for parsing GDSII files.
+### For Rust Backend (Default)
+- **No external dependencies required**
+  - The Rust backend is a standalone binary that will be automatically downloaded for your platform.
+
+### For Python Backend
+- **Python 3**: Required when using the Python backend (`gdsPreview.engineType: python`).
 - **gdstk**: Python library for GDSII manipulation.
   - The extension will attempt to automatically install `gdstk` if it is missing (`pip install gdstk`).
   - You can also install it manually using `pip install gdstk`.
