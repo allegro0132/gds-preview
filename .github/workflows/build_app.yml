@@ -7,6 +7,9 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-binaries:
     name: Build ${{ matrix.platform }}-${{ matrix.arch }}
@@ -135,13 +138,6 @@ jobs:
             arch: arm64
             electron_args: --arm64
             ext: ""
-          # macOS x64 (Intel)
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            platform: darwin
-            arch: x64
-            use_cross: false
-            ext: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -176,6 +172,7 @@ jobs:
           npm run dist -- ${{ matrix.electron_args }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SKIP_RUST_BUILD: true
 
       - name: Upload Desktop Artifacts
         uses: actions/upload-artifact@v4
@@ -187,17 +184,78 @@ jobs:
             desktop-ui/dist/*.AppImage
             desktop-ui/dist/*.deb
 
-  package-and-release:
-    needs: [build-binaries, build-desktop]
+  package-extension:
+    needs: build-binaries
+    name: Package Extension ${{ matrix.vsce_target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - vsce_target: win32-x64
+            platform: win32
+            arch: x64
+            ext: .exe
+          - vsce_target: win32-arm64
+            platform: win32
+            arch: arm64
+            ext: .exe
+          - vsce_target: linux-x64
+            platform: linux
+            arch: x64
+            ext: ""
+          - vsce_target: linux-arm64
+            platform: linux
+            arch: arm64
+            ext: ""
+          - vsce_target: darwin-arm64
+            platform: darwin
+            arch: arm64
+            ext: ""
+          - vsce_target: darwin-x64
+            platform: darwin
+            arch: x64
+            ext: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ matrix.platform }}-${{ matrix.arch }}
+          path: bin
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package Extension
+        run: npx @vscode/vsce package --target ${{ matrix.vsce_target }}
+        env:
+          SKIP_RUST_BUILD: true
+
+      - name: Upload Extension Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-${{ matrix.vsce_target }}
+          path: "*.vsix"
+
+  release:
+    needs: [package-extension, build-desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all binaries
+      - name: Download Extension Artifacts
         uses: actions/download-artifact@v4
         with:
-          path: bin
-          pattern: binaries-*
+          path: extensions
+          pattern: extension-*
           merge-multiple: true
 
       - name: Download Desktop Artifacts
@@ -207,19 +265,10 @@ jobs:
           pattern: desktop-*
           merge-multiple: true
 
-      - name: List binaries
-        run: |
-          ls -R bin
-          ls -R desktop-dist
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
         with:
-          node-version: 20
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Package Extension
-        run: npx @vscode/vsce package
-
+          files: |
+            extensions/*.vsix
+            desktop-dist/*
+          generate_release_notes: true
