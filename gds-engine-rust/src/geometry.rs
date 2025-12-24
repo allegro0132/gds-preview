@@ -26,6 +26,16 @@ pub struct Label {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Port {
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+    pub rotation: f64,
+    pub layer: i16,
+    pub port_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reference {
     pub cell_name: String,
     pub origin: Point,
@@ -44,6 +54,7 @@ pub struct Cell {
     pub polygons: Vec<Polygon>,
     pub references: Vec<Reference>,
     pub labels: Vec<Label>,
+    pub ports: Vec<Port>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

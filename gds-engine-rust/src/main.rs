@@ -37,9 +37,16 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    
+
     let file = File::open(&args.input)?;
     let mut library = gds_loader::load_gds(file)?;
+
+    // Extract ports from $$$CONTEXT_INFO$$$ if it exists
+    let mut context_ports = Vec::new();
+    if let Some(pos) = library.cells.iter().position(|c| c.name == "$$$CONTEXT_INFO$$$") {
+        context_ports = library.cells[pos].ports.clone();
+    }
+
     // Filter out metadata cells starting with "$$$" immediately
     library.cells.retain(|c| !c.name.starts_with("$$$"));
 
@@ -55,6 +62,13 @@ fn main() -> Result<()> {
         args.cell_name.clone()
     };
 
+    // Add ports to main cell
+    if !context_ports.is_empty() {
+        if let Some(cell) = library.cells.iter_mut().find(|c| c.name == main_cell_name) {
+            cell.ports.extend(context_ports);
+        }
+    }
+
     let main_cell = library.cells.iter().find(|c| c.name == main_cell_name)
         .ok_or_else(|| anyhow::anyhow!("Cell '{}' not found", main_cell_name))?;
 
@@ -64,7 +78,7 @@ fn main() -> Result<()> {
         .collect();
     all_cell_names.sort();
     let top_level_cells = find_top_level_cells(&library);
-    
+
     let mut hierarchy: HashMap<String, Vec<String>> = HashMap::new();
     for cell in &library.cells {
         let mut deps: HashSet<String> = HashSet::new();
@@ -90,6 +104,14 @@ fn main() -> Result<()> {
         process_instanced(&library, main_cell, &args, &mut metadata)?;
     } else {
         process_flattened(&library, main_cell, &args, &mut metadata)?;
+    }
+
+    // Stream Ports
+    if !main_cell.ports.is_empty() {
+        send_json(&serde_json::json!({
+            "type": "ports",
+            "ports": main_cell.ports
+        }));
     }
 
     Ok(())
@@ -130,9 +152,9 @@ fn process_flattened(lib: &Library, main_cell: &Cell, args: &Args, metadata: &mu
     let mut flat_polygons: HashMap<String, Vec<Polygon>> = HashMap::new();
     let mut flat_labels: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
     let mut bbox = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
-    
+
     flatten_recursive(lib, main_cell, &Matrix3x3::identity(), &mut flat_polygons, &mut flat_labels, &mut bbox);
-    
+
     if bbox.0 == f64::MAX { bbox = (0.0, 0.0, 0.0, 0.0); }
 
     let mut layer_keys: Vec<String> = flat_polygons.keys().cloned().collect();
@@ -142,15 +164,14 @@ fn process_flattened(lib: &Library, main_cell: &Cell, args: &Args, metadata: &mu
         }
     }
     sort_layer_keys(&mut layer_keys);
-    
+
     metadata["layers"] = serde_json::json!(layer_keys);
     metadata["bbox"] = serde_json::json!({
         "x_min": bbox.0, "x_max": bbox.1, "y_min": bbox.2, "y_max": bbox.3
     });
-    metadata["ports"] = serde_json::json!([]);
-    
+
     send_json(metadata);
-    
+
     for (layer_key, lbls) in flat_labels {
         send_json(&serde_json::json!({ "layerKey": layer_key, "labels": lbls }));
     }
@@ -181,9 +202,9 @@ fn process_flattened(lib: &Library, main_cell: &Cell, args: &Args, metadata: &mu
 }
 
 fn flatten_recursive(
-    lib: &Library, 
-    cell: &Cell, 
-    transform: &Matrix3x3, 
+    lib: &Library,
+    cell: &Cell,
+    transform: &Matrix3x3,
     out_polys: &mut HashMap<String, Vec<Polygon>>,
     out_labels: &mut HashMap<String, Vec<serde_json::Value>>,
     bbox: &mut (f64, f64, f64, f64)
@@ -211,7 +232,7 @@ fn flatten_recursive(
             "text": label.text, "x": pt.x, "y": pt.y, "rotation": label.rotation, "magnification": label.magnification, "anchor": label.anchor
         }));
     }
-    
+
     for re in &cell.references {
         if let Some(ref_cell) = lib.cells.iter().find(|c| c.name == re.cell_name) {
             for col in 0..re.columns {
@@ -326,8 +347,7 @@ fn process_instanced(lib: &Library, main_cell: &Cell, args: &Args, metadata: &mu
     metadata["bbox"] = serde_json::json!({
         "x_min": bbox.0, "x_max": bbox.1, "y_min": bbox.2, "y_max": bbox.3
     });
-    metadata["ports"] = serde_json::json!([]);
-    
+
     send_json(metadata);
 
     // Stream Flat Polygons (Single Instances)
