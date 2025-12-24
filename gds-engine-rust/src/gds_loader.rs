@@ -320,7 +320,7 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
                 let mut magnification = 1.0;
                 let mut x = 0.0;
                 let mut y = 0.0;
-                let mut mirror = false;
+                // let mut mirror = false;
 
                 let parts: Vec<&str> = s.split_whitespace().collect();
                 for part in parts {
@@ -329,7 +329,7 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
                             rotation = val;
                         }
                     } else if part.starts_with('m') {
-                        mirror = true;
+                        // mirror = true;
                         if let Ok(val) = part[1..].parse::<f64>() {
                             rotation = val;
                         }

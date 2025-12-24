@@ -135,6 +135,13 @@ jobs:
             arch: arm64
             electron_args: --arm64
             ext: ""
+          # macOS x64 (Intel)
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: darwin
+            arch: x64
+            use_cross: false
+            ext: ""
 
     steps:
       - uses: actions/checkout@v4

@@ -10,4 +10,7 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
-desktop-ui/*
+desktop-ui/**
+.github/**
+build/**
+dist/**

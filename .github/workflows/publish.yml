@@ -123,6 +123,10 @@ jobs:
 
     - name: Compile
       run: npm run compile
+      env:
+        SKIP_RUST_BUILD: true
 
     - name: Publish to VS Code Marketplace
       run: npx @vscode/vsce publish -p ${{ secrets.VSCE_PAT }}
+      env:
+        SKIP_RUST_BUILD: true

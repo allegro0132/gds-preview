@@ -8,7 +8,7 @@ pub enum GdsData {
     BitArray(u16),
     Int16(Vec<i16>),
     Int32(Vec<i32>),
-    Real4(Vec<f32>), // Rarely used
+    // Real4(Vec<f32>), // Rarely used
     Real8(Vec<f64>),
     Str(String),
 }
@@ -28,7 +28,7 @@ pub fn gds_real_to_f64(bytes: &[u8]) -> f64 {
     for i in 1..8 {
         mantissa = (mantissa << 8) | bytes[i] as u64;
     }
-    
+
     let value = (mantissa as f64) / (2.0f64.powi(56));
     let result = value * 16.0f64.powi(exponent);
     if sign { -result } else { result }
