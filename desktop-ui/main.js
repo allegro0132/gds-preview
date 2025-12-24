@@ -128,7 +128,7 @@ class GdsView {
             process.stderr.on('data', (data) => {
                 const msg = data.toString();
                 stderr += msg;
-                console.error(`[View ${this.id} Python Stderr] ${msg}`);
+                console.log(`[View ${this.id} Python Stderr] ${msg}`);
             });
 
             const rl = readline.createInterface({

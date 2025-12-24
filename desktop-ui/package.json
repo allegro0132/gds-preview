@@ -1,6 +1,6 @@
 {
   "name": "gds-preview-desktop",
-  "version": "1.0.0",
+  "version": "0.3.3",
   "description": "Desktop version of GDS Preview",
   "main": "main.js",
   "repository": {
@@ -13,8 +13,8 @@
     "dist": "electron-builder"
   },
   "build": {
-    "appId": "com.vsgds.preview",
-    "productName": "GDS Preview",
+    "appId": "com.allegromorphic.gdspreview",
+    "productName": "GDSII Preview",
     "icon": "icon.png",
     "mac": {
       "category": "public.app-category.developer-tools",

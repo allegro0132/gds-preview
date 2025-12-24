@@ -71,7 +71,6 @@ jobs:
           name: GDS-Preview-${{ matrix.os }}
           path: |
             desktop-ui/dist/*.dmg
-            desktop-ui/dist/*.zip
             desktop-ui/dist/*.exe
             desktop-ui/dist/*.AppImage
             desktop-ui/dist/*.snap
