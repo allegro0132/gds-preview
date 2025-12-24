@@ -1,6 +1,7 @@
 .vscode/**
 .vscode-test/**
 src/**
+gds-engine-rust/**
 .gitignore
 .yarnrc
 vsc-extension-quickstart.md

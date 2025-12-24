@@ -109,13 +109,14 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             // console.log(`updateWebview called with cellName: ${cellName}`);
             // Kill existing process if any
             if (currentProcess) {
-                console.log("Killing previous Python process...");
+                console.log("Killing previous process...");
                 currentProcess.kill();
                 currentProcess = undefined;
             }
 
             const currentConfig = vscode.workspace.getConfiguration('gdsPreview');
             const currentRenderingEngine = currentConfig.get<string>('renderingEngine', 'canvas');
+            const engineType = currentConfig.get<string>('engineType', 'rust');
             const chunkSize = currentConfig.get<number>('chunkSize', 2000);
             const flowControlStep = currentConfig.get<number>('flowControlStep', 5);
             const useInstancing = currentConfig.get<boolean>('useInstancing', true);
@@ -123,46 +124,60 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
             const tempDir = path.join(os.tmpdir(), `gds_preview_data_${Date.now()}`);
 
-            let scriptName = 'gds_to_canvas.py';
-            if (currentRenderingEngine === 'svg') {
-                scriptName = 'gds_to_svg.py';
-            }
+            let processCmd: string;
+            let args: string[] = [];
 
-            const pythonScriptPath = this.context.asAbsolutePath(path.join('scripts', scriptName));
-            const pythonPath = currentConfig.get<string>('pythonPath', 'python');
+            if (engineType === 'rust') {
+                const isWindows = process.platform === 'win32';
+                const binName = isWindows ? 'gds-engine-rust.exe' : 'gds-engine-rust';
 
-            const args = [pythonScriptPath, filePath, tempDir];
-            args.push(cellName || "");
-
-            if (currentRenderingEngine === 'svg' && isNegativeMode) {
-                args.push("--negative");
+                // Try to find it in the development path
+                let rustPath = this.context.asAbsolutePath(path.join('gds-engine-rust', 'target', 'release', binName));
+                if (!fs.existsSync(rustPath)) {
+                    // Fallback to the bundled bin directory
+                    rustPath = this.context.asAbsolutePath(path.join('bin', binName));
+                }
+                processCmd = rustPath;
+                args = [filePath, tempDir, cellName || "", chunkSize.toString(), flowControlStep.toString()];
+                args.push((currentRenderingEngine === 'webgl' && useInstancing) ? "1" : "0");
+                if (isNegativeMode) {
+                    args.push("--negative");
+                }
             } else {
-                // Only pass chunk size for canvas/webgl mode or if not negative?
-                // Actually gds_to_canvas expects chunk size as 4th arg.
-                // gds_to_svg expects cell name as 3rd (optional) and flags after.
-                // We need to be careful about argument order.
+                let scriptName = 'gds_to_canvas.py';
+                if (currentRenderingEngine === 'svg') {
+                    scriptName = 'gds_to_svg.py';
+                }
 
-                // gds_to_canvas: path, out_dir, cell_name, chunk_size
-                // gds_to_svg: path, out_dir, cell_name, [--negative]
+                const pythonScriptPath = this.context.asAbsolutePath(path.join('scripts', scriptName));
+                const pythonPath = currentConfig.get<string>('pythonPath', 'python');
 
-                if (currentRenderingEngine !== 'svg') {
-                    args.push(chunkSize.toString());
-                    args.push(flowControlStep.toString());
-                    // Use instancing if WebGL and enabled
-                    args.push((currentRenderingEngine === 'webgl' && useInstancing) ? "1" : "0");
+                processCmd = pythonPath;
+                args = [pythonScriptPath, filePath, tempDir];
+                args.push(cellName || "");
+
+                if (currentRenderingEngine === 'svg' && isNegativeMode) {
+                    args.push("--negative");
+                } else {
+                    if (currentRenderingEngine !== 'svg') {
+                        args.push(chunkSize.toString());
+                        args.push(flowControlStep.toString());
+                        // Use instancing if WebGL and enabled
+                        args.push((currentRenderingEngine === 'webgl' && useInstancing) ? "1" : "0");
+                    }
                 }
             }
 
-            console.log(`Running python script: ${pythonPath} ${args.join(' ')}`);
+            console.log(`Running engine: ${processCmd} ${args.join(' ')}`);
             if (enableProfiling) {
-                console.time("PythonProcess");
+                console.time("EngineProcess");
             }
 
-            const process = cp.spawn(pythonPath, args);
-            currentProcess = process;
+            const childProcess = cp.spawn(processCmd, args);
+            currentProcess = childProcess;
 
             let stderr = '';
-            process.stderr.on('data', (data) => {
+            childProcess.stderr.on('data', (data) => {
                 const msg = data.toString();
                 if (msg.startsWith("PROFILE:")) {
                     if (enableProfiling) {
@@ -175,7 +190,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
             // Use readline to stream stdout line by line
             const rl = readline.createInterface({
-                input: process.stdout,
+                input: childProcess.stdout,
                 crlfDelay: Infinity
             });
 
@@ -185,7 +200,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
             rl.on('line', (line) => {
                 if (isFirstLine) {
-                    console.log(`[PythonProcess] First byte received`);
+                    console.log(`[EngineProcess] First byte received`);
                 }
                 // console.log(`Received line from Python: ${line.substring(0, 100)}...`);
                 try {
@@ -240,40 +255,46 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 }
             });
 
-            process.on('error', (err) => {
-                console.log(`Failed to start python process: ${err}`);
-                vscode.window.showErrorMessage(`Failed to start Python process. Please check if Python is installed and configured in 'gdsPreview.pythonPath'. Error: ${err.message}`);
+            childProcess.on('error', (err) => {
+                console.log(`Failed to start engine process: ${err}`);
+                vscode.window.showErrorMessage(`Failed to start engine process. Error: ${err.message}`);
             });
 
-            process.on('close', (code) => {
-                console.log(`[PythonProcess] Finished`);
-                if (currentProcess !== process) {
+            childProcess.on('close', (code) => {
+                console.log(`[EngineProcess] Finished`);
+                if (currentProcess !== childProcess) {
                     return;
                 }
                 currentProcess = undefined;
 
-                console.log(`Python script exited with code ${code}`);
+                console.log(`Engine process exited with code ${code}`);
                 if (code !== 0) {
                     console.log(`Stderr: ${stderr}`);
-                    if (stderr.includes("ModuleNotFoundError") && stderr.includes("gdstk")) {
-                        vscode.window.showErrorMessage("Python module 'gdstk' is missing.", "Install gdstk").then(selection => {
-                            if (selection === "Install gdstk") {
-                                installGdstk(pythonPath);
+                    if (engineType === 'python') {
+                        if (stderr.includes("ModuleNotFoundError") && stderr.includes("gdstk")) {
+                            vscode.window.showErrorMessage("Python module 'gdstk' is missing.", "Install gdstk").then(selection => {
+                                if (selection === "Install gdstk") {
+                                    const pythonPath = currentConfig.get<string>('pythonPath', 'python');
+                                    installGdstk(pythonPath);
+                                }
+                            });
+                        } else if (stderr.includes("ModuleNotFoundError") && stderr.includes("klayout")) {
+                            vscode.window.showErrorMessage("Python module 'klayout' is missing. It is required for port extraction.", "Install klayout").then(selection => {
+                                if (selection === "Install klayout") {
+                                    const pythonPath = currentConfig.get<string>('pythonPath', 'python');
+                                    installKlayout(pythonPath);
+                                }
+                            });
+                        } else {
+                            try {
+                                const errJson = JSON.parse(stderr);
+                                vscode.window.showErrorMessage(`Failed to convert GDS: ${errJson.error}`);
+                            } catch {
+                                vscode.window.showErrorMessage(`Failed to convert GDS. Exit code: ${code}. Stderr: ${stderr}`);
                             }
-                        });
-                    } else if (stderr.includes("ModuleNotFoundError") && stderr.includes("klayout")) {
-                        vscode.window.showErrorMessage("Python module 'klayout' is missing. It is required for port extraction.", "Install klayout").then(selection => {
-                            if (selection === "Install klayout") {
-                                installKlayout(pythonPath);
-                            }
-                        });
-                    } else {
-                        try {
-                            const errJson = JSON.parse(stderr);
-                            vscode.window.showErrorMessage(`Failed to convert GDS: ${errJson.error}`);
-                        } catch {
-                            vscode.window.showErrorMessage(`Failed to convert GDS. Exit code: ${code}. Stderr: ${stderr}`);
                         }
+                    } else {
+                        vscode.window.showErrorMessage(`Rust engine failed with code ${code}. Stderr: ${stderr}`);
                     }
                     return;
                 }

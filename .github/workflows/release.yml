@@ -20,8 +20,19 @@ jobs:
       with:
         node-version: 20
 
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
     - name: Install dependencies
       run: npm ci
+
+    - name: Build Rust Engine
+      run: |
+        cd gds-engine-rust
+        cargo build --release
+        cd ..
+        mkdir -p bin
+        cp gds-engine-rust/target/release/gds-engine-rust bin/gds-engine-rust
 
     - name: Package Extension
       run: npx @vscode/vsce package

@@ -2,6 +2,10 @@ out
 dist
 node_modules
 .vscode-test/
+
+# Rust
+gds-engine-rust/target/
+bin/
 *.vsix
 .DS_Store
 *.pyc

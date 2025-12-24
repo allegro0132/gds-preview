@@ -32,6 +32,27 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      # --- Rust Backend Build ---
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust Backend
+        run: |
+          cd gds-engine-rust
+          cargo build --release
+
+      - name: Copy Rust Backend (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p bin
+          cp gds-engine-rust/target/release/gds-engine-rust bin/gds-engine-rust
+
+      - name: Copy Rust Backend (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          if (!(Test-Path bin)) { New-Item -ItemType Directory -Path bin }
+          Copy-Item gds-engine-rust/target/release/gds-engine-rust.exe bin/gds-engine-rust.exe
+
       - name: Build Python Backend (Unix)
         if: runner.os != 'Windows'
         run: |

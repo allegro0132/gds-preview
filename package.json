@@ -110,7 +110,16 @@
         "gdsPreview.pythonPath": {
           "type": "string",
           "default": "python",
-          "description": "Path to the Python executable. Ensure 'gdstk' is installed in this environment."
+          "description": "Path to the Python executable. Required if engineType is 'python'."
+        },
+        "gdsPreview.engineType": {
+          "type": "string",
+          "enum": [
+            "python",
+            "rust"
+          ],
+          "default": "rust",
+          "description": "Choose which engine to use for GDS processing. Rust engine is experimental and faster."
         },
         "gdsPreview.enableProfiling": {
           "type": "boolean",
