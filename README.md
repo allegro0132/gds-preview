@@ -96,7 +96,7 @@ This extension contributes the following settings:
 
 * `gdsPreview.maxSteps`: (Default: `5000`)
   * The max steps for connected objects finding algorithm.
-  * Adjusting this can help cutoff heavy finding problem.
+  * Adjusting this can help cut off heavy finding problems.
 
 * `gdsPreview.pythonPath`: (Default: `python`)
   * Path to the Python executable used for parsing GDSII files.
@@ -130,7 +130,7 @@ To switch between backends, change the `gdsPreview.engineType` setting in VS Cod
 1. Open VS Code Settings (File → Preferences → Settings)
 2. Search for `gdsPreview.engineType`
 3. Select either `rust` or `python`
-4. Reload the GDS file to use the new backend
+4. Close and reopen the GDS file to apply the new backend
 
 ## Desktop Application
 
