@@ -167,6 +167,17 @@ export function drawWebGL() {
 
     state.gl.enableVertexAttribArray(positionLocation);
 
+    // Viewport culling
+    const viewMinX = (0 - state.offsetX) / state.scale;
+    const viewMaxX = (state.gl.canvas.width - state.offsetX) / state.scale;
+    const viewMaxY = (0 - state.offsetY) / -state.scale;
+    const viewMinY = (state.gl.canvas.height - state.offsetY) / -state.scale;
+
+    const vMinX = Math.min(viewMinX, viewMaxX);
+    const vMaxX = Math.max(viewMinX, viewMaxX);
+    const vMinY = Math.min(viewMinY, viewMaxY);
+    const vMaxY = Math.max(viewMinY, viewMaxY);
+
     const renderOrder = [...state.allLayers].reverse();
 
     for (const layerKey of renderOrder) {
@@ -193,6 +204,12 @@ export function drawWebGL() {
             const bufferList = Array.isArray(buffers) ? buffers : [buffers];
 
             for (const layerData of bufferList) {
+                if (layerData.bbox) {
+                    if (layerData.bbox.maxX < vMinX || layerData.bbox.minX > vMaxX ||
+                        layerData.bbox.maxY < vMinY || layerData.bbox.minY > vMaxY) {
+                        continue;
+                    }
+                }
                 state.gl.bindBuffer(state.gl.ARRAY_BUFFER, layerData.buffer);
                 state.gl.vertexAttribPointer(positionLocation, 2, state.gl.FLOAT, false, 0, 0);
                 state.gl.drawArrays(state.gl.TRIANGLES, 0, layerData.count);
@@ -209,6 +226,19 @@ export function drawWebGL() {
                 const instances = state.instanceBuffers[cellName];
                 if (!instances) continue;
 
+                // Calculate max radius for culling
+                let maxDist = 0;
+                const cellBBox = state.definitionBBoxes[cellName];
+                if (cellBBox) {
+                    const d1 = cellBBox.minX * cellBBox.minX + cellBBox.minY * cellBBox.minY;
+                    const d2 = cellBBox.maxX * cellBBox.maxX + cellBBox.minY * cellBBox.minY;
+                    const d3 = cellBBox.maxX * cellBBox.maxX + cellBBox.maxY * cellBBox.maxY;
+                    const d4 = cellBBox.minX * cellBBox.minX + cellBBox.maxY * cellBBox.maxY;
+                    maxDist = Math.sqrt(Math.max(d1, d2, d3, d4));
+                } else {
+                    maxDist = 1e9; // No culling if bbox unknown
+                }
+
                 const geomChunks = defLayers[layerKey];
 
                 for (const geom of geomChunks) {
@@ -216,6 +246,13 @@ export function drawWebGL() {
                     state.gl.vertexAttribPointer(positionLocation, 2, state.gl.FLOAT, false, 0, 0);
 
                     for (const inst of instances) {
+                        if (inst.originBBox) {
+                            if (inst.originBBox.maxX + maxDist < vMinX || inst.originBBox.minX - maxDist > vMaxX ||
+                                inst.originBBox.maxY + maxDist < vMinY || inst.originBBox.minY - maxDist > vMaxY) {
+                                continue;
+                            }
+                        }
+
                         state.gl.bindBuffer(state.gl.ARRAY_BUFFER, inst.buffer);
                         const stride = 36;
 

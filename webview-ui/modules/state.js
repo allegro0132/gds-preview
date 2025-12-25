@@ -49,6 +49,8 @@ export const state = {
     instanceTransforms: {},
     definitionBBoxes: {},
     bboxBuffer: null,
+    spatialGrid: null,
+    totalPolyCount: 0,
 
     // Workers
     workerPool: [],

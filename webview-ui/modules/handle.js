@@ -88,6 +88,17 @@ export function handleWorkerMessage(e, workerIndex) {
     }
 
     if (vertices && vertices.length > 0 && state.gl) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let i = 0; i < vertices.length; i += 2) {
+            const x = vertices[i];
+            const y = vertices[i + 1];
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+        const bbox = { minX, minY, maxX, maxY };
+
         const buffer = state.gl.createBuffer();
         state.gl.bindBuffer(state.gl.ARRAY_BUFFER, buffer);
         state.gl.bufferData(state.gl.ARRAY_BUFFER, vertices, state.gl.STATIC_DRAW);
@@ -98,14 +109,16 @@ export function handleWorkerMessage(e, workerIndex) {
 
             state.definitions[cellName][layerKey].push({
                 buffer: buffer,
-                count: vertices.length / 2
+                count: vertices.length / 2,
+                bbox: bbox
             });
         } else {
             if (!state.layerBuffers[layerKey]) state.layerBuffers[layerKey] = [];
 
             state.layerBuffers[layerKey].push({
                 buffer: buffer,
-                count: vertices.length / 2
+                count: vertices.length / 2,
+                bbox: bbox
             });
         }
 
@@ -128,6 +141,17 @@ export function handleInstanceData(cellName, buffer) {
 
     const transforms = new Float32Array(buffer, 4, count * 9);
 
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < count; i++) {
+        const tx = transforms[i * 9 + 6];
+        const ty = transforms[i * 9 + 7];
+        if (tx < minX) minX = tx;
+        if (tx > maxX) maxX = tx;
+        if (ty < minY) minY = ty;
+        if (ty > maxY) maxY = ty;
+    }
+    const originBBox = { minX, minY, maxX, maxY };
+
     const key = cellName || "UNKNOWN_CELL";
     if (!state.instanceTransforms[key]) state.instanceTransforms[key] = [];
 
@@ -141,7 +165,8 @@ export function handleInstanceData(cellName, buffer) {
 
     state.instanceBuffers[key].push({
         buffer: glBuffer,
-        count: count
+        count: count,
+        originBBox: originBBox
     });
 
     requestAnimationFrame(drawWebGL);
