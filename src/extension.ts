@@ -254,6 +254,10 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                                 (err) => console.log(`[Webview Log] Initialize message delivery failed: ${err}`)
                             );
                             isFirstLine = false;
+                        } else if (data.command === 'found' || data.command === 'status') {
+                            webviewPanel.webview.postMessage(data);
+                        } else if (data.command === 'done') {
+                            webviewPanel.webview.postMessage({ command: 'status', message: 'Loaded successfully' });
                         } else if (data.type === 'ports') {
                             webviewPanel.webview.postMessage({
                                 command: 'addPorts',
@@ -379,6 +383,11 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         const config = vscode.workspace.getConfiguration('gdsPreview');
                         if (message.key && message.value !== undefined) {
                             config.update(message.key, message.value, vscode.ConfigurationTarget.Global);
+                        }
+                        return;
+                    case 'find':
+                        if (currentProcess) {
+                            currentProcess.stdin?.write(JSON.stringify(message) + "\n");
                         }
                         return;
                 }

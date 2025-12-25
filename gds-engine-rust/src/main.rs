@@ -2,12 +2,17 @@ mod gds_parser;
 mod geometry;
 mod gds_loader;
 mod streamer;
+mod analysis;
 
 use clap::Parser;
 use std::fs::File;
 use std::collections::{HashMap, HashSet};
+use std::io::BufRead;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use crate::geometry::{Library, Cell, Matrix3x3, Point, Polygon};
 use crate::streamer::{ChunkMsg, send_binary_chunk, send_json};
+use crate::analysis::SearchEngine;
 use anyhow::Result;
 
 #[derive(Parser, Debug)]
@@ -100,8 +105,15 @@ fn main() -> Result<()> {
         "isInstanced": args.use_instancing != 0
     });
 
+    // Wrap library in Arc for sharing with search thread
+    let library = Arc::new(library);
+    let main_cell = library.cells.iter().find(|c| c.name == main_cell_name)
+        .ok_or_else(|| anyhow::anyhow!("Cell '{}' not found", main_cell_name))?;
+
+    let mut instances_map = HashMap::new();
+
     if args.use_instancing != 0 {
-        process_instanced(&library, main_cell, &args, &mut metadata)?;
+        process_instanced(&library, main_cell, &args, &mut metadata, &mut instances_map)?;
     } else {
         process_flattened(&library, main_cell, &args, &mut metadata)?;
     }
@@ -112,6 +124,77 @@ fn main() -> Result<()> {
             "type": "ports",
             "ports": main_cell.ports
         }));
+    }
+
+    // Signal that initial loading is complete
+    send_json(&serde_json::json!({
+        "command": "done"
+    }));
+
+    // Start search engine in background thread
+    let search_engine = Arc::new(Mutex::new(None));
+    let search_engine_clone = search_engine.clone();
+    let library_clone = library.clone();
+
+    thread::spawn(move || {
+        let engine = SearchEngine::new(library_clone, instances_map);
+        *search_engine_clone.lock().unwrap() = Some(engine);
+    });
+
+    // Start interactive loop for search
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        if line.trim().is_empty() { continue; }
+
+        if let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&line) {
+            if cmd["command"] == "find" {
+                let x = cmd["x"].as_f64().unwrap_or(0.0);
+                let y = cmd["y"].as_f64().unwrap_or(0.0);
+                let max_steps = cmd["maxSteps"].as_u64().unwrap_or(5000) as usize;
+                let layers_val = cmd["layers"].as_array();
+
+                let mut active_layers = HashSet::new();
+                if let Some(layers) = layers_val {
+                    for l in layers {
+                        if let Some(s) = l.as_str() {
+                            let parts: Vec<&str> = s.split('_').collect();
+                            if parts.len() == 2 {
+                                if let (Ok(l), Ok(d)) = (parts[0].parse::<i16>(), parts[1].parse::<i16>()) {
+                                    active_layers.insert((l, d));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let engine_guard = search_engine.lock().unwrap();
+                if let Some(engine) = &*engine_guard {
+                    let (polys, limit_reached) = engine.find(x, y, &active_layers, max_steps);
+
+                    let simple_polys: Vec<Vec<[f64; 2]>> = polys.iter().map(|p| {
+                        p.points.iter().map(|pt| [pt.x, pt.y]).collect()
+                    }).collect();
+
+                    send_json(&serde_json::json!({
+                        "command": "found",
+                        "polygons": simple_polys,
+                        "limitReached": limit_reached
+                    }));
+                } else {
+                    send_json(&serde_json::json!({
+                        "command": "status",
+                        "message": "Search engine initializing..."
+                    }));
+                }
+            } else if cmd["command"] == "stop" {
+                // Just acknowledge?
+                send_json(&serde_json::json!({
+                    "command": "status",
+                    "message": "Search stopped"
+                }));
+            }
+        }
     }
 
     Ok(())
@@ -252,7 +335,13 @@ fn flatten_recursive(
     }
 }
 
-fn process_instanced(lib: &Library, main_cell: &Cell, args: &Args, metadata: &mut serde_json::Value) -> Result<()> {
+fn process_instanced(
+    lib: &Library,
+    main_cell: &Cell,
+    args: &Args,
+    metadata: &mut serde_json::Value,
+    out_instances_map: &mut HashMap<usize, Vec<Matrix3x3>>
+) -> Result<()> {
     let mut instances: HashMap<String, Vec<Matrix3x3>> = HashMap::new();
     // Use main_cell as starting point
     let mut stack = vec![(main_cell.name.clone(), Matrix3x3::identity())];
@@ -276,6 +365,13 @@ fn process_instanced(lib: &Library, main_cell: &Cell, args: &Args, metadata: &mu
                     }
                 }
             }
+        }
+    }
+
+    // Populate out_instances_map for SearchEngine
+    for (name, transforms) in &instances {
+        if let Some(idx) = lib.cells.iter().position(|c| c.name == *name) {
+            out_instances_map.insert(idx, transforms.clone());
         }
     }
 

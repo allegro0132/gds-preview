@@ -35,17 +35,9 @@ export function handleWorkerMessage(e, workerIndex) {
 
     const layerKey = id.layerKey;
     const type = id.type;
-    const cellName = id.cellName;
+    const cellName = id.cellName || "UNKNOWN_CELL";
 
     if (polygons) {
-        state.searchWorker.postMessage({
-            command: 'addGeometry',
-            layerKey,
-            polygons,
-            type,
-            cellName
-        });
-
         if (state.currentEngine === 'canvas' || state.currentEngine === 'webgl') {
             for (const poly of polygons) {
                 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -127,12 +119,6 @@ export function handleInstanceData(cellName, buffer) {
 
     state.instanceTransforms[key].push(transforms);
 
-    state.searchWorker.postMessage({
-        command: 'addInstances',
-        cellName: key,
-        transforms: transforms
-    });
-
     const glBuffer = state.gl.createBuffer();
     state.gl.bindBuffer(state.gl.ARRAY_BUFFER, glBuffer);
     state.gl.bufferData(state.gl.ARRAY_BUFFER, transforms, state.gl.STATIC_DRAW);
@@ -193,16 +179,6 @@ export function handleAddLayerChunkB64(layerKey, chunkIndex, totalChunks, b64Dat
 
 export function handleAddLayerChunk(layerKey, data) {
     const polys = data.polygons;
-
-    if (polys && polys.length > 0) {
-        state.searchWorker.postMessage({
-            command: 'addGeometry',
-            layerKey,
-            polygons: polys,
-            type: 'flat',
-            cellName: null
-        });
-    }
 
     if (state.currentEngine === 'canvas' || state.currentEngine === 'webgl') {
         if (polys && polys.length > 0) {
@@ -270,8 +246,6 @@ export function handleInitialize(data) {
     state.layerColors = {};
     state.layerOpacities = {};
     state.layerBuffers = {};
-
-    state.searchWorker.postMessage({ command: 'clear' });
 
     buildTree(data.hierarchy, data.top_level_cells, data.all_cells, data.cell_name);
 
