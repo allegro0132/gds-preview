@@ -9,6 +9,19 @@ export function handleSearchWorkerMessage(e) {
         updateStatus(msg.message);
     } else if (msg.command === 'found') {
         state.highlightedPolygons = msg.polygons;
+
+        // Create Path2D for efficient rendering
+        const path = new Path2D();
+        for (const poly of msg.polygons) {
+            if (poly.length < 2) continue;
+            path.moveTo(poly[0][0], poly[0][1]);
+            for (let i = 1; i < poly.length; i++) {
+                path.lineTo(poly[i][0], poly[i][1]);
+            }
+            path.closePath();
+        }
+        state.highlightedPath = path;
+
         const timeStr = msg.duration ? ` in ${msg.duration}ms` : '';
         if (msg.limitReached) {
             updateStatus(`Highlighted ${state.highlightedPolygons.length} objects (Search limit reached)${timeStr}`);
