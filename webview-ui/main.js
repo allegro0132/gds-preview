@@ -22,7 +22,6 @@ initializeState();
 
 // Worker Pool for Triangulation
 const workerCode = state.config.workerCode;
-const searchWorkerCode = state.config.searchWorkerCode;
 
 let workerUrl;
 if (state.config.workerUrl) {
@@ -30,21 +29,6 @@ if (state.config.workerUrl) {
 } else if (workerCode) {
     const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
     workerUrl = URL.createObjectURL(workerBlob);
-}
-
-let searchWorkerUrl;
-if (state.config.searchWorkerUrl) {
-    searchWorkerUrl = state.config.searchWorkerUrl;
-} else if (searchWorkerCode) {
-    const searchWorkerBlob = new Blob([searchWorkerCode], { type: 'application/javascript' });
-    searchWorkerUrl = URL.createObjectURL(searchWorkerBlob);
-}
-
-if (searchWorkerUrl) {
-    state.searchWorker = new Worker(searchWorkerUrl);
-    state.searchWorker.onmessage = handleSearchWorkerMessage;
-    // Initialize search worker config
-    state.searchWorker.postMessage({ command: 'updateConfig', maxSteps: state.config.maxSteps });
 }
 
 let maxWorkers = state.config.maxWorkers;
@@ -96,6 +80,8 @@ window.addEventListener('message', event => {
     } else if (message.command === 'addPorts') {
         state.ports = message.ports;
         requestAnimationFrame(drawLabels);
+    } else if (message.command === 'found' || message.command === 'status') {
+        handleSearchWorkerMessage({ data: message });
     } else if (message.command === 'updateSettings') {
         if (message.fastModeThreshold !== undefined) {
             state.fastModeThreshold = message.fastModeThreshold;

@@ -24,14 +24,12 @@ export function findAndHighlight(x, y) {
         state.searchRequestId = null;
     }
 
-    state.searchWorker.postMessage({
-        command: 'updateActiveLayers',
-        layers: Array.from(state.activeLayers)
-    });
-
-    state.searchWorker.postMessage({
+    // Send search request to backend via extension
+    vscode.postMessage({
         command: 'find',
-        x, y
+        x, y,
+        layers: Array.from(state.activeLayers),
+        maxSteps: state.config.maxSteps
     });
 
     updateStatus("Searching...");

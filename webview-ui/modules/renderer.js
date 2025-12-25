@@ -436,18 +436,6 @@ export function setupCanvasMode(data) {
     state.geometry = data.geometry;
     state.bbox = data.bbox;
 
-    if (state.geometry) {
-        for (const layerKey in state.geometry) {
-            state.searchWorker.postMessage({
-                command: 'addGeometry',
-                layerKey,
-                polygons: state.geometry[layerKey],
-                type: 'flat',
-                cellName: null
-            });
-        }
-    }
-
     for (const layerKey in state.geometry) {
         const polys = state.geometry[layerKey];
         for (const poly of polys) {
@@ -481,18 +469,6 @@ export function setupSvgMode(data) {
     elements.svgContainer.style.display = 'block';
 
     state.geometry = data.geometry || {};
-
-    if (state.geometry) {
-        for (const layerKey in state.geometry) {
-            state.searchWorker.postMessage({
-                command: 'addGeometry',
-                layerKey,
-                polygons: state.geometry[layerKey],
-                type: 'flat',
-                cellName: null
-            });
-        }
-    }
 
     for (const layerKey in state.geometry) {
         const polys = state.geometry[layerKey];
