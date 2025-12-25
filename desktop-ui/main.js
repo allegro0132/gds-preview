@@ -191,6 +191,8 @@ class GdsView {
                             });
                         } else if (data.command === 'found') {
                             this.browserView.webContents.send('webview-message', data);
+                        } else if (data.command === 'done') {
+                            this.browserView.webContents.send('webview-message', { command: 'status', message: 'Loaded successfully' });
                         }
                     }
                 } catch (e) {
