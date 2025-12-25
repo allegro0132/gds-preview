@@ -179,6 +179,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SKIP_RUST_BUILD: true
 
+      - name: Rename Windows Artifacts
+        if: matrix.platform == 'win32'
+        run: |
+          cd desktop-ui/dist
+          for file in *.exe; do
+            mv "$file" "${file%.exe}-${{ matrix.arch }}.exe"
+          done
+        shell: bash
+
       - name: Upload Desktop Artifacts
         uses: actions/upload-artifact@v4
         with:

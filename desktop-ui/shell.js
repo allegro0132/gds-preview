@@ -1,5 +1,8 @@
 const tabsContainer = document.getElementById('tabs-container');
 
+const platform = window.shellAPI.getPlatform();
+document.body.classList.add(`platform-${platform}`);
+
 document.getElementById('btn-reload').onclick = () => {
     console.log('Reload clicked');
     window.shellAPI.reloadActiveView();
