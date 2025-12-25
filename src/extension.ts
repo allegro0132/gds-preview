@@ -89,6 +89,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         let currentCell: string | undefined;
         let currentProcess: cp.ChildProcess | undefined;
         let isNegative = false;
+        let isEngineReady = false;
 
         // Set initial HTML content
         const config = vscode.workspace.getConfiguration('gdsPreview');
@@ -194,6 +195,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
             const childProcess = cp.spawn(processCmd, args);
             currentProcess = childProcess;
+            isEngineReady = false;
 
             let stderr = '';
             childProcess.stderr.on('data', (data) => {
@@ -257,6 +259,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         } else if (data.command === 'found' || data.command === 'status') {
                             webviewPanel.webview.postMessage(data);
                         } else if (data.command === 'done') {
+                            isEngineReady = true;
                             webviewPanel.webview.postMessage({ command: 'status', message: 'Loaded successfully' });
                         } else if (data.type === 'ports') {
                             webviewPanel.webview.postMessage({
@@ -370,9 +373,13 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         return;
                     case 'stop':
                         if (currentProcess) {
-                            currentProcess.kill();
-                            currentProcess = undefined;
-                            webviewPanel.webview.postMessage({ command: 'status', message: 'Stopped by user' });
+                            if (isEngineReady) {
+                                currentProcess.stdin?.write(JSON.stringify({ command: 'stop' }) + "\n");
+                            } else {
+                                currentProcess.kill();
+                                currentProcess = undefined;
+                                webviewPanel.webview.postMessage({ command: 'status', message: 'Stopped by user' });
+                            }
                         }
                         return;
                     case 'ready':

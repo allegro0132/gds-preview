@@ -80,8 +80,14 @@ window.addEventListener('message', event => {
     } else if (message.command === 'addPorts') {
         state.ports = message.ports;
         requestAnimationFrame(drawLabels);
-    } else if (message.command === 'found' || message.command === 'status') {
+    } else if (message.command === 'found') {
         handleSearchWorkerMessage({ data: message });
+    } else if (message.command === 'status') {
+        updateStatus(message.message);
+        if (message.message === 'Loaded successfully') {
+            state.pythonFinished = true;
+            checkCompletion();
+        }
     } else if (message.command === 'updateSettings') {
         if (message.fastModeThreshold !== undefined) {
             state.fastModeThreshold = message.fastModeThreshold;
@@ -107,19 +113,14 @@ window.addEventListener('message', event => {
             requestAnimationFrame(drawLabels);
         }
         if (message.maxSteps !== undefined) {
-            state.searchWorker.postMessage({ command: 'updateConfig', maxSteps: message.maxSteps });
+            // state.searchWorker.postMessage({ command: 'updateConfig', maxSteps: message.maxSteps });
             console.log("Updated maxSteps to:", message.maxSteps);
-        }
-    } else if (message.command === 'status') {
-        updateStatus(message.message);
-        if (message.message === 'Loaded successfully') {
-            state.pythonFinished = true;
-            checkCompletion();
         }
     } else if (message.command === 'reset') {
         state.flipState = { x: 1, y: state.currentEngine === 'svg' ? -1 : 1 };
         state.rotationState = 0;
         state.highlightedPolygons = [];
+        state.highlightedPath = null;
         state.hasUserInteracted = false;
 
         state.geometry = {};
@@ -130,7 +131,7 @@ window.addEventListener('message', event => {
         state.instanceTransforms = {};
         state.definitionBBoxes = {};
 
-        state.searchWorker.postMessage({ command: 'clear' });
+        // state.searchWorker.postMessage({ command: 'clear' });
 
         updateTransform();
 
@@ -153,7 +154,7 @@ window.addEventListener('message', event => {
             state.searchRequestId = null;
             updateStatus("Search stopped by user");
         }
-        state.searchWorker.postMessage({ command: 'stop' });
+        // state.searchWorker.postMessage({ command: 'stop' });
         state.vscode.postMessage({ command: 'stop' });
     }
 });

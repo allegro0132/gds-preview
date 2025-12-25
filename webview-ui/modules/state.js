@@ -35,6 +35,7 @@ export const state = {
     isNegative: false,
     svgFragments: {},
     highlightedPolygons: [],
+    highlightedPath: null,
     searchRequestId: null,
 
     // WebGL

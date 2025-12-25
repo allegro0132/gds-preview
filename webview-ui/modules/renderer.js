@@ -403,24 +403,30 @@ export function drawHighlights(targetCtx) {
     ctxToUse.lineWidth = 2 / state.scale;
     ctxToUse.fillStyle = 'rgba(0, 255, 255, 0.3)';
 
-    for (const poly of state.highlightedPolygons) {
+    if (state.highlightedPath) {
+        ctxToUse.fill(state.highlightedPath);
+        ctxToUse.stroke(state.highlightedPath);
+    } else {
+        // Fallback for legacy or non-path data (though we should always have path now)
         ctxToUse.beginPath();
-        const isFlat = poly instanceof Float32Array;
-        const len = isFlat ? poly.length / 2 : poly.length;
-        if (len < 2) continue;
+        for (const poly of state.highlightedPolygons) {
+            const isFlat = poly instanceof Float32Array;
+            const len = isFlat ? poly.length / 2 : poly.length;
+            if (len < 2) continue;
 
-        if (isFlat) {
-            ctxToUse.moveTo(poly[0], poly[1]);
-            for (let i = 1; i < len; i++) {
-                ctxToUse.lineTo(poly[i * 2], poly[i * 2 + 1]);
+            if (isFlat) {
+                ctxToUse.moveTo(poly[0], poly[1]);
+                for (let i = 1; i < len; i++) {
+                    ctxToUse.lineTo(poly[i * 2], poly[i * 2 + 1]);
+                }
+            } else {
+                ctxToUse.moveTo(poly[0][0], poly[0][1]);
+                for (let i = 1; i < poly.length; i++) {
+                    ctxToUse.lineTo(poly[i][0], poly[i][1]);
+                }
             }
-        } else {
-            ctxToUse.moveTo(poly[0][0], poly[0][1]);
-            for (let i = 1; i < poly.length; i++) {
-                ctxToUse.lineTo(poly[i][0], poly[i][1]);
-            }
+            ctxToUse.closePath();
         }
-        ctxToUse.closePath();
         ctxToUse.fill();
         ctxToUse.stroke();
     }
@@ -559,6 +565,7 @@ export function setupWebGLMode(data) {
 
     if (state.geometry) {
         for (const layerKey in state.geometry) {
+            /*
             state.searchWorker.postMessage({
                 command: 'addGeometry',
                 layerKey,
@@ -566,6 +573,7 @@ export function setupWebGLMode(data) {
                 type: 'flat',
                 cellName: null
             });
+            */
         }
     }
 
