@@ -112,9 +112,10 @@ fn main() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Cell '{}' not found", main_cell_name))?;
 
     let mut instances_map = HashMap::new();
+    let instances_by_name = analyze_instances(&library, main_cell, &mut instances_map);
 
     if args.use_instancing != 0 {
-        process_instanced(&library, main_cell, &args, &mut metadata, &mut instances_map)?;
+        process_instanced(&library, main_cell, &args, &mut metadata, instances_by_name)?;
     } else {
         process_flattened(&library, main_cell, &args, &mut metadata)?;
     }
@@ -377,15 +378,12 @@ fn flatten_recursive(
     }
 }
 
-fn process_instanced(
+fn analyze_instances(
     lib: &Library,
     main_cell: &Cell,
-    args: &Args,
-    metadata: &mut serde_json::Value,
     out_instances_map: &mut HashMap<usize, Vec<Matrix3x3>>
-) -> Result<()> {
+) -> HashMap<String, Vec<Matrix3x3>> {
     let mut instances: HashMap<String, Vec<Matrix3x3>> = HashMap::new();
-    // Use main_cell as starting point
     let mut stack = vec![(main_cell.name.clone(), Matrix3x3::identity())];
     instances.insert(main_cell.name.clone(), vec![Matrix3x3::identity()]);
 
@@ -417,6 +415,16 @@ fn process_instanced(
         }
     }
 
+    instances
+}
+
+fn process_instanced(
+    lib: &Library,
+    main_cell: &Cell,
+    args: &Args,
+    metadata: &mut serde_json::Value,
+    instances: HashMap<String, Vec<Matrix3x3>>
+) -> Result<()> {
     // Split into multi (instanced) and single (flat)
     let mut multi_instances: HashMap<String, Vec<Matrix3x3>> = HashMap::new();
     let mut single_instances: HashMap<String, Vec<Matrix3x3>> = HashMap::new();
