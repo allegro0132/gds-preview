@@ -50,9 +50,17 @@ body.light-theme .tab:hover:not(.active) {
     background-color: #252526;
     display: flex;
     align-items: flex-end;
-    padding-left: 80px; /* Space for traffic lights on macOS */
+    padding-left: 0;
     box-sizing: border-box;
     overflow: hidden;
+}
+
+body.platform-darwin #tab-bar {
+    padding-left: 80px; /* Space for traffic lights on macOS */
+}
+
+body.platform-win32 #tab-bar {
+    padding-right: 140px; /* Space for window controls on Windows */
 }
 
 #tabs-container {
@@ -62,6 +70,10 @@ body.light-theme .tab:hover:not(.active) {
     flex: 1;
     overflow-x: auto;
     overflow-y: hidden;
+}
+
+body.platform-win32 #controls-container {
+    order: -1;
 }
 
 #controls-container {

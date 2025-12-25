@@ -570,6 +570,13 @@ function updateTheme() {
 
     if (mainWindow) {
         mainWindow.webContents.send('theme-change', theme);
+
+        if (process.platform === 'win32') {
+            mainWindow.setTitleBarOverlay({
+                color: theme === 'dark' ? '#252526' : '#f3f3f3',
+                symbolColor: theme === 'dark' ? '#cccccc' : '#616161'
+            });
+        }
     }
 
     // Propagate to all views
@@ -717,10 +724,16 @@ function createMenu() {
 function createWindow() {
     createMenu();
 
+    const isWindows = process.platform === 'win32';
     mainWindow = new BrowserWindow({
         width: 1200,
         height: 800,
-        titleBarStyle: 'hiddenInset',
+        titleBarStyle: isWindows ? 'hidden' : 'hiddenInset',
+        titleBarOverlay: isWindows ? {
+            color: '#252526',
+            symbolColor: '#cccccc',
+            height: 38
+        } : undefined,
         trafficLightPosition: { x: 10, y: 10 },
         icon: path.join(__dirname, 'icon.png'),
         webPreferences: {
