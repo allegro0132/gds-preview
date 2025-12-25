@@ -189,6 +189,8 @@ class GdsView {
                                 layerKey: data.layerKey,
                                 data: data
                             });
+                        } else if (data.command === 'found') {
+                            this.browserView.webContents.send('webview-message', data);
                         }
                     }
                 } catch (e) {
@@ -897,6 +899,11 @@ ipcMain.on('vscode-message', (event, message) => {
                          });
                      }
                  }
+             }
+             break;
+        case 'find':
+             if (view.process && view.process.stdin) {
+                 view.process.stdin.write(JSON.stringify(message) + "\n");
              }
              break;
     }
