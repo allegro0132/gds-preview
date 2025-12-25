@@ -818,6 +818,13 @@ ipcMain.on('shell-open-dialog', async () => {
     }
 });
 
+ipcMain.on('shell-popup-menu', () => {
+    const menu = Menu.getApplicationMenu();
+    if (menu) {
+        menu.popup({ window: mainWindow });
+    }
+});
+
 ipcMain.on('shell-reload-active-view', () => {
     console.log('IPC: shell-reload-active-view');
     const view = viewManager.getActiveView();

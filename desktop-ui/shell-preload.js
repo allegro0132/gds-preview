@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('shellAPI', {
     reloadActiveView: () => ipcRenderer.send('shell-reload-active-view'),
     stopActiveView: () => ipcRenderer.send('shell-stop-active-view'),
     reorderTabs: (newOrderIds) => ipcRenderer.send('shell-reorder-tabs', newOrderIds),
+    popupMenu: () => ipcRenderer.send('shell-popup-menu'),
     onUpdateTabs: (callback) => ipcRenderer.on('shell-update-tabs', (event, tabs) => callback(tabs)),
     onThemeChange: (callback) => ipcRenderer.on('theme-change', (event, theme) => callback(theme)),
     getPlatform: () => process.platform
