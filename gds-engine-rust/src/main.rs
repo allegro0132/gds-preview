@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::thread;
+use std::time::Instant;
 use crate::geometry::{Library, Cell, Matrix3x3, Point, Polygon};
 use crate::streamer::{ChunkMsg, send_binary_chunk, send_json};
 use crate::analysis::SearchEngine;
@@ -154,6 +155,7 @@ fn main() -> Result<()> {
                 let x = cmd["x"].as_f64().unwrap_or(0.0);
                 let y = cmd["y"].as_f64().unwrap_or(0.0);
                 let max_steps = cmd["maxSteps"].as_u64().unwrap_or(5000) as usize;
+                let max_workers = cmd["maxWorkers"].as_i64().unwrap_or(-1);
                 let layers_val = cmd["layers"].as_array();
 
                 let mut active_layers = HashSet::new();
@@ -188,7 +190,22 @@ fn main() -> Result<()> {
                     if let Some(engine) = &*engine_guard {
                         if cancel_flag.load(Ordering::Relaxed) { return; }
 
-                        let (polys, limit_reached) = engine.find(x, y, &active_layers, max_steps, Some(cancel_flag.clone()));
+                        let start_time = Instant::now();
+                        let run_search = || {
+                             engine.find(x, y, &active_layers, max_steps, Some(cancel_flag.clone()))
+                        };
+
+                        let (polys, limit_reached) = if max_workers > 0 {
+                             if let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(max_workers as usize).build() {
+                                 pool.install(run_search)
+                             } else {
+                                 run_search()
+                             }
+                        } else {
+                             run_search()
+                        };
+
+                        let duration = start_time.elapsed().as_millis();
 
                         if !cancel_flag.load(Ordering::Relaxed) {
                             let simple_polys: Vec<Vec<[f64; 2]>> = polys.iter().map(|p| {
@@ -198,7 +215,8 @@ fn main() -> Result<()> {
                             send_json(&serde_json::json!({
                                 "command": "found",
                                 "polygons": simple_polys,
-                                "limitReached": limit_reached
+                                "limitReached": limit_reached,
+                                "duration": duration
                             }));
                         }
                     } else {

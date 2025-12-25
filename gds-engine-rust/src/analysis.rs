@@ -1,6 +1,7 @@
 use crate::geometry::{Library, Cell, Matrix3x3, Point, Polygon};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use rayon::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BBox {
@@ -241,12 +242,12 @@ impl SearchEngine {
         }
 
         let mut visited = HashSet::new();
-        let mut queue_indices = VecDeque::new();
+        let mut current_frontier = Vec::new();
 
         for (i, poly) in candidates.iter().enumerate() {
              if point_in_polygon(x, y, poly) {
                  visited.insert(i);
-                 queue_indices.push_back(i);
+                 current_frontier.push(i);
                  break;
              }
         }
@@ -260,7 +261,7 @@ impl SearchEngine {
 
         let mut steps = 0;
 
-        while let Some(curr_idx) = queue_indices.pop_front() {
+        while !current_frontier.is_empty() {
             if let Some(flag) = &cancel_flag {
                 if flag.load(Ordering::Relaxed) {
                     return (Vec::new(), false);
@@ -271,36 +272,75 @@ impl SearchEngine {
                 let res_polys = visited.iter().map(|&i| candidates[i].clone()).collect();
                 return (res_polys, true);
             }
-            steps += 1;
+            steps += current_frontier.len();
 
-            let curr_poly = candidates[curr_idx].clone();
-            let curr_bbox = BBox::from_points(&curr_poly.points);
+            // 1. Expand Instances (Parallel)
+            // Collect BBoxes of current frontier
+            let frontier_bboxes: Vec<BBox> = current_frontier.par_iter()
+                .map(|&idx| BBox::from_points(&candidates[idx].points))
+                .collect();
 
-            let mut i = 0;
-            while i < remaining_instances.len() {
-                let inst_idx = remaining_instances[i];
-                let inst = &self.instances[inst_idx];
+            // Compute union BBox for quick rejection
+            let mut union_bbox = BBox::empty();
+            for b in &frontier_bboxes { union_bbox.merge(b); }
 
-                if curr_bbox.intersects(&inst.bbox) {
-                    self.add_instance_to_candidates(inst_idx, active_layers, &mut candidates, &mut candidates_indices);
-                    remaining_instances.swap_remove(i);
-                } else {
-                    i += 1;
-                }
+            // Find intersecting instances
+            let (intersecting_instances, kept_instances): (Vec<_>, Vec<_>) = remaining_instances.par_iter()
+                .partition(|&&inst_idx| {
+                    let inst = &self.instances[inst_idx];
+                    if !union_bbox.intersects(&inst.bbox) { return false; }
+
+                    frontier_bboxes.iter().any(|fb| fb.intersects(&inst.bbox))
+                });
+
+            remaining_instances = kept_instances;
+
+            // Add new candidates (Sequential, but fast)
+            for &inst_idx in &intersecting_instances {
+                self.add_instance_to_candidates(inst_idx, active_layers, &mut candidates, &mut candidates_indices);
             }
 
-            for i in 0..candidates.len() {
-                if visited.contains(&i) { continue; }
+            // 2. Find Intersections (Parallel)
+            // We need to check current_frontier against all unvisited candidates
+            // Optimization: Only check candidates that intersect union_bbox?
+            // Or just brute force parallel since candidates count is usually < 10k for connected components
 
-                let other = &candidates[i];
-                let other_bbox = BBox::from_points(&other.points);
+            // Pre-calculate BBoxes for all candidates?
+            // Doing it on the fly in parallel is fine.
 
-                if !curr_bbox.intersects(&other_bbox) { continue; }
+            let candidates_len = candidates.len();
+            let visited_ref = &visited;
+            let candidates_ref = &candidates;
 
-                if polygons_intersect(&curr_poly, other) {
-                    visited.insert(i);
-                    queue_indices.push_back(i);
-                }
+            let next_frontier_indices: HashSet<usize> = current_frontier.par_iter().zip(frontier_bboxes.par_iter())
+                .map(|(&curr_idx, curr_bbox)| {
+                    let mut local_next = Vec::new();
+                    // Check against all candidates
+                    // Note: This is O(Frontier * Candidates).
+                    // If Candidates is large, we might want to optimize this loop.
+                    for i in 0..candidates_len {
+                        if visited_ref.contains(&i) { continue; }
+
+                        let other = &candidates_ref[i];
+                        // Quick BBox check
+                        // We need BBox of other.
+                        // Optimization: Store BBoxes alongside candidates?
+                        let other_bbox = BBox::from_points(&other.points);
+
+                        if !curr_bbox.intersects(&other_bbox) { continue; }
+
+                        if polygons_intersect(&candidates_ref[curr_idx], other) {
+                            local_next.push(i);
+                        }
+                    }
+                    local_next
+                })
+                .flatten()
+                .collect();
+
+            current_frontier = next_frontier_indices.into_iter().collect();
+            for &idx in &current_frontier {
+                visited.insert(idx);
             }
         }
 

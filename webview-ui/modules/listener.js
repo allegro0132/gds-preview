@@ -29,7 +29,8 @@ export function findAndHighlight(x, y) {
         command: 'find',
         x, y,
         layers: Array.from(state.activeLayers),
-        maxSteps: state.config.maxSteps
+        maxSteps: state.config.maxSteps,
+        maxWorkers: state.config.maxWorkers
     });
 
     updateStatus("Searching...");
