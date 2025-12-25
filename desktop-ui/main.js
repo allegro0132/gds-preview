@@ -4,6 +4,9 @@ const fs = require('fs');
 const cp = require('child_process');
 const readline = require('readline');
 const os = require('os');
+const url = require('url');
+
+const statePath = path.join(app.getPath('userData'), 'session.json');
 
 // Global Main Window
 let mainWindow;
@@ -50,10 +53,20 @@ class GdsView {
         }
         // BrowserView destruction is handled by removing from window and letting GC collect it,
         // effectively (though we should nullify references)
-        if (mainWindow) {
-            mainWindow.removeBrowserView(this.browserView);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            try {
+                mainWindow.removeBrowserView(this.browserView);
+            } catch (e) {
+                // Ignore error if removal fails
+            }
         }
-        this.browserView.webContents.destroy();
+        if (this.browserView && this.browserView.webContents && !this.browserView.webContents.isDestroyed()) {
+            try {
+                this.browserView.webContents.destroy();
+            } catch (e) {
+                // Ignore
+            }
+        }
     }
 
     runEngine(targetCell, isNegativeMode) {
@@ -136,7 +149,7 @@ class GdsView {
 
             rl.on('line', (line) => {
                 // Check if view is still valid
-                if (this.browserView.webContents.isDestroyed()) return;
+                if (!this.browserView || !this.browserView.webContents || this.browserView.webContents.isDestroyed()) return;
 
                 try {
                     if (!line.trim()) return;
@@ -186,7 +199,7 @@ class GdsView {
             process.on('close', (code) => {
                 if (this.process !== process) return;
                 this.process = undefined;
-                if (this.browserView.webContents.isDestroyed()) return;
+                if (!this.browserView || !this.browserView.webContents || this.browserView.webContents.isDestroyed()) return;
 
                 if (code !== 0) {
                     console.error(`Python script exited with code ${code}`);
@@ -208,7 +221,74 @@ class ViewManager {
         this.nextId = 1;
     }
 
-    createTab(filePath) {
+    saveSession() {
+        const data = {
+            openFiles: this.viewOrder.map(id => this.views.get(id).filePath),
+            activeFileIndex: this.viewOrder.indexOf(this.activeViewId),
+            theme: currentTheme,
+            config: gdsConfig
+        };
+        try {
+            fs.writeFileSync(statePath, JSON.stringify(data));
+        } catch (e) {
+            console.error("Failed to save session:", e);
+        }
+    }
+
+    restoreSession() {
+        try {
+            if (fs.existsSync(statePath)) {
+                const data = JSON.parse(fs.readFileSync(statePath));
+
+                // Restore Theme
+                if (data.theme) {
+                    currentTheme = data.theme;
+                    // updateTheme() is not available here if called before definition?
+                    // Actually it is function declaration so it is hoisted.
+                    // But currentTheme variable is let, so it is not hoisted.
+                    // However, restoreSession is called inside createWindow which is called after module execution.
+                    // So currentTheme is initialized.
+                    updateTheme();
+                    // We also need to update the menu checkmarks, but createMenu is called before restoreSession in createWindow.
+                    // So we might need to recreate menu or update it.
+                    createMenu();
+                }
+
+                // Restore Config
+                if (data.config) {
+                    Object.assign(gdsConfig, data.config);
+                }
+
+                if (data.openFiles && Array.isArray(data.openFiles) && data.openFiles.length > 0) {
+                    for (const filePath of data.openFiles) {
+                        if (fs.existsSync(filePath)) {
+                            this.createTab(filePath, false);
+                        }
+                    }
+                    if (data.activeFileIndex >= 0 && data.activeFileIndex < this.viewOrder.length) {
+                        this.setActiveTab(this.viewOrder[data.activeFileIndex]);
+                    } else if (this.viewOrder.length > 0) {
+                        this.setActiveTab(this.viewOrder[0]);
+                    }
+                    return true; // Session restored
+                }
+            }
+        } catch (e) {
+            console.error("Failed to restore session:", e);
+        }
+        return false;
+    }
+
+    destroyAll() {
+        for (const view of this.views.values()) {
+            view.destroy();
+        }
+        this.views.clear();
+        this.viewOrder = [];
+        this.activeViewId = null;
+    }
+
+    createTab(filePath, activate = true) {
         const id = this.nextId++;
         const view = new GdsView(id, filePath, mainWindow);
         this.views.set(id, view);
@@ -221,7 +301,9 @@ class ViewManager {
         mainWindow.addBrowserView(view.browserView);
 
         this.updateShell();
-        this.setActiveTab(id);
+        if (activate) {
+            this.setActiveTab(id);
+        }
     }
 
     closeTab(id) {
@@ -242,6 +324,7 @@ class ViewManager {
             }
         }
         this.updateShell();
+        this.saveSession();
     }
 
     setActiveTab(id) {
@@ -257,6 +340,7 @@ class ViewManager {
         this.resizeActiveView();
 
         this.updateShell();
+        this.saveSession();
     }
 
     reorderTabs(newOrderIds) {
@@ -270,6 +354,7 @@ class ViewManager {
         });
         this.viewOrder = validIds;
         this.updateShell();
+        this.saveSession();
     }
 
     resizeActiveView() {
@@ -575,6 +660,7 @@ function createMenu() {
                     click: () => {
                         currentTheme = 'auto';
                         updateTheme();
+                        viewManager.saveSession();
                     }
                 },
                 {
@@ -584,6 +670,7 @@ function createMenu() {
                     click: () => {
                         currentTheme = 'light';
                         updateTheme();
+                        viewManager.saveSession();
                     }
                 },
                 {
@@ -593,6 +680,7 @@ function createMenu() {
                     click: () => {
                         currentTheme = 'dark';
                         updateTheme();
+                        viewManager.saveSession();
                     }
                 }
             ]
@@ -643,13 +731,20 @@ function createWindow() {
     });
 
     const indexPath = path.join(__dirname, 'shell.html');
-    mainWindow.loadFile(indexPath);
+    mainWindow.loadURL(url.pathToFileURL(indexPath).toString());
+
+    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+        console.error('Failed to load shell.html:', errorCode, errorDescription);
+    });
 
     mainWindow.webContents.on('did-finish-load', () => {
         updateTheme();
 
-        // If we have a default file open, create a tab for it
-        if (viewManager.views.size === 0) {
+        // Try to restore session
+        const restored = viewManager.restoreSession();
+
+        // If no session restored and no views, load blank
+        if (!restored && viewManager.views.size === 0) {
              // Extract blank.gds from ASAR if needed, as Python cannot read from ASAR
              const blankSource = path.join(__dirname, 'blank.gds');
              const blankDest = path.join(app.getPath('userData'), 'blank.gds');
@@ -670,6 +765,7 @@ function createWindow() {
     });
 
     mainWindow.on('closed', function () {
+        viewManager.destroyAll();
         mainWindow = null;
     });
 }
@@ -763,6 +859,7 @@ ipcMain.on('vscode-message', (event, message) => {
              if (message.key && message.value !== undefined) {
                  console.log(`Config Update: ${message.key} = ${message.value}`);
                  gdsConfig[message.key] = message.value;
+                 viewManager.saveSession();
 
                  if (['maxWorkers', 'chunkSize', 'flowControlStep', 'useInstancing'].includes(message.key)) {
                      viewManager.broadcastConfigChange();
