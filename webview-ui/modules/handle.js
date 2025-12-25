@@ -148,16 +148,36 @@ export function handleInstanceData(cellName, buffer) {
     return count;
 }
 
-export function handleAddLayerChunkB64(layerKey, chunkIndex, totalChunks, b64Data, type, cellName) {
+export function handleAddLayerChunkB64(layerKey, chunkIndex, totalChunks, data, type, cellName, isBinary) {
     state.pendingTasks++;
 
-    const binaryString = window.atob(b64Data);
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+    let buffer;
+    if (isBinary) {
+        if (data instanceof ArrayBuffer) {
+            buffer = data;
+        } else if (data && data.type === 'Buffer' && Array.isArray(data.data)) {
+            // Check for Node.js Buffer JSON representation { type: 'Buffer', data: [...] }
+            buffer = new Uint8Array(data.data).buffer;
+        } else if (data.buffer) {
+            // data is a TypedArray (Uint8Array, etc.)
+            buffer = data.buffer;
+            if (data.byteLength !== data.buffer.byteLength) {
+                buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+            }
+        } else {
+            // Fallback: assume it's an array or array-like
+            buffer = new Uint8Array(data).buffer;
+        }
+    } else {
+        // Legacy Base64
+        const binaryString = window.atob(data);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        buffer = bytes.buffer;
     }
-    const buffer = bytes.buffer;
 
     if (type === 'instance') {
         const count = handleInstanceData(cellName, buffer);
@@ -694,4 +714,54 @@ export function handleDrop(e) {
         requestAnimationFrame(drawLabels);
     }
     return false;
+}
+
+let ws = null;
+let currentHeader = null;
+
+export function connectWebSocket(uri) {
+    if (ws) {
+        ws.close();
+    }
+    console.log(`Connecting to WebSocket: ${uri}`);
+    ws = new WebSocket(uri);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+        console.log('WebSocket connected');
+    };
+
+    ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+            try {
+                currentHeader = JSON.parse(event.data);
+            } catch (e) {
+                console.error('Failed to parse WS header:', e);
+            }
+        } else {
+            // Binary data
+            if (currentHeader) {
+                handleAddLayerChunkB64(
+                    currentHeader.layerKey,
+                    currentHeader.chunkIndex,
+                    currentHeader.totalChunks,
+                    event.data, // ArrayBuffer
+                    currentHeader.type,
+                    currentHeader.cellName,
+                    true // isBinary
+                );
+                currentHeader = null;
+            } else {
+                console.warn('Received binary data without header');
+            }
+        }
+    };
+
+    ws.onerror = (e) => {
+        console.error('WebSocket error:', e);
+    };
+
+    ws.onclose = () => {
+        console.log('WebSocket closed');
+    };
 }

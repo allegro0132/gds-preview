@@ -97,6 +97,11 @@
           "default": -1,
           "description": "Number of Web Workers to use for parallel processing. Set to -1 to use all available cores."
         },
+        "gdsPreview.useWebSocket": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use WebSocket for binary data transfer (faster)."
+        },
         "gdsPreview.chunkSize": {
           "type": "number",
           "default": 2000,

@@ -118,6 +118,8 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             const currentConfig = vscode.workspace.getConfiguration('gdsPreview');
             const currentRenderingEngine = currentConfig.get<string>('renderingEngine', 'canvas');
             const engineType = currentConfig.get<string>('engineType', 'rust');
+            const maxWorkers = currentConfig.get<number>('maxWorkers', -1);
+            const useWebSocket = currentConfig.get<boolean>('useWebSocket', true);
             const chunkSize = currentConfig.get<number>('chunkSize', 2000);
             const flowControlStep = currentConfig.get<number>('flowControlStep', 5);
             const useInstancing = currentConfig.get<boolean>('useInstancing', true);
@@ -162,6 +164,13 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 args.push((currentRenderingEngine === 'webgl' && useInstancing) ? "1" : "0");
                 if (isNegativeMode) {
                     args.push("--negative");
+                }
+                if (maxWorkers > 0) {
+                    args.push("--max-workers");
+                    args.push(maxWorkers.toString());
+                }
+                if (useWebSocket) {
+                    args.push("--ws");
                 }
             } else {
                 let scriptName = 'gds_to_canvas.py';
@@ -209,75 +218,135 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 }
             });
 
-            // Use readline to stream stdout line by line
-            const rl = readline.createInterface({
-                input: childProcess.stdout,
-                crlfDelay: Infinity
-            });
-
+            // Use raw stdout stream instead of readline to handle binary data
+            let buffer = Buffer.alloc(0);
             let isFirstLine = true;
-
             let currentChunkMeta: any = null;
 
-            rl.on('line', (line) => {
-                if (isFirstLine) {
-                    console.log(`[EngineProcess] First byte received`);
-                }
-                // console.log(`Received line from Python: ${line.substring(0, 100)}...`);
-                try {
-                    if (!line.trim()) return;
+            childProcess.stdout.on('data', (chunk: Buffer) => {
+                buffer = Buffer.concat([buffer, chunk]);
 
-                    if (line.startsWith("CHUNK_B64|")) {
-                        const chunkInfo = JSON.parse(line.substring(10));
-                        webviewPanel.webview.postMessage({
-                            command: 'addLayerChunkB64',
-                            layerKey: chunkInfo.layerKey,
-                            chunkIndex: chunkInfo.chunkIndex,
-                            totalChunks: chunkInfo.totalChunks,
-                            data: chunkInfo.data,
-                            type: chunkInfo.type,
-                            cellName: chunkInfo.cellName
-                        });
-                    } else if (line.startsWith("Warning:") || line.startsWith("INFO:")) {
-                        console.log(`[Python Log] ${line}`);
+                while (buffer.length > 0) {
+                    // If we are waiting for binary data
+                    if (currentChunkMeta) {
+                        if (buffer.length >= currentChunkMeta.len) {
+                            const binaryData = buffer.subarray(0, currentChunkMeta.len);
+                            buffer = buffer.subarray(currentChunkMeta.len);
+
+                            // Send binary data to webview
+                            webviewPanel.webview.postMessage({
+                                command: 'addLayerChunkB64', // Keep command name for compatibility, but send raw buffer (VS Code handles it)
+                                layerKey: currentChunkMeta.layerKey,
+                                chunkIndex: currentChunkMeta.chunkIndex,
+                                totalChunks: currentChunkMeta.totalChunks,
+                                data: binaryData, // VS Code will serialize Buffer as array or similar, but we might need to base64 it if webview doesn't support raw
+                                type: currentChunkMeta.type,
+                                cellName: currentChunkMeta.cellName,
+                                isBinary: true
+                            });
+
+                            currentChunkMeta = null;
+                        } else {
+                            // Not enough data yet
+                            break;
+                        }
                     } else {
-                        // Legacy/Metadata handling
-                        const data = JSON.parse(line);
+                        // Look for newline
+                        const newlineIdx = buffer.indexOf('\n');
+                        if (newlineIdx === -1) {
+                            break; // Wait for more data
+                        }
+
+                        const line = buffer.subarray(0, newlineIdx).toString('utf8');
+                        buffer = buffer.subarray(newlineIdx + 1);
 
                         if (isFirstLine) {
-                            console.log("[PythonProcess] Sending initialize command to webview");
-                            // Metadata
-                            webviewPanel.webview.postMessage({
-                                command: 'initialize',
-                                data: data,
-                                engine: currentRenderingEngine
-                            }).then(
-                                (success) => console.log(`[Webview Log] Initialize message delivery status: ${success}`),
-                                (err) => console.log(`[Webview Log] Initialize message delivery failed: ${err}`)
-                            );
-                            isFirstLine = false;
-                        } else if (data.command === 'found' || data.command === 'status') {
-                            webviewPanel.webview.postMessage(data);
-                        } else if (data.command === 'done') {
-                            isEngineReady = true;
-                            webviewPanel.webview.postMessage({ command: 'status', message: 'Loaded successfully' });
-                        } else if (data.type === 'ports') {
-                            webviewPanel.webview.postMessage({
-                                command: 'addPorts',
-                                ports: data.ports
-                            });
-                        } else if (data.layerKey && data.labels) {
-                            // Label chunk (still JSON)
-                            webviewPanel.webview.postMessage({
-                                command: 'addLayerChunk',
-                                layerKey: data.layerKey,
-                                data: data
-                            });
+                            console.log(`[EngineProcess] First byte received`);
+                        }
+
+                        try {
+                            if (!line.trim()) continue;
+
+                            if (line.startsWith("WS_PORT:")) {
+                                const port = parseInt(line.substring(8));
+                                console.log(`[EngineProcess] WebSocket Server started on port ${port}`);
+
+                                // Handle port forwarding for Remote Dev
+                                const portUri = vscode.Uri.parse(`http://127.0.0.1:${port}`);
+                                vscode.env.asExternalUri(portUri).then(externalUri => {
+                                    let wsUri = externalUri.toString();
+                                    if (wsUri.startsWith('http://')) {
+                                        wsUri = wsUri.replace('http://', 'ws://');
+                                    } else if (wsUri.startsWith('https://')) {
+                                        wsUri = wsUri.replace('https://', 'wss://');
+                                    }
+
+                                    webviewPanel.webview.postMessage({
+                                        command: 'connect_ws',
+                                        uri: wsUri
+                                    });
+                                });
+                                continue;
+                            }
+
+                            if (line.startsWith("CHUNK_BIN|")) {
+                                const headerJson = line.substring(10);
+                                currentChunkMeta = JSON.parse(headerJson);
+                                // Loop again to check if we have the binary data
+                                continue;
+                            } else if (line.startsWith("CHUNK_B64|")) {
+                                // Legacy support if needed, or fallback
+                                const chunkInfo = JSON.parse(line.substring(10));
+                                webviewPanel.webview.postMessage({
+                                    command: 'addLayerChunkB64',
+                                    layerKey: chunkInfo.layerKey,
+                                    chunkIndex: chunkInfo.chunkIndex,
+                                    totalChunks: chunkInfo.totalChunks,
+                                    data: chunkInfo.data,
+                                    type: chunkInfo.type,
+                                    cellName: chunkInfo.cellName
+                                });
+                            } else if (line.startsWith("Warning:") || line.startsWith("INFO:")) {
+                                console.log(`[Python Log] ${line}`);
+                            } else {
+                                // Legacy/Metadata handling
+                                const data = JSON.parse(line);
+
+                                if (isFirstLine) {
+                                    console.log("[PythonProcess] Sending initialize command to webview");
+                                    // Metadata
+                                    webviewPanel.webview.postMessage({
+                                        command: 'initialize',
+                                        data: data,
+                                        engine: currentRenderingEngine
+                                    }).then(
+                                        (success) => console.log(`[Webview Log] Initialize message delivery status: ${success}`),
+                                        (err) => console.log(`[Webview Log] Initialize message delivery failed: ${err}`)
+                                    );
+                                    isFirstLine = false;
+                                } else if (data.command === 'found' || data.command === 'status') {
+                                    webviewPanel.webview.postMessage(data);
+                                } else if (data.command === 'done') {
+                                    isEngineReady = true;
+                                    webviewPanel.webview.postMessage({ command: 'status', message: 'Loaded successfully' });
+                                } else if (data.type === 'ports') {
+                                    webviewPanel.webview.postMessage({
+                                        command: 'addPorts',
+                                        ports: data.ports
+                                    });
+                                } else if (data.layerKey && data.labels) {
+                                    // Label chunk (still JSON)
+                                    webviewPanel.webview.postMessage({
+                                        command: 'addLayerChunk',
+                                        layerKey: data.layerKey,
+                                        data: data
+                                    });
+                                }
+                            }
+                        } catch (e: any) {
+                            console.log(`Failed to parse line: ${e.message}`);
                         }
                     }
-                } catch (e: any) {
-                    console.log(`Failed to parse line: ${e.message}`);
-                    // Don't show error message for every line, just log it
                 }
             });
 

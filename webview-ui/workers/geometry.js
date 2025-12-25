@@ -9,6 +9,8 @@ self.onmessage = function (e) {
     const t0 = performance.now();
     try {
         let polygons;
+        let precomputedVertices = null;
+
         if (e.data.isBinary) {
             // Parse binary buffer
             const buffer = e.data.buffer;
@@ -37,8 +39,7 @@ self.onmessage = function (e) {
                 // Safety check for huge polygons (likely garbage)
                 if (nPoints > 1000000) {
                     console.error("Worker: Huge polygon detected, skipping", nPoints);
-                    offset += byteLen; // Try to skip? Or just break?
-                    // If nPoints is garbage, byteLen is garbage, so skipping is unsafe.
+                    offset += byteLen;
                     break;
                 }
 
@@ -46,6 +47,18 @@ self.onmessage = function (e) {
                 polygons.push(points);
                 offset += byteLen;
             }
+
+            // Check for precomputed triangles (Rust backend)
+            if (offset + 4 <= buffer.byteLength) {
+                const totalVertices = dataView.getUint32(offset, true);
+                offset += 4;
+                const byteLen = totalVertices * 4;
+                if (offset + byteLen <= buffer.byteLength) {
+                    precomputedVertices = new Float32Array(buffer, offset, totalVertices);
+                    offset += byteLen;
+                }
+            }
+
         } else if (e.data.isRaw) {
             polygons = JSON.parse(e.data.polygonsString);
         } else {
@@ -53,6 +66,20 @@ self.onmessage = function (e) {
         }
 
         const { id } = e.data;
+
+        // If we have precomputed vertices from Rust, return them immediately
+        if (precomputedVertices) {
+            const t1 = performance.now();
+            // Transfer the buffer back. Both polygons and precomputedVertices are views into it.
+            self.postMessage({
+                id,
+                polygons,
+                vertices: precomputedVertices,
+                duration: t1 - t0,
+                triCount: precomputedVertices.length / 2
+            }, [e.data.buffer]);
+            return;
+        }
 
         if (e.data.returnPolygons) {
             const t1 = performance.now();

@@ -15,6 +15,7 @@ use crate::geometry::{Library, Cell, Matrix3x3, Point, Polygon};
 use crate::streamer::{ChunkMsg, send_binary_chunk, send_json};
 use crate::analysis::SearchEngine;
 use anyhow::Result;
+use rayon::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -39,10 +40,22 @@ struct Args {
 
     #[arg(long, help = "Negative mode (for SVG)")]
     negative: bool,
+
+    #[arg(long, default_value = "0", help = "Max workers for parallel processing (0 for auto)")]
+    max_workers: usize,
+
+    #[arg(long, help = "Enable WebSocket server")]
+    ws: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    if args.max_workers > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(args.max_workers)
+            .build_global()?;
+    }
 
     let file = File::open(&args.input)?;
     let mut library = gds_loader::load_gds(file)?;
@@ -94,6 +107,18 @@ fn main() -> Result<()> {
         let mut sorted_deps: Vec<String> = deps.into_iter().collect();
         sorted_deps.sort();
         hierarchy.insert(cell.name.clone(), sorted_deps);
+    }
+
+    // Setup WebSocket if requested
+    if args.ws {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let local_addr = listener.local_addr()?;
+        println!("WS_PORT:{}", local_addr.port());
+
+        // Accept connection (blocking)
+        let (stream, _) = listener.accept()?;
+        let socket = tungstenite::accept(stream)?;
+        streamer::set_socket(socket);
     }
 
     let mut metadata = serde_json::json!({
@@ -304,21 +329,15 @@ fn process_flattened(lib: &Library, main_cell: &Cell, args: &Args, metadata: &mu
     for (layer_key, polys) in flat_polygons {
         let total_chunks = (polys.len() + args.chunk_size - 1) / args.chunk_size;
         for (i, chunk) in polys.chunks(args.chunk_size).enumerate() {
-            let mut buffer = Vec::new();
-            buffer.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
-            for poly in chunk {
-                buffer.extend_from_slice(&(poly.points.len() as u32).to_le_bytes());
-                for p in &poly.points {
-                    buffer.extend_from_slice(&(p.x as f32).to_le_bytes());
-                    buffer.extend_from_slice(&(p.y as f32).to_le_bytes());
-                }
-            }
+            let refs: Vec<&Polygon> = chunk.iter().collect();
+            let buffer = serialize_polygons_with_triangulation(&refs);
             let msg = ChunkMsg {
                 r#type: Some("flat".to_string()),
                 layer_key: layer_key.clone(),
                 chunk_index: i,
                 total_chunks,
                 cell_name: None,
+                len: buffer.len(),
             };
             send_binary_chunk(&msg, &buffer, i, args.flow_control_step);
         }
@@ -492,21 +511,15 @@ fn process_instanced(
     for (layer_key, polys) in flat_polygons {
         let total_chunks = (polys.len() + args.chunk_size - 1) / args.chunk_size;
         for (i, chunk) in polys.chunks(args.chunk_size).enumerate() {
-            let mut buffer = Vec::new();
-            buffer.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
-            for poly in chunk {
-                buffer.extend_from_slice(&(poly.points.len() as u32).to_le_bytes());
-                for p in &poly.points {
-                    buffer.extend_from_slice(&(p.x as f32).to_le_bytes());
-                    buffer.extend_from_slice(&(p.y as f32).to_le_bytes());
-                }
-            }
+            let refs: Vec<&Polygon> = chunk.iter().collect();
+            let buffer = serialize_polygons_with_triangulation(&refs);
             let msg = ChunkMsg {
                 r#type: Some("flat".to_string()),
                 layer_key: layer_key.clone(),
                 chunk_index: i,
                 total_chunks,
                 cell_name: None,
+                len: buffer.len(),
             };
             send_binary_chunk(&msg, &buffer, i, args.flow_control_step);
         }
@@ -545,21 +558,14 @@ fn process_instanced(
             for (layer_key, polys) in layer_polys {
                 let total_chunks = (polys.len() + args.chunk_size - 1) / args.chunk_size;
                 for (i, chunk) in polys.chunks(args.chunk_size).enumerate() {
-                    let mut buffer = Vec::new();
-                    buffer.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
-                    for p in chunk {
-                        buffer.extend_from_slice(&(p.points.len() as u32).to_le_bytes());
-                        for pt in &p.points {
-                            buffer.extend_from_slice(&(pt.x as f32).to_le_bytes());
-                            buffer.extend_from_slice(&(pt.y as f32).to_le_bytes());
-                        }
-                    }
+                    let buffer = serialize_polygons_with_triangulation(chunk);
                     let msg = ChunkMsg {
                         r#type: Some("definition".to_string()),
                         layer_key: layer_key.clone(),
                         chunk_index: i,
                         total_chunks,
                         cell_name: Some(cell_name.clone()),
+                        len: buffer.len(),
                     };
                     send_binary_chunk(&msg, &buffer, i, args.flow_control_step);
                 }
@@ -590,9 +596,48 @@ fn process_instanced(
                 chunk_index: i,
                 total_chunks,
                 cell_name: Some(cell_name.clone()),
+                len: buffer.len(),
             };
             send_binary_chunk(&msg, &buffer, i, args.flow_control_step);
         }
     }
     Ok(())
+}
+
+fn serialize_polygons_with_triangulation(polys: &[&Polygon]) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    // 1. Polygons (existing format)
+    buffer.extend_from_slice(&(polys.len() as u32).to_le_bytes());
+    for poly in polys {
+        buffer.extend_from_slice(&(poly.points.len() as u32).to_le_bytes());
+        for p in &poly.points {
+            buffer.extend_from_slice(&(p.x as f32).to_le_bytes());
+            buffer.extend_from_slice(&(p.y as f32).to_le_bytes());
+        }
+    }
+
+    // 2. Triangles (Parallelized)
+    let all_vertices: Vec<f32> = polys.par_iter().flat_map(|poly| {
+        let mut data = Vec::with_capacity(poly.points.len() * 2);
+        for p in &poly.points {
+            data.push(p.x);
+            data.push(p.y);
+        }
+        let mut vertices = Vec::new();
+        if let Ok(triangles) = earcutr::earcut(&data, &[], 2) {
+            for idx in triangles {
+                if idx * 2 + 1 < data.len() {
+                    vertices.push(data[idx * 2] as f32);
+                    vertices.push(data[idx * 2 + 1] as f32);
+                }
+            }
+        }
+        vertices
+    }).collect();
+
+    buffer.extend_from_slice(&(all_vertices.len() as u32).to_le_bytes());
+    for v in all_vertices {
+        buffer.extend_from_slice(&v.to_le_bytes());
+    }
+    buffer
 }

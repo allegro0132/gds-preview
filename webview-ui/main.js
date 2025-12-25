@@ -6,7 +6,8 @@ import {
     handleDataUpdate,
     handleInitialize,
     handleAddLayerChunk,
-    handleAddLayerChunkB64
+    handleAddLayerChunkB64,
+    connectWebSocket
 } from './modules/handle.js';
 import { updateStatus, checkCompletion } from './modules/utils.js';
 import { draw, drawLabels } from './modules/renderer.js';
@@ -31,10 +32,8 @@ if (state.config.workerUrl) {
     workerUrl = URL.createObjectURL(workerBlob);
 }
 
-let maxWorkers = state.config.maxWorkers;
-if (maxWorkers === -1) {
-    maxWorkers = navigator.hardwareConcurrency || 4;
-}
+// Frontend only needs 1 worker now as heavy lifting is done in Rust
+let maxWorkers = 1;
 
 console.log(`Initializing worker pool with ${maxWorkers} workers`);
 
@@ -76,7 +75,9 @@ window.addEventListener('message', event => {
     } else if (message.command === 'addLayerChunk') {
         handleAddLayerChunk(message.layerKey, message.data);
     } else if (message.command === 'addLayerChunkB64') {
-        handleAddLayerChunkB64(message.layerKey, message.chunkIndex, message.totalChunks, message.data, message.type, message.cellName);
+        handleAddLayerChunkB64(message.layerKey, message.chunkIndex, message.totalChunks, message.data, message.type, message.cellName, message.isBinary);
+    } else if (message.command === 'connect_ws') {
+        connectWebSocket(message.uri);
     } else if (message.command === 'addPorts') {
         state.ports = message.ports;
         requestAnimationFrame(drawLabels);
