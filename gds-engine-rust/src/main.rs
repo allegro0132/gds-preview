@@ -8,7 +8,7 @@ use clap::Parser;
 use std::fs::File;
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use crate::geometry::{Library, Cell, Matrix3x3, Point, Polygon};
 use crate::streamer::{ChunkMsg, send_binary_chunk, send_json};
@@ -141,6 +141,8 @@ fn main() -> Result<()> {
         *search_engine_clone.lock().unwrap() = Some(engine);
     });
 
+    let current_search_cancel: Arc<Mutex<Option<Arc<AtomicBool>>>> = Arc::new(Mutex::new(None));
+
     // Start interactive loop for search
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
@@ -168,27 +170,49 @@ fn main() -> Result<()> {
                     }
                 }
 
-                let engine_guard = search_engine.lock().unwrap();
-                if let Some(engine) = &*engine_guard {
-                    let (polys, limit_reached) = engine.find(x, y, &active_layers, max_steps);
-
-                    let simple_polys: Vec<Vec<[f64; 2]>> = polys.iter().map(|p| {
-                        p.points.iter().map(|pt| [pt.x, pt.y]).collect()
-                    }).collect();
-
-                    send_json(&serde_json::json!({
-                        "command": "found",
-                        "polygons": simple_polys,
-                        "limitReached": limit_reached
-                    }));
-                } else {
-                    send_json(&serde_json::json!({
-                        "command": "status",
-                        "message": "Search engine initializing..."
-                    }));
+                // Cancel previous search
+                let new_cancel_flag = Arc::new(AtomicBool::new(false));
+                {
+                    let mut cancel_guard = current_search_cancel.lock().unwrap();
+                    if let Some(flag) = &*cancel_guard {
+                        flag.store(true, Ordering::Relaxed);
+                    }
+                    *cancel_guard = Some(new_cancel_flag.clone());
                 }
+
+                let search_engine = search_engine.clone();
+                let cancel_flag = new_cancel_flag;
+
+                thread::spawn(move || {
+                    let engine_guard = search_engine.lock().unwrap();
+                    if let Some(engine) = &*engine_guard {
+                        if cancel_flag.load(Ordering::Relaxed) { return; }
+
+                        let (polys, limit_reached) = engine.find(x, y, &active_layers, max_steps, Some(cancel_flag.clone()));
+
+                        if !cancel_flag.load(Ordering::Relaxed) {
+                            let simple_polys: Vec<Vec<[f64; 2]>> = polys.iter().map(|p| {
+                                p.points.iter().map(|pt| [pt.x, pt.y]).collect()
+                            }).collect();
+
+                            send_json(&serde_json::json!({
+                                "command": "found",
+                                "polygons": simple_polys,
+                                "limitReached": limit_reached
+                            }));
+                        }
+                    } else {
+                        send_json(&serde_json::json!({
+                            "command": "status",
+                            "message": "Search engine initializing..."
+                        }));
+                    }
+                });
             } else if cmd["command"] == "stop" {
-                // Just acknowledge?
+                let mut cancel_guard = current_search_cancel.lock().unwrap();
+                if let Some(flag) = &*cancel_guard {
+                    flag.store(true, Ordering::Relaxed);
+                }
                 send_json(&serde_json::json!({
                     "command": "status",
                     "message": "Search stopped"

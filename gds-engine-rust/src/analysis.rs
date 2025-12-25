@@ -1,6 +1,6 @@
 use crate::geometry::{Library, Cell, Matrix3x3, Point, Polygon};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 #[derive(Debug, Clone, Copy)]
 pub struct BBox {
@@ -191,7 +191,7 @@ impl SearchEngine {
         Self { library, instances, cell_bboxes, cell_map }
     }
 
-    pub fn find(&self, x: f64, y: f64, active_layers: &HashSet<(i16, i16)>, max_steps: usize) -> (Vec<Polygon>, bool) {
+    pub fn find(&self, x: f64, y: f64, active_layers: &HashSet<(i16, i16)>, max_steps: usize, cancel_flag: Option<Arc<AtomicBool>>) -> (Vec<Polygon>, bool) {
         let mut start_poly: Option<Polygon> = None;
         let mut start_instance_idx: Option<usize> = None;
 
@@ -261,6 +261,12 @@ impl SearchEngine {
         let mut steps = 0;
 
         while let Some(curr_idx) = queue_indices.pop_front() {
+            if let Some(flag) = &cancel_flag {
+                if flag.load(Ordering::Relaxed) {
+                    return (Vec::new(), false);
+                }
+            }
+
             if steps >= max_steps {
                 let res_polys = visited.iter().map(|&i| candidates[i].clone()).collect();
                 return (res_polys, true);
