@@ -9,12 +9,13 @@ export function handleSearchWorkerMessage(e) {
         updateStatus(msg.message);
     } else if (msg.command === 'found') {
         state.highlightedPolygons = msg.polygons;
+        const timeStr = msg.duration ? ` in ${msg.duration}ms` : '';
         if (msg.limitReached) {
-            updateStatus(`Highlighted ${state.highlightedPolygons.length} objects (Search limit reached)`);
+            updateStatus(`Highlighted ${state.highlightedPolygons.length} objects (Search limit reached)${timeStr}`);
         } else if (state.highlightedPolygons.length === 0) {
-            updateStatus("No object found at clicked location");
+            updateStatus(`No object found at clicked location${timeStr}`);
         } else {
-            updateStatus(`Highlighted ${state.highlightedPolygons.length} connected objects`);
+            updateStatus(`Highlighted ${state.highlightedPolygons.length} connected objects${timeStr}`);
         }
         requestAnimationFrame(drawLabels);
     }

@@ -11,3 +11,4 @@ clap = { version = "4.4", features = ["derive"] }
 byteorder = "1.5"
 anyhow = "1.0"
 flate2 = "1.0"
+rayon = "1.8.0"
