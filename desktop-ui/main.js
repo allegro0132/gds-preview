@@ -5,6 +5,16 @@ const cp = require('child_process');
 const readline = require('readline');
 const os = require('os');
 const url = require('url');
+const net = require('net');
+const crypto = require('crypto');
+
+let WebSocketServer;
+try {
+    ({ WebSocketServer } = require('ws'));
+} catch (e) {
+    // Desktop app can still run legacy stdout/base64 path without ws.
+    console.warn('ws dependency not available; binary geometry WebSocket disabled. Run `npm install` in desktop-ui.');
+}
 
 const statePath = path.join(app.getPath('userData'), 'session.json');
 
@@ -19,6 +29,9 @@ class GdsView {
         this.currentCell = undefined;
         this.isNegative = false;
         this.process = null;
+
+        this._bridge = null;
+        this._doneSent = false;
 
         this.browserView = new BrowserView({
             webPreferences: {
@@ -51,6 +64,10 @@ class GdsView {
         if (this.process) {
             this.process.kill();
         }
+        if (this._bridge) {
+            try { this._bridge.close(); } catch (_) { }
+            this._bridge = null;
+        }
         // BrowserView destruction is handled by removing from window and letting GC collect it,
         // effectively (though we should nullify references)
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -69,11 +86,18 @@ class GdsView {
         }
     }
 
-    runEngine(targetCell, isNegativeMode) {
+    async runEngine(targetCell, isNegativeMode) {
         if (this.process) {
             this.process.kill();
             this.process = undefined;
         }
+
+        if (this._bridge) {
+            try { this._bridge.close(); } catch (_) { }
+            this._bridge = null;
+        }
+
+        this._doneSent = false;
 
         const tempDir = path.join(os.tmpdir(), `gds_preview_data_${Date.now()}_${this.id}`);
 
@@ -113,7 +137,7 @@ class GdsView {
         }
 
         // Rust Engine Arguments:
-        // input, output_dir, cell_name, chunk_size, flow_control_step, use_instancing, [--negative]
+        // input, output_dir, cell_name, chunk_size, flow_control_step, use_instancing, [--negative] [--tcp-port N] [--geom-mode polygons|triangles]
         args = [
             this.filePath,
             tempDir,
@@ -127,21 +151,41 @@ class GdsView {
             args.push("--negative");
         }
 
+        const wantWsGeometry = WebSocketServer && gdsConfig.renderingEngine !== 'svg';
+        if (wantWsGeometry) {
+            try {
+                const geomMode = gdsConfig.renderingEngine === 'webgl' ? 'triangles' : 'polygons';
+                this._bridge = await createGeometryBridge({ viewId: this.id });
+                args.push('--tcp-port', String(this._bridge.tcpPort), '--geom-mode', geomMode);
+            } catch (e) {
+                console.warn(`[View ${this.id}] Failed to create geometry bridge, falling back to stdout chunks: ${e?.message || e}`);
+                if (this._bridge) {
+                    try { this._bridge.close(); } catch (_) { }
+                    this._bridge = null;
+                }
+            }
+        }
+
         console.log(`[View ${this.id}] Running: ${executable} ${args.join(' ')}`);
 
         try {
-            const process = cp.spawn(executable, args);
-            this.process = process;
+            const env = { ...globalThis.process.env };
+            if (typeof gdsConfig.maxWorkers === 'number' && gdsConfig.maxWorkers > 0) {
+                env.RAYON_NUM_THREADS = String(gdsConfig.maxWorkers);
+            }
+
+            const childProc = cp.spawn(executable, args, { env });
+            this.process = childProc;
             let stderr = '';
 
-            process.stderr.on('data', (data) => {
+            childProc.stderr.on('data', (data) => {
                 const msg = data.toString();
                 stderr += msg;
                 console.log(`[View ${this.id} Rust Stderr] ${msg}`);
             });
 
             const rl = readline.createInterface({
-                input: process.stdout,
+                input: childProc.stdout,
                 crlfDelay: Infinity
             });
 
@@ -166,12 +210,15 @@ class GdsView {
                             cellName: chunkInfo.cellName
                         });
                     } else if (line.startsWith("Warning:") || line.startsWith("INFO:")) {
-                        console.log(`[View ${this.id} Python Log] ${line}`);
+                        console.log(`[View ${this.id} Engine Log] ${line}`);
                     } else {
                         const data = JSON.parse(line);
 
                         if (isFirstLine) {
                              // Initialize
+                             if (this._bridge) {
+                                 data.ws = { port: this._bridge.wsPort, token: this._bridge.wsToken };
+                             }
                              this.browserView.webContents.send('webview-message', {
                                  command: 'initialize',
                                  data: data,
@@ -192,6 +239,7 @@ class GdsView {
                         } else if (data.command === 'found') {
                             this.browserView.webContents.send('webview-message', data);
                         } else if (data.command === 'done') {
+                            this._doneSent = true;
                             this.browserView.webContents.send('webview-message', { command: 'status', message: 'Loaded successfully' });
                         }
                     }
@@ -200,21 +248,152 @@ class GdsView {
                 }
             });
 
-            process.on('close', (code) => {
-                if (this.process !== process) return;
+            childProc.on('close', (code, signal) => {
+                if (this.process !== childProc) return;
                 this.process = undefined;
                 if (!this.browserView || !this.browserView.webContents || this.browserView.webContents.isDestroyed()) return;
 
                 if (code !== 0) {
-                    console.error(`Python script exited with code ${code}`);
+                    if (signal) {
+                        console.error(`Engine exited with signal ${signal}`);
+                    } else {
+                        console.error(`Engine exited with code ${code}`);
+                    }
                 } else {
-                    this.browserView.webContents.send('webview-message', { command: 'status', message: 'Loaded successfully' });
+                    if (!this._doneSent) {
+                        this.browserView.webContents.send('webview-message', { command: 'status', message: 'Loaded successfully' });
+                    }
+                }
+
+                // Give the renderer a moment to connect/auth and receive buffered WS frames.
+                if (this._bridge) {
+                    this._bridge.closeAfter(1500);
                 }
             });
         } catch (e) {
-            console.error("Failed to spawn python:", e);
+            console.error("Failed to spawn engine:", e);
         }
     }
+}
+
+async function createGeometryBridge({ viewId }) {
+    if (!WebSocketServer) {
+        throw new Error('ws module not available');
+    }
+
+    const wsToken = crypto.randomBytes(16).toString('hex');
+
+    // WebSocket server (renderer connects here)
+    const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await new Promise((resolve) => wss.once('listening', resolve));
+    const wsPort = wss.address().port;
+
+    const authedClients = new Set();
+    let tcpSocket = null;
+    let earlyFrames = [];
+    let earlyBytes = 0;
+    const EARLY_LIMIT = 64 * 1024 * 1024;
+
+    const flushEarly = () => {
+        if (authedClients.size === 0 || earlyFrames.length === 0) return;
+        for (const frame of earlyFrames) {
+            for (const client of authedClients) {
+                try {
+                    if (client.readyState === client.OPEN) client.send(frame, { binary: true });
+                } catch (_) { }
+            }
+        }
+        earlyFrames = [];
+        earlyBytes = 0;
+    };
+
+    const broadcastFrame = (frame) => {
+        if (authedClients.size === 0) {
+            if (earlyBytes + frame.length <= EARLY_LIMIT) {
+                earlyFrames.push(frame);
+                earlyBytes += frame.length;
+            }
+            return;
+        }
+        for (const client of authedClients) {
+            try {
+                if (client.readyState === client.OPEN) client.send(frame, { binary: true });
+            } catch (_) { }
+        }
+    };
+
+    wss.on('connection', (socket) => {
+        let authed = false;
+
+        socket.on('message', (data, isBinary) => {
+            if (authed) return;
+            if (isBinary) {
+                try { socket.close(); } catch (_) { }
+                return;
+            }
+            const token = data.toString();
+            if (token !== wsToken) {
+                try { socket.close(); } catch (_) { }
+                return;
+            }
+            authed = true;
+            authedClients.add(socket);
+            flushEarly();
+        });
+
+        socket.on('close', () => {
+            authedClients.delete(socket);
+        });
+    });
+
+    // TCP server (Rust connects here and sends length-prefixed LE frames)
+    const tcpServer = net.createServer((sock) => {
+        tcpSocket = sock;
+        tcpSocket.setNoDelay(true);
+
+        let buffer = Buffer.alloc(0);
+        tcpSocket.on('data', (chunk) => {
+            buffer = Buffer.concat([buffer, chunk]);
+            while (buffer.length >= 4) {
+                const len = buffer.readUInt32LE(0);
+                if (buffer.length < 4 + len) break;
+                const frame = buffer.subarray(4, 4 + len);
+                buffer = buffer.subarray(4 + len);
+                broadcastFrame(frame);
+            }
+        });
+    });
+
+    await new Promise((resolve, reject) => {
+        tcpServer.listen(0, '127.0.0.1', resolve);
+        tcpServer.once('error', reject);
+    });
+    const tcpPort = tcpServer.address().port;
+
+    let closeTimer = null;
+    const close = () => {
+        if (closeTimer) {
+            clearTimeout(closeTimer);
+            closeTimer = null;
+        }
+        try { if (tcpSocket) tcpSocket.destroy(); } catch (_) { }
+        try { tcpServer.close(); } catch (_) { }
+        try {
+            for (const c of authedClients) {
+                try { c.close(); } catch (_) { }
+            }
+        } catch (_) { }
+        try { wss.close(); } catch (_) { }
+    };
+
+    const closeAfter = (ms) => {
+        if (closeTimer) clearTimeout(closeTimer);
+        closeTimer = setTimeout(close, ms);
+    };
+
+    console.log(`[View ${viewId}] Geometry bridge up: tcp=${tcpPort} ws=${wsPort}`);
+
+    return { tcpPort, wsPort, wsToken, close, closeAfter };
 }
 
 class ViewManager {
@@ -518,6 +697,7 @@ function generateHtml() {
     let html = fs.readFileSync(htmlPath, 'utf-8');
 
     const config = {
+        engineType: 'rust',
         engine: gdsConfig.renderingEngine,
         fastModeThreshold: gdsConfig.fastModeThreshold,
         labelFontSize: gdsConfig.labelFontSize,
@@ -872,6 +1052,10 @@ ipcMain.on('vscode-message', (event, message) => {
                 view.process.kill();
                 view.process = undefined;
                 view.browserView.webContents.send('webview-message', { command: 'status', message: 'Stopped by user' });
+            }
+            if (view._bridge) {
+                try { view._bridge.close(); } catch (_) { }
+                view._bridge = null;
             }
             break;
         case 'ready_for_next':

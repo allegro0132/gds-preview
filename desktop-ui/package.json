@@ -58,5 +58,7 @@
     "electron": "^28.0.0",
     "electron-builder": "^26.0.0"
   },
-  "dependencies": {}
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
 }
