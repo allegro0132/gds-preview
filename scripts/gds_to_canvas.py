@@ -19,7 +19,10 @@ def gds_to_instanced_geometry(gds_path, output_dir, target_cell_name,
             shutil.rmtree(output_dir)
         os.makedirs(output_dir)
 
-        lib = gdstk.read_gds(gds_path)
+        if 'gds' in gds_path.split('.')[-1].lower():
+            lib = gdstk.read_gds(gds_path)
+        else:
+            lib = gdstk.read_oas(gds_path)
         t_read = time.time()
         print(f"PROFILE: GDS Read: {t_read - t_start:.4f}s", file=sys.stderr)
 
@@ -527,7 +530,10 @@ def gds_to_geometry(gds_path,
             shutil.rmtree(output_dir)  # Clean up previous run
         os.makedirs(output_dir)
 
-        lib = gdstk.read_gds(gds_path)
+        if 'gds' in gds_path.split('.')[-1].lower():
+            lib = gdstk.read_gds(gds_path)
+        else:
+            lib = gdstk.read_oas(gds_path)
         t_read = time.time()
         print(f"PROFILE: GDS Read: {t_read - t_start:.4f}s", file=sys.stderr)
 

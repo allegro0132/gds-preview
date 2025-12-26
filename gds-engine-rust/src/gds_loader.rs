@@ -1,5 +1,5 @@
-use crate::gds_parser::{GdsReader, GdsData};
-use crate::geometry::{Library, Cell, Polygon, Reference, Label, Point, Port};
+use crate::gds_parser::{GdsData, GdsReader};
+use crate::geometry::{Cell, Label, Library, Point, Polygon, Port, Reference};
 use anyhow::Result;
 use std::io::Read;
 
@@ -225,7 +225,7 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
                 }
             }
 
-            fn parse_port_string(val: &str, units: (f64, f64)) -> Option<Port> {
+            pub fn parse_port_string(val: &str, units: (f64, f64)) -> Option<Port> {
                 // Format: META('...')={'key'=>'value', ...}
                 // or just {'key'=>'value', ...}
                 // Keys are quoted. Separator is => or :.
