@@ -7,8 +7,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [0.3.9] - 2025-12-27
 
 ### Added
+- **Rust binary geometry streaming**: Stream triangles/polygons as raw binary frames to the webview over a local WebSocket (extension-hosted).
+- **Rust/WebGL backend triangulation**: Triangulation moved to Rust and is parallelized at the chunk level.
 - **OASIS Support (Rust Backend)**:
   - Added/validated OASIS parsing support in the Rust backend, including OASIS files using **CBLOCK** compression.
+
+### Changed
+- `gdsPreview.maxWorkers` now also controls Rust/Rayon parallelism (triangulation + search) when using the Rust engine.
 
 ### Fixed
 - **OASIS Parsing (CBLOCK / PROPERTY)**:
