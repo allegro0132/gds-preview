@@ -20,7 +20,7 @@ console.log("GDS Preview: Main Script initialized");
 // Initialize State and Elements
 initializeState();
 
-// Worker Pool for Triangulation
+// Worker Pool for Triangulation (Python engine / legacy path)
 const workerCode = state.config.workerCode;
 
 let workerUrl;
@@ -36,9 +36,10 @@ if (maxWorkers === -1) {
     maxWorkers = navigator.hardwareConcurrency || 4;
 }
 
-console.log(`Initializing worker pool with ${maxWorkers} workers`);
+const enableWorkerPool = state.config.engineType !== 'rust';
+console.log(`Initializing worker pool with ${maxWorkers} workers (enabled=${enableWorkerPool})`);
 
-if (workerUrl) {
+if (enableWorkerPool && workerUrl) {
     for (let i = 0; i < maxWorkers; i++) {
         const worker = new Worker(workerUrl);
         worker.onmessage = (e) => handleWorkerMessage(e, i);

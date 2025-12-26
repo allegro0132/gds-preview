@@ -4,6 +4,9 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as readline from 'readline';
+import * as net from 'net';
+import * as crypto from 'crypto';
+import { WebSocketServer, WebSocket, RawData } from 'ws';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Congratulations, your extension "gds-preview" is now active!');
@@ -74,6 +77,9 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         this.webviews.add(webviewPanel);
         webviewPanel.onDidDispose(() => {
             this.webviews.delete(webviewPanel);
+            try { currentProcess?.kill(); } catch { /* noop */ }
+            currentProcess = undefined;
+            try { cleanupServers(); } catch { /* noop */ }
         });
 
         const filePath = document.uri.fsPath;
@@ -91,6 +97,139 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         let isNegative = false;
         let isEngineReady = false;
 
+        // Rust geometry bridge: TCP from Rust -> WebSocket to webview
+        let wsServer: WebSocketServer | undefined;
+        let tcpServer: net.Server | undefined;
+        let wsPort: number | undefined;
+        let tcpPort: number | undefined;
+        let wsToken: string | undefined;
+        let wsClients = new Set<WebSocket>();
+        let tcpSockets = new Set<net.Socket>();
+        let pendingWsFrames: Buffer[] = [];
+        let pendingWsBytes = 0;
+        const MAX_PENDING_WS_BYTES = 64 * 1024 * 1024;
+        let cleanupTimer: NodeJS.Timeout | undefined;
+
+        const cleanupServers = () => {
+            if (cleanupTimer) {
+                clearTimeout(cleanupTimer);
+                cleanupTimer = undefined;
+            }
+            for (const s of tcpSockets) {
+                try { s.destroy(); } catch { /* noop */ }
+            }
+            tcpSockets.clear();
+            pendingWsFrames = [];
+            pendingWsBytes = 0;
+            for (const c of wsClients) {
+                try { c.terminate(); } catch { /* noop */ }
+            }
+            wsClients.clear();
+            try { wsServer?.close(); } catch { /* noop */ }
+            try { tcpServer?.close(); } catch { /* noop */ }
+            wsServer = undefined;
+            tcpServer = undefined;
+            wsPort = undefined;
+            tcpPort = undefined;
+            wsToken = undefined;
+        };
+
+        const startGeometryBridgeServers = async () => {
+            cleanupServers();
+            wsToken = crypto.randomBytes(16).toString('hex');
+
+            const flushPendingFrames = () => {
+                if (pendingWsFrames.length === 0) return;
+                const frames = pendingWsFrames;
+                pendingWsFrames = [];
+                pendingWsBytes = 0;
+                for (const frame of frames) {
+                    for (const c of wsClients) {
+                        if (c.readyState === c.OPEN) {
+                            c.send(frame, { binary: true });
+                        }
+                    }
+                }
+            };
+
+            wsServer = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+            wsServer.on('connection', (socket: WebSocket) => {
+                let authed = false;
+                socket.once('message', (data: RawData) => {
+                    const token = data.toString();
+                    if (token !== wsToken) {
+                        socket.close();
+                        return;
+                    }
+                    authed = true;
+                    wsClients.add(socket);
+                    flushPendingFrames();
+                });
+                socket.on('close', () => {
+                    if (authed) wsClients.delete(socket);
+                });
+            });
+
+            tcpServer = net.createServer((sock) => {
+                tcpSockets.add(sock);
+                let pending = Buffer.alloc(0);
+                sock.on('data', (chunk) => {
+                    pending = Buffer.concat([pending, chunk]);
+                    while (pending.length >= 4) {
+                        const frameLen = pending.readUInt32LE(0);
+                        if (pending.length < 4 + frameLen) break;
+                        const frame = Buffer.from(pending.subarray(4, 4 + frameLen));
+                        pending = pending.subarray(4 + frameLen);
+
+                        let hasOpenClient = false;
+                        for (const c of wsClients) {
+                            if (c.readyState === c.OPEN) {
+                                hasOpenClient = true;
+                                break;
+                            }
+                        }
+
+                        if (!hasOpenClient) {
+                            if (pendingWsBytes + frame.length <= MAX_PENDING_WS_BYTES) {
+                                pendingWsFrames.push(frame);
+                                pendingWsBytes += frame.length;
+                            } else {
+                                // Best-effort: if the buffer is full, drop frames to avoid unbounded memory.
+                                // This should be rare; the webview normally connects right after initialize.
+                            }
+                            continue;
+                        }
+
+                        for (const c of wsClients) {
+                            if (c.readyState === c.OPEN) {
+                                c.send(frame, { binary: true });
+                            }
+                        }
+                    }
+                });
+                sock.on('close', () => tcpSockets.delete(sock));
+            });
+
+            await new Promise<void>((resolve) => wsServer!.once('listening', () => resolve()));
+            await new Promise<void>((resolve) => {
+                tcpServer!.listen(0, '127.0.0.1', () => resolve());
+            });
+
+            const wsAddr = wsServer.address();
+            if (typeof wsAddr === 'object' && wsAddr) {
+                wsPort = wsAddr.port;
+            }
+            const tcpAddr = tcpServer.address();
+            if (typeof tcpAddr === 'object' && tcpAddr) {
+                tcpPort = tcpAddr.port;
+            }
+
+            if (!wsPort || !tcpPort || !wsToken) {
+                throw new Error('Failed to start geometry bridge servers');
+            }
+            return { wsPort, tcpPort, wsToken };
+        };
+
         // Set initial HTML content
         const config = vscode.workspace.getConfiguration('gdsPreview');
         const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
@@ -106,7 +245,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const flowControlStep = config.get<number>('flowControlStep', 5);
         const useInstancing = config.get<boolean>('useInstancing', true);
 
-        const updateWebview = (cellName?: string, isNegativeMode?: boolean) => {
+        const updateWebview = async (cellName?: string, isNegativeMode?: boolean) => {
             // console.log(`updateWebview called with cellName: ${cellName}`);
             // Kill existing process if any
             if (currentProcess) {
@@ -129,6 +268,8 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             let args: string[] = [];
 
             if (engineType === 'rust') {
+                await startGeometryBridgeServers();
+
                 const isWindows = process.platform === 'win32';
                 const platform = process.platform;
                 const arch = process.arch;
@@ -160,6 +301,14 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
                 args = [filePath, tempDir, cellName || "", chunkSize.toString(), flowControlStep.toString()];
                 args.push((currentRenderingEngine === 'webgl' && useInstancing) ? "1" : "0");
+
+                // Stream binary geometry over TCP to the extension, then forward over WebSocket to the webview
+                args.push('--tcp-port');
+                args.push(String(tcpPort ?? 0));
+
+                // For WebGL, request pre-triangulated vertices from Rust (no earcut in webview)
+                args.push('--geom-mode');
+                args.push(currentRenderingEngine === 'webgl' ? 'triangles' : 'polygons');
                 if (isNegativeMode) {
                     args.push("--negative");
                 }
@@ -246,6 +395,10 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
                         if (isFirstLine) {
                             console.log("[PythonProcess] Sending initialize command to webview");
+                            // Inject WS endpoint for Rust geometry streaming
+                            if (engineType === 'rust' && wsPort && wsToken) {
+                                (data as any).ws = { port: wsPort, token: wsToken };
+                            }
                             // Metadata
                             webviewPanel.webview.postMessage({
                                 command: 'initialize',
@@ -325,8 +478,19 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                     return;
                 }
 
-                // Send success message to webview
-                webviewPanel.webview.postMessage({ command: 'status', message: 'Loaded successfully' });
+                // Send success message to webview (only if engine didn't emit a done message)
+                if (!isEngineReady) {
+                    webviewPanel.webview.postMessage({ command: 'status', message: 'Loaded successfully' });
+                }
+
+                // Small files can finish before the webview connects/auths to WS; keep the bridge
+                // alive briefly to allow buffered frames to flush and avoid losing the only chunk.
+                if (engineType === 'rust') {
+                    const delayMs = (pendingWsFrames.length > 0 && wsClients.size === 0) ? 3000 : 750;
+                    cleanupTimer = setTimeout(() => cleanupServers(), delayMs);
+                } else {
+                    cleanupServers();
+                }
 
                 // Clean up temp dir (even though we didn't use it for files, we created it)
                 fs.rm(tempDir, { recursive: true, force: true }, (err) => {
@@ -358,18 +522,18 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 switch (message.command) {
                     case 'changeCell':
                         currentCell = message.cellName;
-                        updateWebview(message.cellName);
+                        void updateWebview(message.cellName);
                         return;
                     case 'reloadNegative':
                         isNegative = message.isNegative;
-                        updateWebview(currentCell, message.isNegative);
+                        void updateWebview(currentCell, message.isNegative);
                         return;
                     case 'syncNegativeState':
                         isNegative = message.isNegative;
                         return;
                     case 'reset':
                         isNegative = false;
-                        updateWebview(currentCell);
+                        void updateWebview(currentCell);
                         return;
                     case 'stop':
                         if (currentProcess) {
@@ -384,7 +548,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         return;
                     case 'ready':
                         console.log("Received ready message from webview");
-                        updateWebview(currentCell);
+                        void updateWebview(currentCell);
                         return;
                     case 'updateConfig':
                         const config = vscode.workspace.getConfiguration('gdsPreview');
@@ -429,7 +593,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 });
             }
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {
-                updateWebview(currentCell, isNegative);
+                void updateWebview(currentCell, isNegative);
             }
             if (e.affectsConfiguration('gdsPreview.maxWorkers') || e.affectsConfiguration('gdsPreview.chunkSize') || e.affectsConfiguration('gdsPreview.flowControlStep') || e.affectsConfiguration('gdsPreview.useInstancing')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
@@ -474,6 +638,7 @@ function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri, en
     let html = fs.readFileSync(htmlPath, 'utf-8');
 
     const config = {
+        engineType: vscode.workspace.getConfiguration('gdsPreview').get<string>('engineType', 'rust'),
         engine,
         fastModeThreshold,
         labelFontSize,

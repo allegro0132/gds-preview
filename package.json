@@ -164,10 +164,14 @@
     "lint": "eslint src",
     "test": "vscode-test"
   },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "@types/vscode": "^1.100.0",
+    "@types/ws": "^8.18.1",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
     "eslint": "^9.39.1",
