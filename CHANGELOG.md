@@ -4,6 +4,18 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.3.9] - 2025-12-27
+
+### Added
+- **OASIS Support (Rust Backend)**:
+  - Added/validated OASIS parsing support in the Rust backend, including OASIS files using **CBLOCK** compression.
+
+### Fixed
+- **OASIS Parsing (CBLOCK / PROPERTY)**:
+  - Fixed stream desynchronization when decoding `PROPERTY` records with extended value lists (value count > 255), which could cause invalid/unknown record IDs while parsing compressed OASIS files.
+
+- **OASIS Repetition**
+
 ## [0.3.4] - 2025-12-24
 
 ### Added
