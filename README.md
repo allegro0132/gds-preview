@@ -23,11 +23,14 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
 - **Configuration Panel**: Quick access to rendering settings and parameters directly within the viewer.
 - **Performance Optimizations**:
   - **Parallel Loading**: Uses Web Workers to parse and process geometry off the main thread.
-  - **Binary Streaming**: Uses efficient binary data transfer (Base64 encoded buffers) to minimize overhead between Python and VS Code.
+  - **Binary Streaming**:
+    - **Python engine**: Streams geometry via Base64-encoded binary chunks.
+    - **Rust engine**: Streams geometry as raw binary frames over a local WebSocket (served by the extension) to avoid Base64 overhead.
   - **Incremental Rendering**: Streams data for all modes (WebGL, Canvas) to provide immediate visual feedback.
   - **Viewport Culling**: Only renders what is visible on screen.
   - **Dynamic Level of Detail (LOD)**: Automatically reduces detail during fast interactions to maintain high frame rates.
   - **Instanced Rendering**: Uses hardware instancing (`ANGLE_instanced_arrays`) to efficiently render hierarchical designs with thousands of repeated cells.
+  - **Backend Triangulation (Rust/WebGL)**: WebGL triangles can be generated in the Rust backend (parallelized) and streamed directly to the webview.
 - **Advanced Analysis**:
   - **Net Tracing**: Double-click any object to highlight all physically connected polygons (Net Tracing). Works across instances and hierarchy.
   - **Layer Soloing**: Double-click a layer in the sidebar to instantly isolate it.
@@ -83,8 +86,10 @@ This extension contributes the following settings:
   * Scale factor for port arrows.
 
 * `gdsPreview.maxWorkers`: (Default: `-1`)
-  * Number of Web Workers to use for parallel processing.
-  * Set to `-1` to automatically use all available CPU cores.
+  * Controls parallelism.
+  * **Python engine**: Number of Web Workers.
+  * **Rust engine**: Number of Rayon worker threads for triangulation and search.
+  * Set to `-1` to use all available CPU cores.
 
 * `gdsPreview.chunkSize`: (Default: `2000`)
   * Number of polygons per data chunk streamed from Python.
@@ -121,6 +126,11 @@ This extension supports two backend engines for processing GDSII/OASIS files:
 - **Dependencies**: None (standalone binary)
 - **Formats**: Supports both **GDSII** and **OASIS** (including **CBLOCK**-compressed OASIS)
 - **Best For**: Large files, production use (once stable)
+
+#### Rust Streaming Notes
+
+- In Rust + WebGL mode, geometry may be streamed as binary frames over a local WebSocket.
+- When streaming in true incremental mode, the total number of chunks may be unknown up-front (the UI will show per-chunk progress without a total).
 
 ### Python Backend
 - **Status**: Stable, original implementation
