@@ -4,6 +4,7 @@ use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{anyhow, Result};
+use flate2::read::DeflateDecoder;
 use flate2::read::ZlibDecoder;
 
 use crate::gds_loader::parse_port_string;
@@ -130,6 +131,7 @@ enum Repetition {
 struct OasisStream<R: Read + Seek> {
     reader: R,
     buffer: Option<Vec<u8>>,
+    buffer_stack: Vec<(Vec<u8>, usize)>,
     cursor: usize,
     pushback: Option<u8>,
     pos: u64,
@@ -140,6 +142,7 @@ impl<R: Read + Seek> OasisStream<R> {
         Self {
             reader,
             buffer: None,
+            buffer_stack: Vec::new(),
             cursor: 0,
             pushback: None,
             pos: 0,
@@ -152,6 +155,10 @@ impl<R: Read + Seek> OasisStream<R> {
                 if self.cursor >= buf.len() {
                     self.buffer = None;
                     self.cursor = 0;
+                    if let Some((prev, prev_cursor)) = self.buffer_stack.pop() {
+                        self.buffer = Some(prev);
+                        self.cursor = prev_cursor;
+                    }
                     continue;
                 }
                 let available = buf.len() - self.cursor;
@@ -163,6 +170,10 @@ impl<R: Read + Seek> OasisStream<R> {
                 if self.cursor >= buf.len() {
                     self.buffer = None;
                     self.cursor = 0;
+                    if let Some((prev, prev_cursor)) = self.buffer_stack.pop() {
+                        self.buffer = Some(prev);
+                        self.cursor = prev_cursor;
+                    }
                 }
             } else {
                 self.reader.read_exact(target)?;
@@ -591,10 +602,48 @@ impl<R: Read + Seek> OasisStream<R> {
             return Err(anyhow!("Unsupported CBLOCK compression method {}", method));
         }
         let mut data = vec![0u8; compressed as usize];
-        self.reader.read_exact(&mut data)?;
-        let mut decoder = ZlibDecoder::new(&data[..]);
-        let mut output = Vec::with_capacity(uncompressed as usize);
-        decoder.read_to_end(&mut output)?;
+        self.read_exact(&mut data)?;
+
+        // If we are currently reading from a buffer (e.g. inside another CBLOCK), preserve the
+        // remainder so we can resume after this CBLOCK is fully consumed.
+        if let Some(prev) = self.buffer.take() {
+            self.buffer_stack.push((prev, self.cursor));
+            self.cursor = 0;
+        }
+
+        // Most writers (including gdstk) use raw deflate for method 0 (no zlib header).
+        // Some tools appear to wrap it in zlib anyway; for robustness we try raw first and
+        // fall back to zlib if the result is clearly invalid.
+        let decode = |use_zlib: bool| -> Result<Vec<u8>> {
+            let mut output = Vec::with_capacity(uncompressed as usize);
+            if use_zlib {
+                let mut decoder = ZlibDecoder::new(&data[..]);
+                decoder.read_to_end(&mut output)?;
+            } else {
+                let mut decoder = DeflateDecoder::new(&data[..]);
+                decoder.read_to_end(&mut output)?;
+            }
+            if output.len() != uncompressed as usize {
+                return Err(anyhow!(
+                    "CBLOCK uncompressed size mismatch: header={} decoded={}",
+                    uncompressed,
+                    output.len()
+                ));
+            }
+            Ok(output)
+        };
+
+        let mut output = match decode(false) {
+            Ok(out) => out,
+            Err(_) => decode(true)?,
+        };
+
+        // Heuristic sanity check: first non-PAD byte in a record stream should be a valid
+        // record id (0..=34). If not, try zlib as an alternative.
+        if output.iter().copied().find(|b| *b != 0).is_some_and(|b| b > 34) {
+            output = decode(true)?;
+        }
+
         self.buffer = Some(output);
         self.cursor = 0;
         Ok(())
@@ -824,19 +873,33 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
         // bugs and silently drop geometry (e.g. repetitions), which is unacceptable for
         // correctness-driven use cases.
         if record_byte > 34 {
+            let tail_len = 16usize.min(record_trace.len());
+            let tail = &record_trace[record_trace.len().saturating_sub(tail_len)..];
             return Err(anyhow!(
-                "Unsupported OASIS record id {} at record {} (offset {})",
+                "Unsupported OASIS record id {} at record {} (offset {}). recent_record_ids={:?} in_buffer={} buffer_stack_depth={} ",
                 record_byte,
                 record_idx,
-                stream.pos.saturating_sub(1)
+                stream.pos.saturating_sub(1),
+                tail,
+                stream.buffer.is_some(),
+                stream.buffer_stack.len(),
             ));
         }
 
         let record = OasisRecord::from(record_byte);
-        if trace_records && record_idx < DEBUG_RECORD_LIMIT {
+        if trace_records
+            && (record_idx < DEBUG_RECORD_LIMIT
+                || record == OasisRecord::CBlock
+                || (record_idx % 1000 == 0))
+        {
             eprintln!(
-                "[oasis] record {} id=0x{:02x} ({:?}) at pos {}",
-                record_idx, record_byte, record, record_start
+                "[oasis] record {} id=0x{:02x} ({:?}) at pos {} in_buffer={} stack={}",
+                record_idx,
+                record_byte,
+                record,
+                record_start,
+                stream.buffer.is_some(),
+                stream.buffer_stack.len(),
             );
         }
         record_idx += 1;
@@ -1474,9 +1537,9 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 if info & 0x08 != 0 {
                     values = modal_property_values.clone();
                 } else {
-                    let mut num_values = info >> 4;
+                    let mut num_values: u64 = (info >> 4) as u64;
                     if num_values == 15 {
-                        num_values = stream.read_var_uint()? as u8;
+                        num_values = stream.read_var_uint()?;
                     }
                     for _ in 0..num_values {
                         let dtype = stream.read_u8()?;
@@ -1508,7 +1571,7 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                                     String::new()
                                 }
                             }
-                            _ => String::new(),
+                            _ => return Err(anyhow!("Unsupported OASIS PROPERTY value data type {}", dtype)),
                         };
                         if !val.is_empty() {
                             values.push(val);
