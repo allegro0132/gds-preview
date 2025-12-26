@@ -478,10 +478,14 @@ export function setupListeners() {
 
     if (elements.maxWorkersInput) {
         elements.maxWorkersInput.addEventListener('change', (e) => {
+            const v = parseInt(e.target.value);
+            if (!Number.isNaN(v)) {
+                state.config.maxWorkers = v;
+            }
             state.vscode.postMessage({
                 command: 'updateConfig',
                 key: 'maxWorkers',
-                value: parseInt(e.target.value)
+                value: v
             });
         });
     }

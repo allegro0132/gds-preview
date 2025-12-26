@@ -17,6 +17,7 @@ use crate::geometry::{Library, Cell, Matrix3x3, Point, Polygon};
 use crate::streamer::{ChunkMsg, send_binary_chunk, send_json};
 use crate::analysis::SearchEngine;
 use anyhow::Result;
+use rayon::prelude::*;
 use std::net::TcpStream;
 
 #[derive(Parser, Debug)]
@@ -453,7 +454,7 @@ impl PolyChunkBuilder {
 struct TriChunkBuilder {
     chunk_index: u32,
     poly_count: u32,
-    vertices: Vec<f32>,
+    pending_coords: Vec<Vec<f64>>,
 }
 
 impl TriChunkBuilder {
@@ -461,7 +462,7 @@ impl TriChunkBuilder {
         Self {
             chunk_index: 0,
             poly_count: 0,
-            vertices: Vec::new(),
+            pending_coords: Vec::new(),
         }
     }
 }
@@ -830,30 +831,39 @@ fn push_triangles_transformed(
         coords.push(pt.y);
     }
 
-    let indices: Vec<usize> = match earcutr::earcut(&coords, &[], 2) {
-        Ok(v) => v,
-        Err(_) => return Ok(()),
-    };
-    if indices.is_empty() {
-        return Ok(());
-    }
-
+    // Chunk-level parallelism: buffer transformed polygon coordinates and triangulate in parallel on flush.
+    // This keeps memory bounded to roughly chunk_size polygons per layer.
     let builder = builders.entry(layer_key.to_string()).or_insert_with(TriChunkBuilder::new);
     builder.poly_count += 1;
-    builder.vertices.reserve(indices.len() * 2);
-    for idx in indices {
-        let i2 = idx * 2;
-        if i2 + 1 >= coords.len() {
-            continue;
-        }
-        builder.vertices.push(coords[i2] as f32);
-        builder.vertices.push(coords[i2 + 1] as f32);
-    }
+    builder.pending_coords.push(coords);
 
     if args.chunk_size > 0 && (builder.poly_count as usize) >= args.chunk_size {
         flush_triangle_builder(layer_key, builder, args, transport, kind, cell_name)?;
     }
     Ok(())
+}
+
+fn triangulate_coords_to_vertices(coords: &[f64]) -> Vec<f32> {
+    if coords.len() < 6 {
+        return Vec::new();
+    }
+    let indices: Vec<usize> = match earcutr::earcut(coords, &[], 2) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    if indices.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(indices.len() * 2);
+    for idx in indices {
+        let i2 = idx * 2;
+        if i2 + 1 >= coords.len() {
+            continue;
+        }
+        out.push(coords[i2] as f32);
+        out.push(coords[i2 + 1] as f32);
+    }
+    out
 }
 
 fn flush_triangle_builder(
@@ -864,15 +874,30 @@ fn flush_triangle_builder(
     kind: WsChunkKind,
     cell_name: Option<&str>,
 ) -> Result<()> {
-    if builder.vertices.is_empty() {
+    if builder.pending_coords.is_empty() {
         builder.poly_count = 0;
         return Ok(());
     }
 
-    let vertex_count: u32 = (builder.vertices.len() / 2) as u32;
-    let mut payload = Vec::with_capacity(4 + builder.vertices.len() * 4);
+    // Triangulate buffered polygons in parallel.
+    let parts: Vec<Vec<f32>> = builder
+        .pending_coords
+        .par_iter()
+        .map(|coords| triangulate_coords_to_vertices(coords))
+        .collect();
+
+    let total_floats: usize = parts.iter().map(|v| v.len()).sum();
+    if total_floats == 0 {
+        builder.chunk_index += 1;
+        builder.poly_count = 0;
+        builder.pending_coords.clear();
+        return Ok(());
+    }
+
+    let vertex_count: u32 = (total_floats / 2) as u32;
+    let mut payload = Vec::with_capacity(4 + total_floats * 4);
     payload.extend_from_slice(&vertex_count.to_le_bytes());
-    for v in &builder.vertices {
+    for v in parts.iter().flat_map(|v| v.iter()) {
         payload.extend_from_slice(&v.to_le_bytes());
     }
 
@@ -880,7 +905,7 @@ fn flush_triangle_builder(
 
     builder.chunk_index += 1;
     builder.poly_count = 0;
-    builder.vertices.clear();
+    builder.pending_coords.clear();
     Ok(())
 }
 

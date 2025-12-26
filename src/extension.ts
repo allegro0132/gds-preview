@@ -261,6 +261,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             const flowControlStep = currentConfig.get<number>('flowControlStep', 5);
             const useInstancing = currentConfig.get<boolean>('useInstancing', true);
             const enableProfiling = currentConfig.get<boolean>('enableProfiling', false);
+            const maxWorkers = currentConfig.get<number>('maxWorkers', -1);
 
             const tempDir = path.join(os.tmpdir(), `gds_preview_data_${Date.now()}`);
 
@@ -342,7 +343,16 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 console.time("EngineProcess");
             }
 
-            const childProcess = cp.spawn(processCmd, args);
+            const env: NodeJS.ProcessEnv = { ...process.env };
+            // Use the same setting as the front-end worker pool to control Rust/Rayon parallelism.
+            // -1 (or <=0) means "use all available CPU threads" (Rayon default).
+            if (engineType === 'rust' && typeof maxWorkers === 'number' && maxWorkers > 0) {
+                env.RAYON_NUM_THREADS = String(maxWorkers);
+            } else {
+                delete env.RAYON_NUM_THREADS;
+            }
+
+            const childProcess = cp.spawn(processCmd, args, { env });
             currentProcess = childProcess;
             isEngineReady = false;
 
