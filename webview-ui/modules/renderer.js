@@ -1,6 +1,6 @@
 import { state, elements } from './state.js';
 import { updateStatus, darken, createShader, createProgram } from './utils.js';
-import { updateTransform, resizeCanvas, fitView, worldToScreen, applyRotationAndFlip, applyContextTransform } from './transform.js';
+import { updateTransform, resizeCanvas, fitView, worldToScreen, screenToWorld, applyRotationAndFlip, applyContextTransform } from './transform.js';
 
 export function draw() {
     if (state.currentEngine !== 'canvas') return;
@@ -11,15 +11,16 @@ export function draw() {
         applyContextTransform(elements.ctx);
 
         // Viewport culling
-        const viewMinX = (0 - state.offsetX) / state.scale;
-        const viewMaxX = (elements.canvas.width - state.offsetX) / state.scale;
-        const viewMaxY = (0 - state.offsetY) / -state.scale;
-        const viewMinY = (elements.canvas.height - state.offsetY) / -state.scale;
+        // Calculate the 4 corners of the viewport in world space to handle rotation and flip correctly
+        const p1 = screenToWorld(0, 0);
+        const p2 = screenToWorld(elements.canvas.width, 0);
+        const p3 = screenToWorld(elements.canvas.width, elements.canvas.height);
+        const p4 = screenToWorld(0, elements.canvas.height);
 
-        const vMinX = Math.min(viewMinX, viewMaxX);
-        const vMaxX = Math.max(viewMinX, viewMaxX);
-        const vMinY = Math.min(viewMinY, viewMaxY);
-        const vMaxY = Math.max(viewMinY, viewMaxY);
+        const vMinX = Math.min(p1.x, p2.x, p3.x, p4.x);
+        const vMaxX = Math.max(p1.x, p2.x, p3.x, p4.x);
+        const vMinY = Math.min(p1.y, p2.y, p3.y, p4.y);
+        const vMaxY = Math.max(p1.y, p2.y, p3.y, p4.y);
 
         let polyCount = 0;
         let culledCount = 0;
@@ -168,15 +169,16 @@ export function drawWebGL() {
     state.gl.enableVertexAttribArray(positionLocation);
 
     // Viewport culling
-    const viewMinX = (0 - state.offsetX) / state.scale;
-    const viewMaxX = (state.gl.canvas.width - state.offsetX) / state.scale;
-    const viewMaxY = (0 - state.offsetY) / -state.scale;
-    const viewMinY = (state.gl.canvas.height - state.offsetY) / -state.scale;
+    // Calculate the 4 corners of the viewport in world space to handle rotation and flip correctly
+    const p1 = screenToWorld(0, 0);
+    const p2 = screenToWorld(state.gl.canvas.width, 0);
+    const p3 = screenToWorld(state.gl.canvas.width, state.gl.canvas.height);
+    const p4 = screenToWorld(0, state.gl.canvas.height);
 
-    const vMinX = Math.min(viewMinX, viewMaxX);
-    const vMaxX = Math.max(viewMinX, viewMaxX);
-    const vMinY = Math.min(viewMinY, viewMaxY);
-    const vMaxY = Math.max(viewMinY, viewMaxY);
+    const vMinX = Math.min(p1.x, p2.x, p3.x, p4.x);
+    const vMaxX = Math.max(p1.x, p2.x, p3.x, p4.x);
+    const vMinY = Math.min(p1.y, p2.y, p3.y, p4.y);
+    const vMaxY = Math.max(p1.y, p2.y, p3.y, p4.y);
 
     const renderOrder = [...state.allLayers].reverse();
 
