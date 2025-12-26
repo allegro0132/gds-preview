@@ -52,38 +52,45 @@ export function handleWorkerMessage(e, workerIndex) {
     const cellName = id.cellName || "UNKNOWN_CELL";
 
     if (polygons) {
-        if (state.currentEngine === 'canvas' || state.currentEngine === 'webgl') {
+        // Always calculate bbox for polygons as it might be needed for definitionBBoxes or if we store them
+        for (const poly of polygons) {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (let i = 0; i < poly.length; i += 2) {
+                const x = poly[i];
+                const y = poly[i + 1];
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+            poly.bbox = { minX, minY, maxX, maxY };
+        }
+
+        if (type === 'definition') {
+            // Always update definitionBBoxes as it is used for culling in WebGL
+            if (!state.definitionBBoxes[cellName]) state.definitionBBoxes[cellName] = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+            const db = state.definitionBBoxes[cellName];
             for (const poly of polygons) {
-                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                for (let i = 0; i < poly.length; i += 2) {
-                    const x = poly[i];
-                    const y = poly[i + 1];
-                    if (x < minX) minX = x;
-                    if (x > maxX) maxX = x;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
-                }
-                poly.bbox = { minX, minY, maxX, maxY };
+                if (poly.bbox.minX < db.minX) db.minX = poly.bbox.minX;
+                if (poly.bbox.minY < db.minY) db.minY = poly.bbox.minY;
+                if (poly.bbox.maxX > db.maxX) db.maxX = poly.bbox.maxX;
+                if (poly.bbox.maxY > db.maxY) db.maxY = poly.bbox.maxY;
             }
 
-            if (type === 'definition') {
+            // Optimization: Only store geometry if NOT in WebGL mode (to save RAM)
+            if (state.currentEngine !== 'webgl') {
                 if (!state.definitionGeometry[cellName]) state.definitionGeometry[cellName] = {};
                 if (!state.definitionGeometry[cellName][layerKey]) state.definitionGeometry[cellName][layerKey] = [];
                 state.definitionGeometry[cellName][layerKey].push(...polygons);
-
-                if (!state.definitionBBoxes[cellName]) state.definitionBBoxes[cellName] = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-                const db = state.definitionBBoxes[cellName];
-                for (const poly of polygons) {
-                    if (poly.bbox.minX < db.minX) db.minX = poly.bbox.minX;
-                    if (poly.bbox.minY < db.minY) db.minY = poly.bbox.minY;
-                    if (poly.bbox.maxX > db.maxX) db.maxX = poly.bbox.maxX;
-                    if (poly.bbox.maxY > db.maxY) db.maxY = poly.bbox.maxY;
-                }
-            } else {
+            }
+        } else {
+            // Optimization: Only store geometry if NOT in WebGL mode
+            if (state.currentEngine !== 'webgl') {
                 if (!state.geometry[layerKey]) state.geometry[layerKey] = [];
                 state.geometry[layerKey].push(...polygons);
             }
         }
+
         if (state.currentEngine === 'canvas') requestAnimationFrame(draw);
     }
 
@@ -219,7 +226,8 @@ export function handleAddLayerChunkB64(layerKey, chunkIndex, totalChunks, b64Dat
 export function handleAddLayerChunk(layerKey, data) {
     const polys = data.polygons;
 
-    if (state.currentEngine === 'canvas' || state.currentEngine === 'webgl') {
+    // Optimization: In WebGL mode, we don't store raw polygons in main thread to save memory
+    if (state.currentEngine === 'canvas') {
         if (polys && polys.length > 0) {
             if (!state.geometry[layerKey]) state.geometry[layerKey] = [];
 

@@ -54,36 +54,43 @@ self.onmessage = function (e) {
 
         const { id } = e.data;
 
+        let vertices = null;
+        let triCount = 0;
+        let verticesTransfer = [];
+
+        // Perform triangulation first if requested
+        if (e.data.alsoTriangulate) {
+            if (!self.earcut) {
+                throw new Error("Earcut library not loaded");
+            }
+
+            const verts = [];
+            for (const flat of polygons) {
+                // Polygons are already flat [x,y,x,y...] from Python
+                const triangles = earcut(flat);
+                triCount += triangles.length / 3;
+                for (let i = 0; i < triangles.length; i++) {
+                    const index = triangles[i];
+                    verts.push(flat[index * 2], flat[index * 2 + 1]);
+                }
+            }
+            vertices = new Float32Array(verts);
+            verticesTransfer = [vertices.buffer];
+        }
+
         if (e.data.returnPolygons) {
             const t1 = performance.now();
             // Return raw polygons (Float32Arrays)
             // If binary, we can transfer the buffer back to save memory
-            // BUT if we also need to triangulate (for WebGL), we cannot transfer the buffer yet!
-            const transfer = (e.data.isBinary && !e.data.alsoTriangulate) ? [e.data.buffer] : [];
+            // Now that triangulation is done (if any), we can safely transfer the buffer
+            const transfer = e.data.isBinary ? [e.data.buffer] : [];
             self.postMessage({ id, polygons, duration: t1 - t0 }, transfer);
-
-            if (!e.data.alsoTriangulate) return;
         }
 
-        if (!self.earcut) {
-            throw new Error("Earcut library not loaded");
+        if (vertices) {
+            const t1 = performance.now();
+            self.postMessage({ id, vertices, duration: t1 - t0, triCount }, verticesTransfer);
         }
-
-        const vertices = [];
-        let triCount = 0;
-        for (const flat of polygons) {
-            // Polygons are already flat [x,y,x,y...] from Python
-            const triangles = earcut(flat);
-            triCount += triangles.length / 3;
-            for (let i = 0; i < triangles.length; i++) {
-                const index = triangles[i];
-                vertices.push(flat[index * 2], flat[index * 2 + 1]);
-            }
-        }
-
-        const floatArray = new Float32Array(vertices);
-        const t1 = performance.now();
-        self.postMessage({ id, vertices: floatArray, duration: t1 - t0, triCount }, [floatArray.buffer]);
     } catch (err) {
         console.error("Worker processing error:", err);
         self.postMessage({ type: 'error', id: e.data.id, error: err.toString() });
