@@ -1,13 +1,15 @@
 mod gds_parser;
 mod geometry;
 mod gds_loader;
+mod oasis_parser;
 mod streamer;
 mod analysis;
 
 use clap::Parser;
-use std::fs::File;
 use std::collections::{HashMap, HashSet};
-use std::io::BufRead;
+use std::fs::File;
+use std::io::{BufRead, Read, Seek};
+use std::path::Path;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use std::time::Instant;
@@ -19,7 +21,7 @@ use anyhow::Result;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(help = "Input GDS file path")]
+    #[arg(help = "Input layout file path (GDSII or OASIS)")]
     input: String,
 
     #[arg(help = "Output directory (for compatibility)")]
@@ -44,8 +46,24 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let file = File::open(&args.input)?;
-    let mut library = gds_loader::load_gds(file)?;
+    // Decide format (GDS vs OASIS) in the entrypoint so loader stays format-specific.
+    let mut file = File::open(&args.input)?;
+
+    let mut magic = [0u8; 12];
+    let is_oasis = file.read_exact(&mut magic).map(|_| &magic[..11] == b"%SEMI-OASIS").unwrap_or(false);
+    file.rewind()?;
+
+    let ext_is_oasis = Path::new(&args.input)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.eq_ignore_ascii_case("oas") || s.eq_ignore_ascii_case("oasis"))
+        .unwrap_or(false);
+
+    let mut library = if is_oasis || ext_is_oasis {
+        oasis_parser::load_oasis(file)?
+    } else {
+        gds_loader::load_gds(file)?
+    };
 
     // Extract ports from $$$CONTEXT_INFO$$$ if it exists
     let mut context_ports = Vec::new();
