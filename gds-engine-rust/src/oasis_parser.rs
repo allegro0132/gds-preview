@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::io::{Read, Seek};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{anyhow, Result};
 use flate2::read::ZlibDecoder;
@@ -112,8 +113,8 @@ enum OasisDataType {
 
 #[derive(Debug, Default, Clone, Copy)]
 struct RectRepetition {
-    columns: u16,
-    rows: u16,
+    columns: u64,
+    rows: u64,
     spacing_x: f64,
     spacing_y: f64,
 }
@@ -122,7 +123,7 @@ struct RectRepetition {
 enum Repetition {
     Rect(RectRepetition),
     Offsets(Vec<Point>),
-    Regular { columns: u16, rows: u16, v1: Point, v2: Point },
+    Regular { columns: u64, rows: u64, v1: Point, v2: Point },
 }
 
 #[derive(Debug)]
@@ -385,21 +386,20 @@ impl<R: Read + Seek> OasisStream<R> {
             pts.push(Point { x: 0.0, y: 0.0 });
         }
 
-        // Lightweight debug to trace early point lists; helps diagnose stream alignment issues.
+        // Lightweight debug to trace the first few point lists; helps diagnose stream alignment issues.
         const DEBUG_LIMIT: usize = 5;
-        static mut PL_DEBUG_COUNT: usize = 0;
-        unsafe {
-            if PL_DEBUG_COUNT < DEBUG_LIMIT {
-                eprintln!(
-                    "[oasis] point_list type=0x{:02x} base={} start={} grid={} count={}",
-                    list_type,
-                    base_type,
-                    explicit_start,
-                    grid,
-                    count
-                );
-                PL_DEBUG_COUNT += 1;
-            }
+        static PL_DEBUG_COUNT: AtomicUsize = AtomicUsize::new(0);
+        let pl_idx = PL_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed);
+        let do_debug = std::env::var("OASIS_TRACE").ok().as_deref() == Some("1") && pl_idx < DEBUG_LIMIT;
+        if do_debug {
+            eprintln!(
+                "[oasis] point_list type=0x{:02x} base={} start={} grid={} count={}",
+                list_type,
+                base_type,
+                explicit_start,
+                grid,
+                count
+            );
         }
 
         match base_type {
@@ -470,47 +470,48 @@ impl<R: Read + Seek> OasisStream<R> {
 
         *current = pts;
 
-        unsafe {
-            if PL_DEBUG_COUNT <= DEBUG_LIMIT {
-                eprintln!(
-                    "[oasis] point_list consumed {} bytes (pos {}->{}), final points={}",
-                    self.pos.saturating_sub(start_pos),
-                    start_pos,
-                    self.pos,
-                    current.len()
-                );
-            }
+        if do_debug {
+            eprintln!(
+                "[oasis] point_list consumed {} bytes (pos {}->{}), final points={}",
+                self.pos.saturating_sub(start_pos),
+                start_pos,
+                self.pos,
+                current.len()
+            );
         }
         Ok(list_type)
     }
 
-    fn read_repetition(&mut self, scale: f64) -> Result<Option<Repetition>> {
+    fn read_repetition(&mut self, scale: f64, previous: &Option<Repetition>) -> Result<Option<Repetition>> {
         let rtype = self.read_u8()?;
+        // OASIS repetition type 0 means "Previous" (reuse the modal repetition).
+        // "No repetition" is represented by omitting the repetition field entirely.
         if rtype == 0 {
-            return Ok(None);
+            return Ok(previous.clone());
         }
         match rtype {
             1 => {
-                let cols = 2 + self.read_var_uint()? as u16;
-                let rows = 2 + self.read_var_uint()? as u16;
+                let cols = 2 + self.read_var_uint()?;
+                let rows = 2 + self.read_var_uint()?;
                 let spacing_x = self.read_var_uint()? as f64 * scale;
                 let spacing_y = self.read_var_uint()? as f64 * scale;
                 Ok(Some(Repetition::Rect(RectRepetition { columns: cols, rows, spacing_x, spacing_y })))
             }
             2 => {
-                let cols = 2 + self.read_var_uint()? as u16;
+                let cols = 2 + self.read_var_uint()?;
                 let spacing_x = self.read_var_uint()? as f64 * scale;
                 Ok(Some(Repetition::Rect(RectRepetition { columns: cols, rows: 1, spacing_x, spacing_y: 0.0 })))
             }
             3 => {
-                let rows = 2 + self.read_var_uint()? as u16;
+                let rows = 2 + self.read_var_uint()?;
                 let spacing_y = self.read_var_uint()? as f64 * scale;
                 Ok(Some(Repetition::Rect(RectRepetition { columns: 1, rows, spacing_x: 0.0, spacing_y })))
             }
             4 | 5 => {
                 // Explicit X coordinates
                 let mut offsets = Vec::new();
-                let mut count = self.read_var_uint()?;
+                // gdstk/oasis.cpp: count = 1 + read_unsigned_integer
+                let mut count = 1 + self.read_var_uint()?;
                 let mut grid = scale;
                 if rtype == 5 {
                     grid *= self.read_var_uint()? as f64;
@@ -541,8 +542,8 @@ impl<R: Read + Seek> OasisStream<R> {
             }
             8 => {
                 // Regular with two vectors
-                let cols = 2 + self.read_var_uint()? as u16;
-                let rows = 2 + self.read_var_uint()? as u16;
+                let cols = 2 + self.read_var_uint()?;
+                let rows = 2 + self.read_var_uint()?;
                 let (dx1, dy1) = self.read_gdelta()?;
                 let (dx2, dy2) = self.read_gdelta()?;
                 Ok(Some(Repetition::Regular {
@@ -554,7 +555,7 @@ impl<R: Read + Seek> OasisStream<R> {
             }
             9 => {
                 // Regular with perpendicular vector
-                let cols = 2 + self.read_var_uint()? as u16;
+                let cols = 2 + self.read_var_uint()?;
                 let (dx1, dy1) = self.read_gdelta()?;
                 let v1 = Point { x: dx1 as f64 * scale, y: dy1 as f64 * scale };
                 let v2 = Point { x: -v1.y, y: v1.x };
@@ -563,15 +564,14 @@ impl<R: Read + Seek> OasisStream<R> {
             10 | 11 => {
                 // Explicit offset list
                 let mut offsets = Vec::new();
-                let count = self.read_var_uint()?; // number of delta entries (inclusive per spec)
+                // gdstk/oasis.cpp: count = 1 + read_unsigned_integer
+                let count = 1 + self.read_var_uint()?;
                 let mut grid = scale;
                 if rtype == 11 {
                     grid *= self.read_var_uint()? as f64;
                 }
-                // First offset is always the origin; the remaining entries are deltas.
-                offsets.push(Point { x: 0.0, y: 0.0 });
                 let mut v = Point { x: 0.0, y: 0.0 };
-                for _ in 0..=count {
+                for _ in 0..count {
                     let (dx, dy) = self.read_gdelta()?;
                     v.x += dx as f64 * grid;
                     v.y += dy as f64 * grid;
@@ -579,7 +579,7 @@ impl<R: Read + Seek> OasisStream<R> {
                 }
                 Ok(Some(Repetition::Offsets(offsets)))
             }
-            _ => Ok(None),
+            _ => Err(anyhow!("Unsupported repetition type {}", rtype)),
         }
     }
 
@@ -646,9 +646,6 @@ fn push_polygon_with_repetition(
         }
         Some(Repetition::Offsets(offsets)) => {
             for off in offsets {
-                if off.x == 0.0 && off.y == 0.0 {
-                    continue; // base already added
-                }
                 let mut pts = Vec::with_capacity(base_points.len());
                 for p in base_points {
                     pts.push(Point { x: p.x + off.x, y: p.y + off.y });
@@ -776,35 +773,67 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
     let mut record_idx: usize = 0;
     let mut record_trace: Vec<u8> = Vec::new();
     const DEBUG_RECORD_LIMIT: usize = 20;
+
+    // Optional stats (enable with OASIS_STATS=1)
+    let collect_stats = std::env::var("OASIS_STATS").ok().as_deref() == Some("1");
+    let trace_records = std::env::var("OASIS_TRACE").ok().as_deref() == Some("1");
+    let mut record_counts: [u64; 35] = [0; 35];
+    let mut geom_poly_counts: [u64; 35] = [0; 35];
+
+    // Repetition summary (per base geometry element)
+    // kind index: 0 none, 1 rect, 2 regular, 3 offsets
+    let mut rep_kind_counts: [u64; 4] = [0; 4];
+    let mut rep_kind_extra: [u64; 4] = [0; 4];
+
+    let mut note_repetition = |rep: &Option<Repetition>| {
+        if !collect_stats {
+            return;
+        }
+        match rep {
+            None => {
+                rep_kind_counts[0] += 1;
+            }
+            Some(Repetition::Rect(r)) => {
+                rep_kind_counts[1] += 1;
+                let total = r.columns.saturating_mul(r.rows);
+                rep_kind_extra[1] += total.saturating_sub(1);
+            }
+            Some(Repetition::Regular { columns, rows, .. }) => {
+                rep_kind_counts[2] += 1;
+                let total = columns.saturating_mul(*rows);
+                rep_kind_extra[2] += total.saturating_sub(1);
+            }
+            Some(Repetition::Offsets(v)) => {
+                rep_kind_counts[3] += 1;
+                rep_kind_extra[3] += v.len() as u64;
+            }
+        }
+    };
     loop {
-        let mut record_start = stream.pos;
-        let mut record_byte = stream.read_u8()?;
+        let record_start = stream.pos;
+        let record_byte = stream.read_u8()?;
         record_trace.push(record_byte);
 
-        // Best-effort resync: if we encounter an invalid record id, skip forward until the next
-        // plausible id (<= 34) or give up after a small window. This avoids bailing out on
-        // stray bytes (e.g., unexpected padding) and keeps parsing the remainder of the file.
-        if record_byte > 34 {
-            let mut skipped: usize = 0;
-            while record_byte > 34 && skipped < 1024 {
-                record_byte = stream.read_u8()?;
-                record_trace.push(record_byte);
-                skipped += 1;
-            }
-            if record_byte > 34 {
-                return Err(anyhow!(
-                    "Unsupported OASIS record id {} at record {} (offset {}), skipped {} bytes while trying to resync",
-                    record_byte, record_idx, stream.pos, skipped
-                ));
-            }
-            record_start = stream.pos - 1; // adjust to the position of the recovered record id
-            if record_idx < DEBUG_RECORD_LIMIT {
-                eprintln!("[oasis] resync skipped {} bytes to id 0x{:02x} at pos {}", skipped, record_byte, record_start);
+        if collect_stats {
+            if (record_byte as usize) < record_counts.len() {
+                record_counts[record_byte as usize] += 1;
             }
         }
 
+        // Fail fast on invalid record IDs. A best-effort resync can hide stream misalignment
+        // bugs and silently drop geometry (e.g. repetitions), which is unacceptable for
+        // correctness-driven use cases.
+        if record_byte > 34 {
+            return Err(anyhow!(
+                "Unsupported OASIS record id {} at record {} (offset {})",
+                record_byte,
+                record_idx,
+                stream.pos.saturating_sub(1)
+            ));
+        }
+
         let record = OasisRecord::from(record_byte);
-        if record_idx < DEBUG_RECORD_LIMIT {
+        if trace_records && record_idx < DEBUG_RECORD_LIMIT {
             eprintln!(
                 "[oasis] record {} id=0x{:02x} ({:?}) at pos {}",
                 record_idx, record_byte, record, record_start
@@ -995,27 +1024,84 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 };
 
                 let placement_rep = if info & 0x08 != 0 {
-                    let rep = stream.read_repetition(scale)?;
+                    let rep = stream.read_repetition(scale, &modal_place_repetition)?;
                     modal_place_repetition = rep.clone();
                     rep
                 } else {
-                    modal_place_repetition.clone()
+                    None
                 };
 
-                if let Some(Repetition::Rect(rep)) = placement_rep {
-                    reference.columns = rep.columns.max(1);
-                    reference.rows = rep.rows.max(1);
-                    reference.col_spacing = Point { x: rep.spacing_x, y: 0.0 };
-                    reference.row_spacing = Point { x: 0.0, y: rep.spacing_y };
-                }
+                // Expand repetition. Our `Reference` supports rectangular and general regular arrays
+                // via (columns, rows, col_spacing, row_spacing). Explicit offset lists are expanded
+                // into multiple single-instance references.
+                match placement_rep {
+                    Some(Repetition::Rect(rep)) => {
+                        reference.columns = rep.columns.clamp(1, u16::MAX as u64) as u16;
+                        reference.rows = rep.rows.clamp(1, u16::MAX as u64) as u16;
+                        reference.col_spacing = Point { x: rep.spacing_x, y: 0.0 };
+                        reference.row_spacing = Point { x: 0.0, y: rep.spacing_y };
 
-                if let Some(name) = target.0 {
-                    reference.cell_name = name;
-                } else if let Some(idx) = target.1 {
-                    pending_ref_ids.push((cell_idx, library.cells[cell_idx].references.len(), idx as u64));
-                }
+                        if let Some(name) = target.0 {
+                            reference.cell_name = name;
+                        } else if let Some(idx) = target.1 {
+                            pending_ref_ids.push((cell_idx, library.cells[cell_idx].references.len(), idx as u64));
+                        }
+                        library.cells[cell_idx].references.push(reference);
+                    }
+                    Some(Repetition::Regular { columns, rows, v1, v2 }) => {
+                        reference.columns = columns.clamp(1, u16::MAX as u64) as u16;
+                        reference.rows = rows.clamp(1, u16::MAX as u64) as u16;
+                        reference.col_spacing = v1;
+                        reference.row_spacing = v2;
 
-                library.cells[cell_idx].references.push(reference);
+                        if let Some(name) = target.0 {
+                            reference.cell_name = name;
+                        } else if let Some(idx) = target.1 {
+                            pending_ref_ids.push((cell_idx, library.cells[cell_idx].references.len(), idx as u64));
+                        }
+                        library.cells[cell_idx].references.push(reference);
+                    }
+                    Some(Repetition::Offsets(offsets)) => {
+                        // Base instance at modal origin
+                        let base_origin = reference.origin.clone();
+
+                        let mut push_single = |mut r: Reference, name: &Option<String>, idx: &Option<u64>| {
+                            if let Some(n) = name.clone() {
+                                r.cell_name = n;
+                            } else if let Some(i) = idx {
+                                pending_ref_ids.push((cell_idx, library.cells[cell_idx].references.len(), *i));
+                            }
+                            library.cells[cell_idx].references.push(r);
+                        };
+
+                        let (name_opt, idx_opt) = (target.0.clone(), target.1.map(|v| v as u64));
+                        reference.columns = 1;
+                        reference.rows = 1;
+                        reference.col_spacing = Point { x: 0.0, y: 0.0 };
+                        reference.row_spacing = Point { x: 0.0, y: 0.0 };
+
+                        // push base
+                        reference.origin = base_origin.clone();
+                        push_single(reference.clone(), &name_opt, &idx_opt);
+
+                        for off in offsets {
+                            if off.x == 0.0 && off.y == 0.0 {
+                                continue;
+                            }
+                            let mut r = reference.clone();
+                            r.origin = Point { x: base_origin.x + off.x, y: base_origin.y + off.y };
+                            push_single(r, &name_opt, &idx_opt);
+                        }
+                    }
+                    None => {
+                        if let Some(name) = target.0 {
+                            reference.cell_name = name;
+                        } else if let Some(idx) = target.1 {
+                            pending_ref_ids.push((cell_idx, library.cells[cell_idx].references.len(), idx as u64));
+                        }
+                        library.cells[cell_idx].references.push(reference);
+                    }
+                }
             }
             OasisRecord::Text => {
                 if current_cell.is_none() {
@@ -1081,7 +1167,7 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 label.y = modal_geom_pos.y;
 
                 if info & 0x04 != 0 {
-                    modal_geom_repetition = stream.read_repetition(scale)?;
+                    modal_geom_repetition = stream.read_repetition(scale, &modal_geom_repetition)?;
                 }
 
                 library.cells[cell_idx].labels.push(label);
@@ -1117,13 +1203,14 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     Point { x: modal_geom_pos.x, y: modal_geom_pos.y + modal_geom_dim.y },
                 ];
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale)?;
+                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
                     modal_geom_repetition = rep.clone();
                     rep
                 } else {
-                    modal_geom_repetition = None;
                     None
                 };
+                note_repetition(&repetition);
+                let before = library.cells[cell_idx].polygons.len();
                 push_polygon_with_repetition(
                     &mut library.cells[cell_idx].polygons,
                     modal_layer,
@@ -1131,6 +1218,10 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     &pts,
                     repetition,
                 );
+                if collect_stats {
+                    geom_poly_counts[OasisRecord::Rectangle as usize] +=
+                        (library.cells[cell_idx].polygons.len() - before) as u64;
+                }
             }
             OasisRecord::Polygon => {
                 if current_cell.is_none() {
@@ -1138,7 +1229,7 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
                 let cell_idx = current_cell.unwrap();
                 let info = stream.read_u8()?;
-                if record_idx < DEBUG_RECORD_LIMIT {
+                if trace_records && record_idx < DEBUG_RECORD_LIMIT {
                     eprintln!("[oasis] polygon info=0x{:02x} pos={}", info, stream.pos - 1);
                 }
 
@@ -1163,13 +1254,14 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     .map(|p| Point { x: p.x + modal_geom_pos.x, y: p.y + modal_geom_pos.y })
                     .collect();
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale)?;
+                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
                     modal_geom_repetition = rep.clone();
                     rep
                 } else {
-                    modal_geom_repetition = None;
                     None
                 };
+                note_repetition(&repetition);
+                let before = library.cells[cell_idx].polygons.len();
                 push_polygon_with_repetition(
                     &mut library.cells[cell_idx].polygons,
                     modal_layer,
@@ -1177,6 +1269,10 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     &points,
                     repetition,
                 );
+                if collect_stats {
+                    geom_poly_counts[OasisRecord::Polygon as usize] +=
+                        (library.cells[cell_idx].polygons.len() - before) as u64;
+                }
             }
             OasisRecord::Path => {
                 if current_cell.is_none() {
@@ -1208,13 +1304,14 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     pts.push(Point { x: p.x + modal_geom_pos.x, y: p.y + modal_geom_pos.y });
                 }
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale)?;
+                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
                     modal_geom_repetition = rep.clone();
                     rep
                 } else {
-                    modal_geom_repetition = None;
                     None
                 };
+                note_repetition(&repetition);
+                let before = library.cells[cell_idx].polygons.len();
                 push_polygon_with_repetition(
                     &mut library.cells[cell_idx].polygons,
                     modal_layer,
@@ -1222,6 +1319,10 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     &pts,
                     repetition,
                 );
+                if collect_stats {
+                    geom_poly_counts[OasisRecord::Path as usize] +=
+                        (library.cells[cell_idx].polygons.len() - before) as u64;
+                }
                 let _ = modal_path_halfwidth; // kept for completeness
             }
             OasisRecord::TrapezoidAb | OasisRecord::TrapezoidA | OasisRecord::TrapezoidB => {
@@ -1250,13 +1351,14 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     delta_b,
                 );
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale)?;
+                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
                     modal_geom_repetition = rep.clone();
                     rep
                 } else {
-                    modal_geom_repetition = None;
                     None
                 };
+                note_repetition(&repetition);
+                let before = library.cells[cell_idx].polygons.len();
                 push_polygon_with_repetition(
                     &mut library.cells[cell_idx].polygons,
                     modal_layer,
@@ -1264,6 +1366,10 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     &pts,
                     repetition,
                 );
+                if collect_stats {
+                    geom_poly_counts[record as usize] +=
+                        (library.cells[cell_idx].polygons.len() - before) as u64;
+                }
             }
             OasisRecord::CTrapezoid => {
                 // Simplify ctrapezoid as bounding rectangle
@@ -1291,13 +1397,14 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 ];
                 let _ = modal_ctrapezoid_type;
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale)?;
+                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
                     modal_geom_repetition = rep.clone();
                     rep
                 } else {
-                    modal_geom_repetition = None;
                     None
                 };
+                note_repetition(&repetition);
+                let before = library.cells[cell_idx].polygons.len();
                 push_polygon_with_repetition(
                     &mut library.cells[cell_idx].polygons,
                     modal_layer,
@@ -1305,6 +1412,10 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     &pts,
                     repetition,
                 );
+                if collect_stats {
+                    geom_poly_counts[OasisRecord::CTrapezoid as usize] +=
+                        (library.cells[cell_idx].polygons.len() - before) as u64;
+                }
             }
             OasisRecord::Circle => {
                 if current_cell.is_none() { return Err(anyhow!("CIRCLE outside of CELL")); }
@@ -1323,13 +1434,13 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
                 let pts = circle_points(modal_geom_pos.clone(), modal_circle_radius, 48);
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale)?;
+                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
                     modal_geom_repetition = rep.clone();
                     rep
                 } else {
-                    modal_geom_repetition = None;
                     None
                 };
+                let before = library.cells[cell_idx].polygons.len();
                 push_polygon_with_repetition(
                     &mut library.cells[cell_idx].polygons,
                     modal_layer,
@@ -1337,6 +1448,10 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     &pts,
                     repetition,
                 );
+                if collect_stats {
+                    geom_poly_counts[OasisRecord::Circle as usize] +=
+                        (library.cells[cell_idx].polygons.len() - before) as u64;
+                }
             }
             OasisRecord::Property | OasisRecord::LastProperty => {
                 let info = if record == OasisRecord::LastProperty { 0x08 } else { stream.read_u8()? };
@@ -1430,6 +1545,31 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 stream.enter_cblock()?;
             }
         }
+    }
+
+    if collect_stats {
+        eprintln!("[oasis] record counts (by id):");
+        for (id, count) in record_counts.iter().enumerate() {
+            if *count == 0 {
+                continue;
+            }
+            let rec = OasisRecord::from(id as u8);
+            let polys = geom_poly_counts.get(id).copied().unwrap_or(0);
+            if polys > 0 {
+                eprintln!("  id={:02} {:?}: {} records, {} polygons", id, rec, count, polys);
+            } else {
+                eprintln!("  id={:02} {:?}: {} records", id, rec, count);
+            }
+        }
+
+        eprintln!("[oasis] repetition summary (per base element):");
+        eprintln!("  none   : {} elements, {} extra copies", rep_kind_counts[0], rep_kind_extra[0]);
+        eprintln!("  rect   : {} elements, {} extra copies", rep_kind_counts[1], rep_kind_extra[1]);
+        eprintln!("  regular: {} elements, {} extra copies", rep_kind_counts[2], rep_kind_extra[2]);
+        eprintln!("  offsets: {} elements, {} extra copies", rep_kind_counts[3], rep_kind_extra[3]);
+        let base = rep_kind_counts.iter().sum::<u64>();
+        let extra = rep_kind_extra.iter().sum::<u64>();
+        eprintln!("  total  : {} base, {} extra, {} expanded", base, extra, base + extra);
     }
 
     // Resolve pending names
