@@ -563,7 +563,7 @@ impl<R: Read + Seek> OasisStream<R> {
             10 | 11 => {
                 // Explicit offset list
                 let mut offsets = Vec::new();
-                let count = self.read_var_uint()?; // number of delta entries
+                let count = self.read_var_uint()?; // number of delta entries (inclusive per spec)
                 let mut grid = scale;
                 if rtype == 11 {
                     grid *= self.read_var_uint()? as f64;
@@ -571,7 +571,7 @@ impl<R: Read + Seek> OasisStream<R> {
                 // First offset is always the origin; the remaining entries are deltas.
                 offsets.push(Point { x: 0.0, y: 0.0 });
                 let mut v = Point { x: 0.0, y: 0.0 };
-                for _ in 0..count {
+                for _ in 0..=count {
                     let (dx, dy) = self.read_gdelta()?;
                     v.x += dx as f64 * grid;
                     v.y += dy as f64 * grid;
