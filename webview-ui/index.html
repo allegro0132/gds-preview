@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}' 'unsafe-eval' {{cspSource}} https://cdn.jsdelivr.net https://unpkg.com; img-src {{cspSource}} data: blob:; worker-src blob: {{cspSource}};">
+        content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}' 'unsafe-eval' {{cspSource}} https://cdn.jsdelivr.net https://unpkg.com; img-src {{cspSource}} data: blob:; worker-src blob: {{cspSource}}; connect-src {{cspSource}} https: ws: wss:;">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GDS Preview</title>
     <link href="{{styleUri}}" rel="stylesheet" />

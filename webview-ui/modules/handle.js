@@ -3,6 +3,181 @@ import { updateStatus, checkCompletion } from './utils.js';
 import { draw, drawWebGL, drawLabels, setupCanvasMode, setupSvgMode, setupWebGLMode } from './renderer.js';
 import { updateTransform, resizeCanvas, fitView } from './transform.js';
 
+let geometryWs = null;
+let geometryWsConnected = false;
+const wsTextDecoder = new TextDecoder();
+
+function formatChunkProgress(chunkIndex, totalChunks) {
+    const cur = (chunkIndex ?? 0) + 1;
+    if (totalChunks && totalChunks > 0) return `(${cur}/${totalChunks})`;
+    return `(${cur})`;
+}
+
+function maybeSignalReadyForNext(chunkIndex, totalChunks) {
+    if (state.flowControlStep !== -1 && (chunkIndex % state.flowControlStep === 0 || (totalChunks > 0 && chunkIndex === totalChunks - 1))) {
+        setTimeout(() => {
+            state.vscode.postMessage({ command: 'ready_for_next' });
+        }, 0);
+    }
+}
+
+function addWebGLVerticesChunk(layerKey, type, cellName, vertices) {
+    if (!vertices || vertices.length === 0 || !state.gl) return;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < vertices.length; i += 2) {
+        const x = vertices[i];
+        const y = vertices[i + 1];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+    const bbox = { minX, minY, maxX, maxY };
+
+    const buffer = state.gl.createBuffer();
+    state.gl.bindBuffer(state.gl.ARRAY_BUFFER, buffer);
+    state.gl.bufferData(state.gl.ARRAY_BUFFER, vertices, state.gl.STATIC_DRAW);
+
+    if (type === 'definition') {
+        const key = cellName || "UNKNOWN_CELL";
+        if (!state.definitions[key]) state.definitions[key] = {};
+        if (!state.definitions[key][layerKey]) state.definitions[key][layerKey] = [];
+        state.definitions[key][layerKey].push({ buffer, count: vertices.length / 2, bbox });
+    } else {
+        if (!state.layerBuffers[layerKey]) state.layerBuffers[layerKey] = [];
+        state.layerBuffers[layerKey].push({ buffer, count: vertices.length / 2, bbox });
+    }
+
+    requestAnimationFrame(drawWebGL);
+}
+
+function handleGeometryWsBinary(buffer) {
+    const dv = new DataView(buffer);
+    let off = 0;
+    const version = dv.getUint8(off); off += 1;
+    const kind = dv.getUint8(off); off += 1;
+    off += 2; // flags
+    const chunkIndex = dv.getUint32(off, true); off += 4;
+    const totalChunks = dv.getUint32(off, true); off += 4;
+    const layerLen = dv.getUint16(off, true); off += 2;
+    const cellLen = dv.getUint16(off, true); off += 2;
+
+    const layerKey = wsTextDecoder.decode(new Uint8Array(buffer, off, layerLen));
+    off += layerLen;
+    const cellNameStr = wsTextDecoder.decode(new Uint8Array(buffer, off, cellLen));
+    off += cellLen;
+    const cellName = cellNameStr || null;
+
+    // Payload starts at off
+    if (version !== 1) {
+        console.warn('Unsupported WS geometry frame version:', version);
+        return;
+    }
+
+    // kind:
+    // 1 FlatTriangles
+    // 2 DefinitionTriangles
+    // 3 Instances
+    // 4 FlatPolygons
+    if (kind === 3) {
+        const payload = buffer.slice(off);
+        const count = handleInstanceData(cellName, payload);
+        updateStatus(`Loading Instances ${cellName || 'Unknown'} ${formatChunkProgress(chunkIndex, totalChunks)} - ${count} items`);
+        maybeSignalReadyForNext(chunkIndex, totalChunks);
+        return;
+    }
+
+    if (kind === 1 || kind === 2) {
+        const vertexCount = dv.getUint32(off, true);
+        const floatsByteLen = vertexCount * 2 * 4;
+        const start = off + 4;
+        const end = start + floatsByteLen;
+        if (end > buffer.byteLength) {
+            console.warn('WS geometry frame truncated (triangles):', { layerKey, cellName, chunkIndex, totalChunks, vertexCount, byteLength: buffer.byteLength, start, end });
+            return;
+        }
+
+        // The float payload is not guaranteed to be 4-byte aligned because the header includes
+        // variable-length UTF-8 strings. Slice into a new ArrayBuffer to guarantee alignment.
+        const vertices = new Float32Array(buffer.slice(start, end));
+        addWebGLVerticesChunk(layerKey, kind === 2 ? 'definition' : 'flat', cellName, vertices);
+        updateStatus(`Loading ${layerKey || 'Unknown'}${cellName ? ' ' + cellName : ''} ${formatChunkProgress(chunkIndex, totalChunks)}`);
+        maybeSignalReadyForNext(chunkIndex, totalChunks);
+        return;
+    }
+
+    if (kind === 4) {
+        // Polygons payload: u32 polyCount, then per poly: u32 nPoints, then nPoints * (f32 x, f32 y)
+        const polyCount = dv.getUint32(off, true);
+        off += 4;
+        const polys = [];
+        for (let p = 0; p < polyCount; p++) {
+            const nPoints = dv.getUint32(off, true);
+            off += 4;
+            const flat = new Float32Array(nPoints * 2);
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (let i = 0; i < nPoints; i++) {
+                const x = dv.getFloat32(off, true); off += 4;
+                const y = dv.getFloat32(off, true); off += 4;
+                flat[i * 2] = x;
+                flat[i * 2 + 1] = y;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+            flat.bbox = { minX, minY, maxX, maxY };
+            polys.push(flat);
+        }
+
+        if (state.currentEngine === 'canvas') {
+            if (polys.length > 0) {
+                if (!state.geometry[layerKey]) state.geometry[layerKey] = [];
+                state.geometry[layerKey].push(...polys);
+                requestAnimationFrame(draw);
+            }
+        }
+
+        updateStatus(`Loading ${layerKey || 'Unknown'}${cellName ? ' ' + cellName : ''} ${formatChunkProgress(chunkIndex, totalChunks)}`);
+        maybeSignalReadyForNext(chunkIndex, totalChunks);
+        return;
+    }
+
+    console.warn('Unknown WS geometry frame kind:', kind);
+}
+
+function connectGeometryWebSocket(wsInfo) {
+    if (!wsInfo || !wsInfo.port || !wsInfo.token) return;
+    if (geometryWsConnected) return;
+
+    const url = `ws://127.0.0.1:${wsInfo.port}`;
+    geometryWs = new WebSocket(url);
+    geometryWs.binaryType = 'arraybuffer';
+
+    geometryWs.onopen = () => {
+        geometryWsConnected = true;
+        geometryWs.send(wsInfo.token);
+    };
+    geometryWs.onmessage = (ev) => {
+        if (typeof ev.data === 'string') return;
+        state.pendingTasks++;
+        try {
+            handleGeometryWsBinary(ev.data);
+        } finally {
+            state.pendingTasks--;
+            checkCompletion();
+        }
+    };
+    geometryWs.onerror = (e) => {
+        console.error('Geometry WebSocket error', e);
+        updateStatus('Geometry WebSocket error');
+    };
+    geometryWs.onclose = () => {
+        geometryWsConnected = false;
+    };
+}
+
 export function handleSearchWorkerMessage(e) {
     const msg = e.data;
     if (msg.command === 'status') {
@@ -274,6 +449,7 @@ export function handleInitialize(data) {
     state.startTime = performance.now();
     state.pendingTasks = 0;
     state.pythonFinished = false;
+    state.completionShown = false;
     state.isViewFitted = false;
     state.hasUserInteracted = false;
     updateStatus("Initializing...");
@@ -416,11 +592,19 @@ export function handleInitialize(data) {
         }
     }
 
+    // If Rust provides a WebSocket endpoint for binary geometry, connect now.
+    // (This replaces CHUNK_B64 base64 chunks and front-end earcut triangulation.)
+    if (data.ws) {
+        connectGeometryWebSocket(data.ws);
+    }
+
     updateStatus("Loading layers...");
 }
 
 export function handleDataUpdate(data) {
     updateStatus("Rendering...");
+
+    state.completionShown = false;
 
     state.highlightedPolygons = [];
     state.searchWorker.postMessage({ command: 'clear' });

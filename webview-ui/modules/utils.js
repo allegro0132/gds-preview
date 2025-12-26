@@ -6,7 +6,9 @@ export function updateStatus(msg) {
 }
 
 export function checkCompletion() {
+    if (state.completionShown) return;
     if (state.pythonFinished && state.pendingTasks === 0) {
+        state.completionShown = true;
         const elapsed = (performance.now() - state.startTime).toFixed(0);
         updateStatus(`Loaded successfully in ${elapsed}ms`);
         if (state.enableProfiling) {

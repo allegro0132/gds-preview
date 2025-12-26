@@ -5,6 +5,7 @@ export const state = {
     startTime: 0,
     pendingTasks: 0,
     pythonFinished: false,
+    completionShown: false,
     geometry: {},
     labels: {},
     ports: [],
