@@ -3,7 +3,7 @@
   "displayName": "GDSII Preview",
   "description": "A high-performance GDSII/OASIS file viewer for VS Code with WebGL acceleration.",
   "icon": "icon.png",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "publisher": "AllegroMorphic",
   "repository": {
     "type": "git",
