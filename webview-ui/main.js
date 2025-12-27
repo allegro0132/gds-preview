@@ -83,6 +83,12 @@ window.addEventListener('message', event => {
         requestAnimationFrame(drawLabels);
     } else if (message.command === 'found') {
         handleSearchWorkerMessage({ data: message });
+    } else if (message.command === 'done') {
+        // Rust engine signals initial load completion via {command:"done"}.
+        // VS Code extension maps this to a status message, but desktop UI may forward it as-is.
+        // Mark completion here so we can show "Loaded successfully in Xms" after first paint.
+        state.pythonFinished = true;
+        checkCompletion();
     } else if (message.command === 'status') {
         updateStatus(message.message);
         if (message.message === 'Loaded successfully') {
@@ -132,6 +138,14 @@ window.addEventListener('message', event => {
                 elements.viewportDebounceMsInput.value = state.viewportDebounceMs;
             }
             console.log("Updated viewportDebounceMs to:", state.viewportDebounceMs);
+        }
+
+        if (message.enableProfiling !== undefined) {
+            state.enableProfiling = !!message.enableProfiling;
+            if (elements.enableProfilingInput) {
+                elements.enableProfilingInput.checked = state.enableProfiling;
+            }
+            console.log("Updated enableProfiling to:", state.enableProfiling);
         }
     } else if (message.command === 'reset') {
         state.flipState = { x: 1, y: state.currentEngine === 'svg' ? -1 : 1 };

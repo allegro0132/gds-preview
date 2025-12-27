@@ -157,6 +157,12 @@ class GdsView {
                 const geomMode = gdsConfig.renderingEngine === 'webgl' ? 'triangles' : 'polygons';
                 this._bridge = await createGeometryBridge({ viewId: this.id });
                 args.push('--tcp-port', String(this._bridge.tcpPort), '--geom-mode', geomMode);
+
+                // Optional: viewport-driven streaming to reduce renderer memory for huge layouts.
+                // Requires WebGL + instancing + binary geometry (TCP->WS).
+                if (gdsConfig.renderingEngine === 'webgl' && gdsConfig.useInstancing && gdsConfig.viewportStreaming) {
+                    args.push('--viewport-streaming');
+                }
             } catch (e) {
                 console.warn(`[View ${this.id}] Failed to create geometry bridge, falling back to stdout chunks: ${e?.message || e}`);
                 if (this._bridge) {
@@ -240,7 +246,9 @@ class GdsView {
                             this.browserView.webContents.send('webview-message', data);
                         } else if (data.command === 'done') {
                             this._doneSent = true;
-                            this.browserView.webContents.send('webview-message', { command: 'status', message: 'Loaded successfully' });
+                            // Let the shared webview UI decide when/how to show completion.
+                            // (It waits for paint and pins the message briefly.)
+                            this.browserView.webContents.send('webview-message', { command: 'done' });
                         }
                     }
                 } catch (e) {
@@ -261,7 +269,9 @@ class GdsView {
                     }
                 } else {
                     if (!this._doneSent) {
-                        this.browserView.webContents.send('webview-message', { command: 'status', message: 'Loaded successfully' });
+                        // Fallback: some engines may exit cleanly without emitting a done line.
+                        // Emit done so the webview can display completion consistently.
+                        this.browserView.webContents.send('webview-message', { command: 'done' });
                     }
                 }
 
@@ -281,6 +291,11 @@ async function createGeometryBridge({ viewId }) {
         throw new Error('ws module not available');
     }
 
+    const profLog = (...args) => {
+        if (!gdsConfig.enableProfiling) return;
+        console.log(...args);
+    };
+
     const wsToken = crypto.randomBytes(16).toString('hex');
 
     // WebSocket server (renderer connects here)
@@ -294,8 +309,31 @@ async function createGeometryBridge({ viewId }) {
     let earlyBytes = 0;
     const EARLY_LIMIT = 64 * 1024 * 1024;
 
+    const stats = {
+        createdAt: Date.now(),
+        wsConnectedAt: null,
+        wsAuthedAt: null,
+        tcpConnectedAt: null,
+        firstFrameAt: null,
+        firstFrameKind: null,
+        framesSeen: 0,
+        bytesSeen: 0,
+        framesBuffered: 0,
+        bytesBuffered: 0,
+        flushCount: 0,
+        framesDropped: 0,
+        bytesDropped: 0,
+        bufferedHighWaterBytes: 0,
+        kindCounts: Object.create(null)
+    };
+
     const flushEarly = () => {
         if (authedClients.size === 0 || earlyFrames.length === 0) return;
+
+        stats.flushCount += 1;
+        profLog(
+            `[View ${viewId}] [prof] flushEarly: frames=${earlyFrames.length} bytes=${earlyBytes} clients=${authedClients.size}`
+        );
         for (const frame of earlyFrames) {
             for (const client of authedClients) {
                 try {
@@ -308,10 +346,41 @@ async function createGeometryBridge({ viewId }) {
     };
 
     const broadcastFrame = (frame) => {
+        stats.framesSeen += 1;
+        stats.bytesSeen += frame.length;
+        if (!stats.firstFrameAt) {
+            stats.firstFrameAt = Date.now();
+            const v = frame.length > 0 ? frame[0] : null;
+            const k = frame.length > 1 ? frame[1] : null;
+            stats.firstFrameKind = k;
+            profLog(
+                `[View ${viewId}] [prof] first frame: version=${v} kind=${k} bytes=${frame.length} t+${stats.firstFrameAt - stats.createdAt}ms`
+            );
+        }
+        if (frame.length > 0) {
+            const kind = frame.length > 1 ? frame[1] : null;
+            if (kind !== null) {
+                stats.kindCounts[kind] = (stats.kindCounts[kind] || 0) + 1;
+            }
+        }
+
         if (authedClients.size === 0) {
             if (earlyBytes + frame.length <= EARLY_LIMIT) {
                 earlyFrames.push(frame);
                 earlyBytes += frame.length;
+
+                stats.framesBuffered += 1;
+                stats.bytesBuffered += frame.length;
+                stats.bufferedHighWaterBytes = Math.max(stats.bufferedHighWaterBytes, earlyBytes);
+            }
+            else {
+                stats.framesDropped += 1;
+                stats.bytesDropped += frame.length;
+                if (stats.framesDropped === 1 || stats.framesDropped % 200 === 0) {
+                    profLog(
+                        `[View ${viewId}] [prof] EARLY_LIMIT overflow: droppedFrames=${stats.framesDropped} droppedBytes=${stats.bytesDropped} bufferedBytes=${earlyBytes} limit=${EARLY_LIMIT}`
+                    );
+                }
             }
             return;
         }
@@ -324,6 +393,11 @@ async function createGeometryBridge({ viewId }) {
 
     wss.on('connection', (socket) => {
         let authed = false;
+
+        if (!stats.wsConnectedAt) {
+            stats.wsConnectedAt = Date.now();
+            profLog(`[View ${viewId}] [prof] WS connected t+${stats.wsConnectedAt - stats.createdAt}ms`);
+        }
 
         socket.on('message', (data, isBinary) => {
             if (authed) return;
@@ -338,6 +412,11 @@ async function createGeometryBridge({ viewId }) {
             }
             authed = true;
             authedClients.add(socket);
+
+            if (!stats.wsAuthedAt) {
+                stats.wsAuthedAt = Date.now();
+                profLog(`[View ${viewId}] [prof] WS authed t+${stats.wsAuthedAt - stats.createdAt}ms (bufferedBytes=${earlyBytes})`);
+            }
             flushEarly();
         });
 
@@ -350,6 +429,11 @@ async function createGeometryBridge({ viewId }) {
     const tcpServer = net.createServer((sock) => {
         tcpSocket = sock;
         tcpSocket.setNoDelay(true);
+
+        if (!stats.tcpConnectedAt) {
+            stats.tcpConnectedAt = Date.now();
+            profLog(`[View ${viewId}] [prof] TCP connected t+${stats.tcpConnectedAt - stats.createdAt}ms`);
+        }
 
         let buffer = Buffer.alloc(0);
         tcpSocket.on('data', (chunk) => {
@@ -376,6 +460,17 @@ async function createGeometryBridge({ viewId }) {
             clearTimeout(closeTimer);
             closeTimer = null;
         }
+
+        profLog(
+            `[View ${viewId}] [prof] bridge closing: framesSeen=${stats.framesSeen} bytesSeen=${stats.bytesSeen} ` +
+            `bufferedHighWaterBytes=${stats.bufferedHighWaterBytes} droppedFrames=${stats.framesDropped} droppedBytes=${stats.bytesDropped} ` +
+            `flushCount=${stats.flushCount} wsConnectedAt=${stats.wsConnectedAt ? (stats.wsConnectedAt - stats.createdAt) + 'ms' : 'n/a'} ` +
+            `wsAuthedAt=${stats.wsAuthedAt ? (stats.wsAuthedAt - stats.createdAt) + 'ms' : 'n/a'} ` +
+            `tcpConnectedAt=${stats.tcpConnectedAt ? (stats.tcpConnectedAt - stats.createdAt) + 'ms' : 'n/a'} ` +
+            `firstFrameAt=${stats.firstFrameAt ? (stats.firstFrameAt - stats.createdAt) + 'ms' : 'n/a'} ` +
+            `kinds=${JSON.stringify(stats.kindCounts)}`
+        );
+
         try { if (tcpSocket) tcpSocket.destroy(); } catch (_) { }
         try { tcpServer.close(); } catch (_) { }
         try {
@@ -392,6 +487,8 @@ async function createGeometryBridge({ viewId }) {
     };
 
     console.log(`[View ${viewId}] Geometry bridge up: tcp=${tcpPort} ws=${wsPort}`);
+
+    profLog(`[View ${viewId}] [prof] EARLY_LIMIT=${EARLY_LIMIT} bytes`);
 
     return { tcpPort, wsPort, wsToken, close, closeAfter };
 }
@@ -653,7 +750,12 @@ const gdsConfig = {
     pythonPath: 'python', // Adjust if needed
     enableProfiling: false,
     flowControlStep: 5,
-    useInstancing: true
+    useInstancing: true,
+
+    // Viewport-driven streaming (WebGL + Rust)
+    viewportStreaming: false,
+    viewportPaddingFactor: 0.25,
+    viewportDebounceMs: 80
 };
 
 function getNonce() {
@@ -710,6 +812,9 @@ function generateHtml() {
         enableProfiling: gdsConfig.enableProfiling,
         flowControlStep: gdsConfig.flowControlStep,
         useInstancing: gdsConfig.useInstancing,
+        viewportStreaming: gdsConfig.viewportStreaming,
+        viewportPaddingFactor: gdsConfig.viewportPaddingFactor,
+        viewportDebounceMs: gdsConfig.viewportDebounceMs,
         workerUrl: `file://${geometryWorkerDest}`,
         searchWorkerUrl: `file://${searchWorkerDest}`
     };
@@ -1069,12 +1174,12 @@ ipcMain.on('vscode-message', (event, message) => {
                  gdsConfig[message.key] = message.value;
                  viewManager.saveSession();
 
-                 if (['maxWorkers', 'chunkSize', 'flowControlStep', 'useInstancing'].includes(message.key)) {
+                 if (['maxWorkers', 'chunkSize', 'flowControlStep', 'useInstancing', 'viewportStreaming'].includes(message.key)) {
                      viewManager.broadcastConfigChange();
                  } else if (['renderingEngine', 'pythonPath'].includes(message.key)) {
                      // For these we should probably just reload the current view's python
                      view.runEngine(view.currentCell, view.isNegative);
-                 } else if (['fastModeThreshold', 'labelFontSize', 'portFontSize', 'portArrowScale', 'maxSteps'].includes(message.key)) {
+                 } else if (['fastModeThreshold', 'labelFontSize', 'portFontSize', 'portArrowScale', 'maxSteps', 'viewportPaddingFactor', 'viewportDebounceMs', 'enableProfiling'].includes(message.key)) {
                      const settings = {};
                      settings[message.key] = message.value;
                      // Broadcast settings to all views or just active? Usually all settings are global
@@ -1088,6 +1193,20 @@ ipcMain.on('vscode-message', (event, message) => {
              }
              break;
         case 'find':
+             if (view.process && view.process.stdin) {
+                 view.process.stdin.write(JSON.stringify(message) + "\n");
+             }
+             break;
+        case 'viewport':
+             if (gdsConfig.enableProfiling) {
+                 try {
+                     console.log(`[View ${view.id}] [prof] viewport request -> engine`, {
+                         requestId: message.requestId,
+                         bbox: message.bbox,
+                         layers: Array.isArray(message.layers) ? message.layers.length : null
+                     });
+                 } catch (_) { }
+             }
              if (view.process && view.process.stdin) {
                  view.process.stdin.write(JSON.stringify(message) + "\n");
              }

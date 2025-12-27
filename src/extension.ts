@@ -603,7 +603,8 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 e.affectsConfiguration('gdsPreview.portArrowScale') ||
                 e.affectsConfiguration('gdsPreview.maxSteps') ||
                 e.affectsConfiguration('gdsPreview.viewportPaddingFactor') ||
-                e.affectsConfiguration('gdsPreview.viewportDebounceMs')) {
+                e.affectsConfiguration('gdsPreview.viewportDebounceMs') ||
+                e.affectsConfiguration('gdsPreview.enableProfiling')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
                 const newThreshold = config.get<number>('fastModeThreshold', 10);
                 const newFontSize = config.get<number>('labelFontSize', 12);
@@ -612,6 +613,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 const newMaxSteps = config.get<number>('maxSteps', 5000);
                 const viewportPaddingFactor = config.get<number>('viewportPaddingFactor', 0.25);
                 const viewportDebounceMs = config.get<number>('viewportDebounceMs', 80);
+                const enableProfiling = config.get<boolean>('enableProfiling', false);
                 webviewPanel.webview.postMessage({
                     command: 'updateSettings',
                     fastModeThreshold: newThreshold,
@@ -620,7 +622,8 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                     portArrowScale: newPortArrowScale,
                     maxSteps: newMaxSteps,
                     viewportPaddingFactor,
-                    viewportDebounceMs
+                    viewportDebounceMs,
+                    enableProfiling
                 });
             }
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {

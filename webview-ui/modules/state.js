@@ -116,6 +116,7 @@ export const elements = {
     viewportStreamingInput: null,
     viewportPaddingFactorInput: null,
     viewportDebounceMsInput: null,
+    enableProfilingInput: null,
     fontSizeInput: null,
     portFontSizeInput: null,
     portArrowScaleInput: null,
@@ -171,6 +172,7 @@ export function initializeState() {
     elements.viewportStreamingInput = document.getElementById('viewport-streaming-input');
     elements.viewportPaddingFactorInput = document.getElementById('viewport-padding-factor-input');
     elements.viewportDebounceMsInput = document.getElementById('viewport-debounce-ms-input');
+    elements.enableProfilingInput = document.getElementById('enable-profiling-input');
     elements.fontSizeInput = document.getElementById('font-size-input');
     elements.portFontSizeInput = document.getElementById('port-font-size-input');
     elements.portArrowScaleInput = document.getElementById('port-arrow-scale-input');

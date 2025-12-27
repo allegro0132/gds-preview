@@ -170,7 +170,11 @@ fn main() -> Result<()> {
             }));
         } else {
             let tcp_ref = tcp_stream.as_mut().ok_or_else(|| anyhow::anyhow!("--viewport-streaming requires --tcp-port"))?;
-            let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: args.flow_control_step };
+            // IMPORTANT: In viewport-streaming mode, stdin carries JSON commands (viewport/find/etc).
+            // The legacy flow-control mechanism reads from stdin inside `send()`, which can
+            // accidentally consume those JSON commands and make the first viewport request disappear.
+            // Disable stdin-based flow control for TCP streaming in this mode.
+            let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
             let instances_by_name = instances_by_name_opt.take().ok_or_else(|| anyhow::anyhow!("instances already consumed"))?;
             let rt = process_instanced_viewport_preamble(&library, main_cell, &args, &mut metadata, instances_by_name, &mut transport)?;
             viewport_runtime = Some(rt);
@@ -327,7 +331,8 @@ fn main() -> Result<()> {
                     }
 
                     let tcp_ref = tcp_stream.as_mut().ok_or_else(|| anyhow::anyhow!("tcp required"))?;
-                    let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: args.flow_control_step };
+                    // Keep stdin free for JSON commands; avoid consuming them in transport flow control.
+                    let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
                     stream_viewport_geometry(&library, rt, &args, &mut transport, req_id, (vminx, vmaxx, vminy, vmaxy), &active_layers)?;
                 }
             }
