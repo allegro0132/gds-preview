@@ -6,7 +6,7 @@ A high-performance GDSII/OASIS file viewer (offer Visual Studio Code extension +
 
 - **High-Performance Rendering**: View large GDSII layouts smoothly directly within VS Code.
 - **GDSII & OASIS Support**: Open both `.gds`/`.gdsii` and `.oas` files, including full OASIS files support (using **CBLOCK** compression and/or strict mode) with Rust backend.
-- **Multi-Engine Support**: Choose between WebGL (GPU), Canvas (CPU), or SVG rendering (deprecated, only using legacy Python backend).
+- **Multi-Engine Support**: Choose between WebGL (GPU), Canvas (CPU), or SVG rendering (deprecated, only support legacy Python backend).
 - **Text Rendering**: Displays text labels and annotations within the GDSII layout, with customizable colors.
 - **Port Visualization**:
   - Visualizes ports with orientation arrows and labels.
