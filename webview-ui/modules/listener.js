@@ -162,6 +162,12 @@ export function setupListeners() {
     });
 
     viewContainer.addEventListener('wheel', e => {
+        // If the user is scrolling inside the Configuration panel, do not treat it as a view interaction.
+        // Note: the handler is registered with capture=true on viewContainer, so we must gate it here.
+        if (elements.configPanel && elements.configPanel.contains(e.target)) {
+            return;
+        }
+
         if (state.currentEngine !== 'canvas' && state.currentEngine !== 'webgl' && state.currentEngine !== 'svg') return;
 
         if (state.currentEngine === 'svg') {
@@ -584,6 +590,48 @@ export function setupListeners() {
                 command: 'updateConfig',
                 key: 'useInstancing',
                 value: e.target.checked
+            });
+        });
+    }
+
+    if (elements.viewportStreamingInput) {
+        elements.viewportStreamingInput.addEventListener('change', (e) => {
+            const enabled = !!e.target.checked;
+            state.viewportStreaming = enabled;
+            state.vscode.postMessage({
+                command: 'updateConfig',
+                key: 'viewportStreaming',
+                value: enabled
+            });
+            // Enabling/disabling requires engine restart; extension will reload.
+        });
+    }
+
+    if (elements.viewportPaddingFactorInput) {
+        elements.viewportPaddingFactorInput.addEventListener('change', (e) => {
+            const v = parseFloat(e.target.value);
+            if (!Number.isNaN(v)) {
+                state.viewportPaddingFactor = v;
+            }
+            state.vscode.postMessage({
+                command: 'updateConfig',
+                key: 'viewportPaddingFactor',
+                value: v
+            });
+            scheduleViewportRequest();
+        });
+    }
+
+    if (elements.viewportDebounceMsInput) {
+        elements.viewportDebounceMsInput.addEventListener('change', (e) => {
+            const v = parseInt(e.target.value);
+            if (!Number.isNaN(v)) {
+                state.viewportDebounceMs = v;
+            }
+            state.vscode.postMessage({
+                command: 'updateConfig',
+                key: 'viewportDebounceMs',
+                value: v
             });
         });
     }
