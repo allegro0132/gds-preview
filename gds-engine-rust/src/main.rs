@@ -1,6 +1,7 @@
 mod gds_parser;
 mod geometry;
 mod gds_loader;
+mod oasis_loader;
 mod oasis_parser;
 mod streamer;
 mod analysis;
@@ -82,7 +83,7 @@ fn main() -> Result<()> {
         .unwrap_or(false);
 
     let mut library = if is_oasis || ext_is_oasis {
-        oasis_parser::load_oasis(file)?
+        oasis_loader::load_oasis(file)?
     } else {
         gds_loader::load_gds(file)?
     };

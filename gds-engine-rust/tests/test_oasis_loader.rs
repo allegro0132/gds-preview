@@ -1,6 +1,6 @@
 use std::fs::File;
 
-use gds_engine_rust::oasis_parser::load_oasis;
+use gds_engine_rust::oasis_loader::load_oasis;
 
 fn bbox(points: &[gds_engine_rust::geometry::Point]) -> (f64, f64, f64, f64) {
     let mut min_x = f64::INFINITY;

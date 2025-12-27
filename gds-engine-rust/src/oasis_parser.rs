@@ -853,11 +853,10 @@ fn circle_points(center: Point, radius: f64, segments: usize) -> Vec<Point> {
     pts
 }
 
-/// Parse an OASIS file into the internal `Library` representation. This is a pragmatic
-/// reader that covers the record types we rely on in the viewer (cells, placements, polygons,
-/// rectangles, paths, text, and the most common repetitions). It intentionally omits rarely
-/// used records and will silently ignore unsupported constructs.
-pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
+/// Parse an OASIS file into the internal `Library` representation.
+///
+/// Public entrypoint lives in `oasis_loader::load_oasis`.
+pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
     // OASIS header is 14 bytes: "%SEMI-OASIS\r\n" + START record marker 0x01
     let mut header = [0u8; 14];
     reader.read_exact(&mut header)?;
