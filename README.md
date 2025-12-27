@@ -1,12 +1,12 @@
-# GDSII Preview for VS Code
+# GDSII Preview
 
-A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU-accelerated rendering for handling large integrated circuit layouts.
+A high-performance GDSII/OASIS file viewer (offer Visual Studio Code extension + Desktop app), featuring multi-thread processing and GPU-accelerated rendering for handling large integrated circuit layouts.
 
 ## Features
 
 - **High-Performance Rendering**: View large GDSII layouts smoothly directly within VS Code.
 - **GDSII & OASIS Support**: Open both `.gds`/`.gdsii` and `.oas` files, including full OASIS files support (using **CBLOCK** compression and/or strict mode) with Rust backend.
-- **Multi-Engine Support**: Choose between WebGL (GPU), Canvas (CPU), or SVG rendering.
+- **Multi-Engine Support**: Choose between WebGL (GPU), Canvas (CPU), or SVG rendering (deprecated, only using legacy Python backend).
 - **Text Rendering**: Displays text labels and annotations within the GDSII layout, with customizable colors.
 - **Port Visualization**:
   - Visualizes ports with orientation arrows and labels.
@@ -22,7 +22,7 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
   - **Fit View**: Quickly center and fit the layout to the screen.
 - **Configuration Panel**: Quick access to rendering settings and parameters directly within the viewer.
 - **Performance Optimizations**:
-  - **Parallel Loading**: Uses Web Workers to parse and process geometry off the main thread.
+  - **Parallel Triangulation**: Uses Rust backend to parse and process geometry off the frontend thread.
   - **Binary Streaming**:
     - **Python engine**: Streams geometry via Base64-encoded binary chunks.
     - **Rust engine**: Streams geometry as raw binary frames over a local WebSocket (served by the extension) to avoid Base64 overhead.
@@ -31,10 +31,11 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
   - **Viewport Streaming (WebGL + Rust)**: Requests geometry on-demand for the current camera viewport (with a small neighborhood padding) to keep huge layouts responsive and avoid client-side memory blowups.
   - **Dynamic Level of Detail (LOD)**: Automatically reduces detail during fast interactions to maintain high frame rates.
   - **Instanced Rendering**: Uses hardware instancing (`ANGLE_instanced_arrays`) to efficiently render hierarchical designs with thousands of repeated cells.
-  - **Backend Triangulation (Rust/WebGL)**: WebGL triangles can be generated in the Rust backend (parallelized) and streamed directly to the webview.
+  - **Backend Triangulation (Rust/WebGL)**: WebGL triangles can be generated in the Rust backend and streamed directly to the webview.
 - **Advanced Analysis**:
   - **Net Tracing**: Double-click any object to highlight all physically connected polygons (Net Tracing). Works across instances and hierarchy.
   - **Layer Soloing**: Double-click a layer in the sidebar to instantly isolate it.
+  - **Layer Tutti**: Double-click `Layer Control` in the sidebar to show all layers.
 
 ## Rendering Engines
 
@@ -43,20 +44,20 @@ This extension provides three rendering pipelines to suit different needs:
 ### 1. WebGL (Default & Recommended)
 - **Technology**: GPU-accelerated rendering using WebGL.
 - **Pros**: Extremely smooth Pan/Zoom performance ("Silky Smooth"). Handles millions of polygons with ease. Supports **Instanced Rendering** for hierarchical designs.
-- **Cons**: Slightly longer initial load time due to polygon triangulation.
+- **Cons**: Partial support for Viewport Culling when using instanced rendering.
 - **Best For**: Large, complex layouts (1GB+), hierarchical designs.
 
-### 2. SVG
+### 2. Canvas
+- **Technology**: HTML5 Canvas 2D Context (CPU-based).
+- **Pros**: Fast initial load. Good compatibility. Full support for Viewport Culling and LOD.
+- **Cons**: Performance drops significantly with high polygon counts.
+- **Best For**: Small cells (~1MB), debugging.
+
+### 3. SVG (Deprecated, only in legacy Python backend)
 - **Technology**: Scalable Vector Graphics (DOM-based).
 - **Pros**: Perfect vector fidelity at any zoom level. Easy to inspect via DOM tools.
 - **Cons**: High memory usage for very large files (though improved with streaming).
-- **Best For**: Medium-sized layouts, high-quality static screenshots.
-
-### 3. Canvas
-- **Technology**: HTML5 Canvas 2D Context (CPU-based).
-- **Pros**: Fast initial load. Good compatibility.
-- **Cons**: Performance drops significantly with high polygon counts.
-- **Best For**: Small cells, debugging.
+- **Best For**: Medium-sized layouts (~10MB), high-quality static screenshots.
 
 ## Extension Settings
 
