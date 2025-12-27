@@ -22,6 +22,89 @@ let geometryWsProf = {
     kindCounts: Object.create(null)
 };
 
+function scheduleDrawWebGL() {
+    if (state.currentEngine !== 'webgl') return;
+    if (!state.gl) return;
+    if (state.drawWebGLPending) return;
+    state.drawWebGLPending = true;
+    requestAnimationFrame(() => {
+        state.drawWebGLPending = false;
+        drawWebGL();
+    });
+}
+
+function deleteWebGLBufferList(list) {
+    if (!state.gl || !list) return;
+    const gl = state.gl;
+    const arr = Array.isArray(list) ? list : [list];
+    for (const item of arr) {
+        if (item && item.buffer) {
+            try { gl.deleteBuffer(item.buffer); } catch (_) { }
+        }
+    }
+}
+
+function deleteWebGLLayerBuffersMap(map) {
+    if (!map) return;
+    for (const k of Object.keys(map)) {
+        deleteWebGLBufferList(map[k]);
+    }
+}
+
+function deleteWebGLInstanceBuffersMap(map) {
+    if (!map) return;
+    for (const k of Object.keys(map)) {
+        deleteWebGLBufferList(map[k]);
+    }
+}
+
+function resetViewportStaging() {
+    // If a previous staging snapshot exists (e.g. superseded), delete its GL buffers to avoid leaks.
+    deleteWebGLLayerBuffersMap(state.viewportStagingLayerBuffers);
+    deleteWebGLInstanceBuffersMap(state.viewportStagingInstanceBuffers);
+    state.viewportStagingLayerBuffers = null;
+    state.viewportStagingInstanceBuffers = null;
+    state.viewportStagingInstanceTransforms = null;
+    state.viewportReceivingRequestId = 0;
+}
+
+function beginViewportSnapshot(requestId) {
+    // Do not clear current buffers here; keep rendering the previous snapshot while
+    // we receive the new one (prevents black flicker during pan/zoom).
+    resetViewportStaging();
+    state.viewportReceivingRequestId = requestId >>> 0;
+    state.viewportStagingLayerBuffers = {};
+    state.viewportStagingInstanceBuffers = {};
+    state.viewportStagingInstanceTransforms = {};
+}
+
+function commitViewportSnapshot(requestId) {
+    const rid = requestId >>> 0;
+    if (rid < (state.viewportActiveRequestId >>> 0)) {
+        // Older than what we already show.
+        resetViewportStaging();
+        return;
+    }
+    if (!state.viewportStagingLayerBuffers || !state.viewportStagingInstanceBuffers) {
+        // Nothing staged; keep old snapshot.
+        return;
+    }
+
+    // Delete old dynamic buffers, then swap in staged buffers.
+    deleteWebGLLayerBuffersMap(state.layerBuffers);
+    deleteWebGLInstanceBuffersMap(state.instanceBuffers);
+
+    state.layerBuffers = state.viewportStagingLayerBuffers;
+    state.instanceBuffers = state.viewportStagingInstanceBuffers;
+    state.instanceTransforms = state.viewportStagingInstanceTransforms || {};
+    state.viewportActiveRequestId = rid;
+
+    state.viewportStagingLayerBuffers = null;
+    state.viewportStagingInstanceBuffers = null;
+    state.viewportStagingInstanceTransforms = null;
+    state.viewportReceivingRequestId = 0;
+}
+
 function onGeometryWsReady(cb) {
     if (geometryWsConnected) {
         setTimeout(cb, 0);
@@ -78,11 +161,45 @@ function addWebGLVerticesChunk(layerKey, type, cellName, vertices) {
         if (!state.definitions[key][layerKey]) state.definitions[key][layerKey] = [];
         state.definitions[key][layerKey].push({ buffer, count: vertices.length / 2, bbox });
     } else {
-        if (!state.layerBuffers[layerKey]) state.layerBuffers[layerKey] = [];
-        state.layerBuffers[layerKey].push({ buffer, count: vertices.length / 2, bbox });
+        const target = state.viewportStagingLayerBuffers || state.layerBuffers;
+        if (!target[layerKey]) target[layerKey] = [];
+        target[layerKey].push({ buffer, count: vertices.length / 2, bbox });
     }
 
-    requestAnimationFrame(drawWebGL);
+    scheduleDrawWebGL();
+}
+
+function handleInstanceDataInto(cellName, buffer, instanceBuffers, instanceTransforms) {
+    const dataView = new DataView(buffer);
+    const count = dataView.getUint32(0, true);
+
+    if (!state.gl) return count;
+
+    const transforms = new Float32Array(buffer, 4, count * 9);
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < count; i++) {
+        const tx = transforms[i * 9 + 6];
+        const ty = transforms[i * 9 + 7];
+        if (tx < minX) minX = tx;
+        if (tx > maxX) maxX = tx;
+        if (ty < minY) minY = ty;
+        if (ty > maxY) maxY = ty;
+    }
+    const originBBox = { minX, minY, maxX, maxY };
+
+    const key = cellName || "UNKNOWN_CELL";
+    if (!instanceTransforms[key]) instanceTransforms[key] = [];
+    instanceTransforms[key].push(transforms);
+
+    const glBuffer = state.gl.createBuffer();
+    state.gl.bindBuffer(state.gl.ARRAY_BUFFER, glBuffer);
+    state.gl.bufferData(state.gl.ARRAY_BUFFER, transforms, state.gl.STATIC_DRAW);
+
+    if (!instanceBuffers[key]) instanceBuffers[key] = [];
+    instanceBuffers[key].push({ buffer: glBuffer, count, originBBox });
+
+    return count;
 }
 
 function handleGeometryWsBinary(buffer) {
@@ -123,23 +240,26 @@ function handleGeometryWsBinary(buffer) {
         // 2 EndViewport (optional)
         if (opcode === 1) {
             if (requestId >= (state.viewportActiveRequestId >>> 0)) {
-                state.viewportActiveRequestId = requestId >>> 0;
-                // Clear dynamic buffers; keep definitions cached.
-                state.layerBuffers = {};
-                state.instanceBuffers = {};
-                state.instanceTransforms = {};
+                beginViewportSnapshot(requestId);
             }
-            requestAnimationFrame(drawWebGL);
+            scheduleDrawWebGL();
         } else if (opcode === 2) {
-            requestAnimationFrame(drawWebGL);
+            // Swap staged buffers into active buffers.
+            if (requestId === (state.viewportReceivingRequestId >>> 0)) {
+                commitViewportSnapshot(requestId);
+            }
+            scheduleDrawWebGL();
         }
         return;
     }
     if (kind === 3) {
         const payload = buffer.slice(off);
-        const count = handleInstanceData(cellName, payload);
+        const targetBuffers = state.viewportStagingInstanceBuffers || state.instanceBuffers;
+        const targetTransforms = state.viewportStagingInstanceTransforms || state.instanceTransforms;
+        const count = handleInstanceDataInto(cellName, payload, targetBuffers, targetTransforms);
         updateStatus(`Loading Instances ${cellName || 'Unknown'} ${formatChunkProgress(chunkIndex, totalChunks)} - ${count} items`);
         maybeSignalReadyForNext(chunkIndex, totalChunks);
+        scheduleDrawWebGL();
         return;
     }
 
@@ -424,42 +544,10 @@ export function handleWorkerMessage(e, workerIndex) {
 }
 
 export function handleInstanceData(cellName, buffer) {
-    const dataView = new DataView(buffer);
-    const count = dataView.getUint32(0, true);
-
-    if (!state.gl) return count;
-
-    const transforms = new Float32Array(buffer, 4, count * 9);
-
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (let i = 0; i < count; i++) {
-        const tx = transforms[i * 9 + 6];
-        const ty = transforms[i * 9 + 7];
-        if (tx < minX) minX = tx;
-        if (tx > maxX) maxX = tx;
-        if (ty < minY) minY = ty;
-        if (ty > maxY) maxY = ty;
-    }
-    const originBBox = { minX, minY, maxX, maxY };
-
-    const key = cellName || "UNKNOWN_CELL";
-    if (!state.instanceTransforms[key]) state.instanceTransforms[key] = [];
-
-    state.instanceTransforms[key].push(transforms);
-
-    const glBuffer = state.gl.createBuffer();
-    state.gl.bindBuffer(state.gl.ARRAY_BUFFER, glBuffer);
-    state.gl.bufferData(state.gl.ARRAY_BUFFER, transforms, state.gl.STATIC_DRAW);
-
-    if (!state.instanceBuffers[key]) state.instanceBuffers[key] = [];
-
-    state.instanceBuffers[key].push({
-        buffer: glBuffer,
-        count: count,
-        originBBox: originBBox
-    });
-
-    requestAnimationFrame(drawWebGL);
+    const targetBuffers = state.viewportStagingInstanceBuffers || state.instanceBuffers;
+    const targetTransforms = state.viewportStagingInstanceTransforms || state.instanceTransforms;
+    const count = handleInstanceDataInto(cellName, buffer, targetBuffers, targetTransforms);
+    scheduleDrawWebGL();
     return count;
 }
 

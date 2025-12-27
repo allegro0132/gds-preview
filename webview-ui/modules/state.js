@@ -45,6 +45,7 @@ export const state = {
     gl: null,
     glProgram: null,
     instancedArraysExt: null,
+    drawWebGLPending: false,
     layerBuffers: {},
     instanceBuffers: {},
     definitions: {},
@@ -62,6 +63,12 @@ export const state = {
     viewportRequestSeq: 0,
     viewportActiveRequestId: 0,
     viewportTimer: null,
+
+    // Viewport snapshot staging (avoid flicker by swapping on EndViewport)
+    viewportReceivingRequestId: 0,
+    viewportStagingLayerBuffers: null,
+    viewportStagingInstanceBuffers: null,
+    viewportStagingInstanceTransforms: null,
 
     // Workers
     workerPool: [],
