@@ -244,6 +244,9 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         const enableProfiling = config.get<boolean>('enableProfiling', false);
         const flowControlStep = config.get<number>('flowControlStep', 5);
         const useInstancing = config.get<boolean>('useInstancing', true);
+        const viewportStreaming = config.get<boolean>('viewportStreaming', false);
+        const viewportPaddingFactor = config.get<number>('viewportPaddingFactor', 0.25);
+        const viewportDebounceMs = config.get<number>('viewportDebounceMs', 80);
 
         const updateWebview = async (cellName?: string, isNegativeMode?: boolean) => {
             // console.log(`updateWebview called with cellName: ${cellName}`);
@@ -262,6 +265,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             const useInstancing = currentConfig.get<boolean>('useInstancing', true);
             const enableProfiling = currentConfig.get<boolean>('enableProfiling', false);
             const maxWorkers = currentConfig.get<number>('maxWorkers', -1);
+            const viewportStreaming = currentConfig.get<boolean>('viewportStreaming', false);
 
             const tempDir = path.join(os.tmpdir(), `gds_preview_data_${Date.now()}`);
 
@@ -310,6 +314,12 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 // For WebGL, request pre-triangulated vertices from Rust (no earcut in webview)
                 args.push('--geom-mode');
                 args.push(currentRenderingEngine === 'webgl' ? 'triangles' : 'polygons');
+
+                // Optional: viewport-driven streaming to reduce webview memory for huge layouts.
+                // Only supported with WebGL+Rust and instancing enabled.
+                if (currentRenderingEngine === 'webgl' && viewportStreaming && useInstancing) {
+                    args.push('--viewport-streaming');
+                }
                 if (isNegativeMode) {
                     args.push("--negative");
                 }
@@ -571,13 +581,18 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                             currentProcess.stdin?.write(JSON.stringify(message) + "\n");
                         }
                         return;
+                    case 'viewport':
+                        if (currentProcess) {
+                            currentProcess.stdin?.write(JSON.stringify(message) + "\n");
+                        }
+                        return;
                 }
             },
             undefined,
             this.context.subscriptions
         );
 
-        webviewPanel.webview.html = getWebviewContent(webviewPanel.webview, this.context.extensionUri, initialRenderingEngine, fastModeThreshold, labelFontSize, portFontSize, portArrowScale, maxSteps, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
+        webviewPanel.webview.html = getWebviewContent(webviewPanel.webview, this.context.extensionUri, initialRenderingEngine, fastModeThreshold, labelFontSize, portFontSize, portArrowScale, maxSteps, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing, viewportStreaming, viewportPaddingFactor, viewportDebounceMs);
         console.log("Webview HTML set");
 
         // Listen for configuration changes
@@ -605,7 +620,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {
                 void updateWebview(currentCell, isNegative);
             }
-            if (e.affectsConfiguration('gdsPreview.maxWorkers') || e.affectsConfiguration('gdsPreview.chunkSize') || e.affectsConfiguration('gdsPreview.flowControlStep') || e.affectsConfiguration('gdsPreview.useInstancing')) {
+            if (e.affectsConfiguration('gdsPreview.maxWorkers') || e.affectsConfiguration('gdsPreview.chunkSize') || e.affectsConfiguration('gdsPreview.flowControlStep') || e.affectsConfiguration('gdsPreview.useInstancing') || e.affectsConfiguration('gdsPreview.viewportStreaming') || e.affectsConfiguration('gdsPreview.viewportPaddingFactor') || e.affectsConfiguration('gdsPreview.viewportDebounceMs')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
                 const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
                 const fastModeThreshold = config.get<number>('fastModeThreshold', 10);
@@ -619,14 +634,17 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 const enableProfiling = config.get<boolean>('enableProfiling', false);
                 const flowControlStep = config.get<number>('flowControlStep', 5);
                 const useInstancing = config.get<boolean>('useInstancing', true);
+                const viewportStreaming = config.get<boolean>('viewportStreaming', false);
+                const viewportPaddingFactor = config.get<number>('viewportPaddingFactor', 0.25);
+                const viewportDebounceMs = config.get<number>('viewportDebounceMs', 80);
 
-                webviewPanel.webview.html = getWebviewContent(webviewPanel.webview, this.context.extensionUri, initialRenderingEngine, fastModeThreshold, labelFontSize, portFontSize, portArrowScale, maxSteps, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing);
+                webviewPanel.webview.html = getWebviewContent(webviewPanel.webview, this.context.extensionUri, initialRenderingEngine, fastModeThreshold, labelFontSize, portFontSize, portArrowScale, maxSteps, maxWorkers, chunkSize, pythonPath, enableProfiling, flowControlStep, useInstancing, viewportStreaming, viewportPaddingFactor, viewportDebounceMs);
             }
         }, null, this.context.subscriptions);
     }
 }
 
-function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri, engine: string, fastModeThreshold: number, labelFontSize: number, portFontSize: number, portArrowScale: number, maxSteps: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string, enableProfiling: boolean, flowControlStep: number, useInstancing: boolean): string {
+function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri, engine: string, fastModeThreshold: number, labelFontSize: number, portFontSize: number, portArrowScale: number, maxSteps: number, maxWorkersConfig: number, chunkSize: number, pythonPath: string, enableProfiling: boolean, flowControlStep: number, useInstancing: boolean, viewportStreaming: boolean, viewportPaddingFactor: number, viewportDebounceMs: number): string {
     const nonce = getNonce();
 
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'webview-ui', 'style.css'));
@@ -661,6 +679,9 @@ function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.Uri, en
         enableProfiling,
         flowControlStep,
         useInstancing,
+        viewportStreaming,
+        viewportPaddingFactor,
+        viewportDebounceMs,
         workerCode: geometryWorkerCode,
         searchWorkerCode: searchWorkerCode
     };

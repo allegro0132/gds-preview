@@ -49,6 +49,9 @@ struct Args {
 
     #[arg(long, default_value = "polygons", value_parser = ["polygons", "triangles"], help = "Geometry payload mode for non-instance polygons")]
     geom_mode: String,
+
+    #[arg(long, default_value_t = false, help = "(WebGL+Rust+Instancing) Enable viewport-driven streaming. The engine will stream definitions once, then only send instances/flat geometry for the current viewport on request.")]
+    viewport_streaming: bool,
 }
 
 fn main() -> Result<()> {
@@ -147,16 +150,38 @@ fn main() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Cell '{}' not found", main_cell_name))?;
 
     let mut instances_map = HashMap::new();
-    let instances_by_name = analyze_instances(&library, main_cell, &mut instances_map);
+    let mut instances_by_name_opt = Some(analyze_instances(&library, main_cell, &mut instances_map));
 
     if args.geom_mode == "triangles" && tcp_stream.is_none() {
         return Err(anyhow::anyhow!("--geom-mode triangles requires --tcp-port"));
     }
 
-    if args.use_instancing != 0 {
-        process_instanced(&library, main_cell, &args, &mut metadata, instances_by_name, tcp_stream.as_mut())?;
-    } else {
-        process_flattened(&library, main_cell, &args, &mut metadata, tcp_stream.as_mut())?;
+    // Optional mode: stream only what the viewport needs (plus cached definitions).
+    // This is designed to keep the webview memory bounded for huge hierarchical layouts.
+    let mut viewport_runtime: Option<ViewportRuntime> = None;
+
+    if args.viewport_streaming {
+        if args.use_instancing == 0 {
+            send_json(&serde_json::json!({
+                "command": "status",
+                "message": "Viewport streaming requires WebGL instancing; falling back to full streaming"
+            }));
+        } else {
+            let tcp_ref = tcp_stream.as_mut().ok_or_else(|| anyhow::anyhow!("--viewport-streaming requires --tcp-port"))?;
+            let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: args.flow_control_step };
+            let instances_by_name = instances_by_name_opt.take().ok_or_else(|| anyhow::anyhow!("instances already consumed"))?;
+            let rt = process_instanced_viewport_preamble(&library, main_cell, &args, &mut metadata, instances_by_name, &mut transport)?;
+            viewport_runtime = Some(rt);
+        }
+    }
+
+    if viewport_runtime.is_none() {
+        if args.use_instancing != 0 {
+            let instances_by_name = instances_by_name_opt.take().ok_or_else(|| anyhow::anyhow!("instances already consumed"))?;
+            process_instanced(&library, main_cell, &args, &mut metadata, instances_by_name, tcp_stream.as_mut())?;
+        } else {
+            process_flattened(&library, main_cell, &args, &mut metadata, tcp_stream.as_mut())?;
+        }
     }
 
     // Stream Ports
@@ -275,6 +300,34 @@ fn main() -> Result<()> {
                     "command": "status",
                     "message": "Search stopped"
                 }));
+            } else if cmd["command"] == "viewport" {
+                if let Some(rt) = viewport_runtime.as_ref() {
+                    let req_id = cmd["requestId"].as_u64().unwrap_or(0) as u32;
+                    let bbox = &cmd["bbox"];
+                    let vminx = bbox["minX"].as_f64().unwrap_or(0.0);
+                    let vmaxx = bbox["maxX"].as_f64().unwrap_or(0.0);
+                    let vminy = bbox["minY"].as_f64().unwrap_or(0.0);
+                    let vmaxy = bbox["maxY"].as_f64().unwrap_or(0.0);
+
+                    let layers_val = cmd["layers"].as_array();
+                    let mut active_layers: HashSet<(i16, i16)> = HashSet::new();
+                    if let Some(layers) = layers_val {
+                        for l in layers {
+                            if let Some(s) = l.as_str() {
+                                let parts: Vec<&str> = s.split('_').collect();
+                                if parts.len() == 2 {
+                                    if let (Ok(la), Ok(dt)) = (parts[0].parse::<i16>(), parts[1].parse::<i16>()) {
+                                        active_layers.insert((la, dt));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let tcp_ref = tcp_stream.as_mut().ok_or_else(|| anyhow::anyhow!("tcp required"))?;
+                    let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: args.flow_control_step };
+                    stream_viewport_geometry(&library, rt, &args, &mut transport, req_id, (vminx, vmaxx, vminy, vmaxy), &active_layers)?;
+                }
             }
         }
     }
@@ -474,6 +527,257 @@ enum WsChunkKind {
     DefinitionTriangles = 2,
     Instances = 3,
     FlatPolygons = 4,
+    Control = 5,
+}
+
+#[derive(Clone, Debug)]
+struct ViewportRuntime {
+    single_instances: HashMap<String, Vec<Matrix3x3>>,
+    multi_instances: HashMap<String, Vec<Matrix3x3>>,
+    cell_bbox_local: HashMap<String, (f64, f64, f64, f64)>,
+    cell_max_radius: HashMap<String, f64>,
+}
+
+fn cell_local_bbox(cell: &Cell) -> (f64, f64, f64, f64) {
+    let mut bbox = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for poly in &cell.polygons {
+        for p in &poly.points {
+            if p.x < bbox.0 { bbox.0 = p.x; }
+            if p.x > bbox.1 { bbox.1 = p.x; }
+            if p.y < bbox.2 { bbox.2 = p.y; }
+            if p.y > bbox.3 { bbox.3 = p.y; }
+        }
+    }
+    if bbox.0 == f64::MAX {
+        (0.0, 0.0, 0.0, 0.0)
+    } else {
+        bbox
+    }
+}
+
+fn bbox_max_radius(b: (f64, f64, f64, f64)) -> f64 {
+    let (minx, maxx, miny, maxy) = b;
+    let d1 = minx * minx + miny * miny;
+    let d2 = maxx * maxx + miny * miny;
+    let d3 = maxx * maxx + maxy * maxy;
+    let d4 = minx * minx + maxy * maxy;
+    (d1.max(d2).max(d3).max(d4)).sqrt()
+}
+
+fn bbox_intersects(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
+    let (aminx, amaxx, aminy, amaxy) = a;
+    let (bminx, bmaxx, bminy, bmaxy) = b;
+    !(amaxx < bminx || aminx > bmaxx || amaxy < bminy || aminy > bmaxy)
+}
+
+fn transform_bbox(t: &Matrix3x3, b: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let (minx, maxx, miny, maxy) = b;
+    let corners = [
+        Point { x: minx, y: miny },
+        Point { x: maxx, y: miny },
+        Point { x: maxx, y: maxy },
+        Point { x: minx, y: maxy },
+    ];
+    let mut out = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for c in corners.iter() {
+        let p = t.transform_point(c);
+        if p.x < out.0 { out.0 = p.x; }
+        if p.x > out.1 { out.1 = p.x; }
+        if p.y < out.2 { out.2 = p.y; }
+        if p.y > out.3 { out.3 = p.y; }
+    }
+    if out.0 == f64::MAX { (0.0, 0.0, 0.0, 0.0) } else { out }
+}
+
+fn send_control(transport: &mut dyn ChunkTransport, opcode: u8, request_id: u32) -> Result<()> {
+    let mut payload = Vec::with_capacity(1 + 4);
+    payload.push(opcode);
+    payload.extend_from_slice(&request_id.to_le_bytes());
+    transport.send(WsChunkKind::Control, "", None, 0, 0, &payload)
+}
+
+fn process_instanced_viewport_preamble(
+    lib: &Library,
+    main_cell: &Cell,
+    args: &Args,
+    metadata: &mut serde_json::Value,
+    instances: HashMap<String, Vec<Matrix3x3>>,
+    transport: &mut dyn ChunkTransport,
+) -> Result<ViewportRuntime> {
+    // Split into multi (instanced) and single (flat)
+    let mut multi_instances: HashMap<String, Vec<Matrix3x3>> = HashMap::new();
+    let mut single_instances: HashMap<String, Vec<Matrix3x3>> = HashMap::new();
+
+    for (name, trans) in instances.iter() {
+        if trans.len() > 1 || *name == main_cell.name {
+            multi_instances.insert(name.clone(), trans.clone());
+        } else {
+            single_instances.insert(name.clone(), trans.clone());
+        }
+    }
+
+    // Global bbox + layer list + labels are the same as normal instanced mode.
+    let mut bbox = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    scan_recursive_bbox(lib, main_cell, &Matrix3x3::identity(), &mut bbox);
+    if bbox.0 == f64::MAX { bbox = (0.0, 0.0, 0.0, 0.0); }
+
+    let mut all_layers: HashSet<String> = HashSet::new();
+    for cell_name in single_instances.keys() {
+        if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
+            for p in &cell.polygons {
+                all_layers.insert(format!("{}_{}", p.layer, p.datatype));
+            }
+        }
+    }
+    for cell_name in multi_instances.keys() {
+        if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
+            for p in &cell.polygons {
+                all_layers.insert(format!("{}_{}", p.layer, p.datatype));
+            }
+            for l in &cell.labels {
+                all_layers.insert(format!("{}_{}", l.layer, l.texttype));
+            }
+        }
+    }
+    for cell_name in instances.keys() {
+        if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
+            for l in &cell.labels {
+                all_layers.insert(format!("{}_{}", l.layer, l.texttype));
+            }
+        }
+    }
+
+    let mut layer_keys: Vec<String> = all_layers.into_iter().collect();
+    sort_layer_keys(&mut layer_keys);
+
+    metadata["layers"] = serde_json::json!(layer_keys);
+    metadata["bbox"] = serde_json::json!({
+        "x_min": bbox.0, "x_max": bbox.1, "y_min": bbox.2, "y_max": bbox.3
+    });
+    send_json(metadata);
+
+    // Labels (aggregated by layer)
+    let mut labels_by_layer: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    for (cell_name, cell_instances) in &instances {
+        if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
+            for label in &cell.labels {
+                let key = format!("{}_{}", label.layer, label.texttype);
+                for t in cell_instances {
+                    let pt = t.transform_point(&Point { x: label.x, y: label.y });
+                    labels_by_layer.entry(key.clone()).or_default().push(serde_json::json!({
+                        "text": label.text, "x": pt.x, "y": pt.y, "rotation": label.rotation, "magnification": label.magnification, "anchor": label.anchor
+                    }));
+                }
+            }
+        }
+    }
+    for (layer_key, lbls) in labels_by_layer {
+        send_json(&serde_json::json!({ "layerKey": layer_key, "labels": lbls }));
+    }
+
+    // Stream Definitions (multi instances) once.
+    match args.geom_mode.as_str() {
+        "triangles" => {
+            for (cell_name, _transforms) in multi_instances.iter() {
+                let mut builders: HashMap<String, TriChunkBuilder> = HashMap::new();
+                if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
+                    for poly in &cell.polygons {
+                        let key = format!("{}_{}", poly.layer, poly.datatype);
+                        push_triangles_transformed(&key, poly, &Matrix3x3::identity(), &mut builders, args, transport, WsChunkKind::DefinitionTriangles, Some(cell_name.as_str()))?;
+                    }
+                }
+                flush_all_triangle_builders(&mut builders, args, transport, WsChunkKind::DefinitionTriangles, Some(cell_name.as_str()))?;
+            }
+        }
+        other => return Err(anyhow::anyhow!("viewport streaming requires --geom-mode triangles (got {other})")),
+    }
+
+    // Precompute local bboxes + radii for instance culling.
+    let mut cell_bbox_local: HashMap<String, (f64, f64, f64, f64)> = HashMap::new();
+    let mut cell_max_radius: HashMap<String, f64> = HashMap::new();
+    for cell_name in instances.keys() {
+        if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
+            let b = cell_local_bbox(cell);
+            cell_bbox_local.insert(cell_name.clone(), b);
+            cell_max_radius.insert(cell_name.clone(), bbox_max_radius(b));
+        }
+    }
+
+    Ok(ViewportRuntime { single_instances, multi_instances, cell_bbox_local, cell_max_radius })
+}
+
+fn stream_viewport_geometry(
+    lib: &Library,
+    rt: &ViewportRuntime,
+    args: &Args,
+    transport: &mut dyn ChunkTransport,
+    request_id: u32,
+    view: (f64, f64, f64, f64),
+    active_layers: &HashSet<(i16, i16)>,
+) -> Result<()> {
+    // Begin snapshot
+    send_control(transport, 1, request_id)?;
+
+    // Single-instance cells: stream flattened triangles only if their transformed bbox intersects view.
+    let mut tri_builders: HashMap<String, TriChunkBuilder> = HashMap::new();
+    for (cell_name, transforms) in rt.single_instances.iter() {
+        let cell = match lib.cells.iter().find(|c| c.name == *cell_name) {
+            Some(c) => c,
+            None => continue,
+        };
+        let local_bbox = *rt.cell_bbox_local.get(cell_name).unwrap_or(&(0.0, 0.0, 0.0, 0.0));
+        for t in transforms {
+            let tb = transform_bbox(t, local_bbox);
+            if !bbox_intersects(tb, view) {
+                continue;
+            }
+            for poly in &cell.polygons {
+                if !active_layers.is_empty() && !active_layers.contains(&(poly.layer, poly.datatype)) {
+                    continue;
+                }
+                let key = format!("{}_{}", poly.layer, poly.datatype);
+                push_triangles_transformed(&key, poly, t, &mut tri_builders, args, transport, WsChunkKind::FlatTriangles, None)?;
+            }
+        }
+    }
+    flush_all_triangle_builders(&mut tri_builders, args, transport, WsChunkKind::FlatTriangles, None)?;
+
+    // Multi-instance cells: stream only instance transforms that could overlap view (translation +/- radius).
+    for (cell_name, transforms) in rt.multi_instances.iter() {
+        let radius = *rt.cell_max_radius.get(cell_name).unwrap_or(&1e9);
+
+        let mut filtered: Vec<&Matrix3x3> = Vec::new();
+        for t in transforms.iter() {
+            let tx = t.m[0][2];
+            let ty = t.m[1][2];
+            if tx + radius < view.0 || tx - radius > view.1 || ty + radius < view.2 || ty - radius > view.3 {
+                continue;
+            }
+            filtered.push(t);
+        }
+
+        if filtered.is_empty() {
+            continue;
+        }
+
+        let total_chunks = (filtered.len() + args.chunk_size - 1) / args.chunk_size;
+        for (i, chunk) in filtered.chunks(args.chunk_size).enumerate() {
+            let mut buffer = Vec::new();
+            buffer.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+            for t in chunk {
+                for col in 0..3 {
+                    for row in 0..3 {
+                        buffer.extend_from_slice(&(t.m[row][col] as f32).to_le_bytes());
+                    }
+                }
+            }
+            transport.send(WsChunkKind::Instances, "", Some(cell_name.as_str()), i as u32, total_chunks as u32, &buffer)?;
+        }
+    }
+
+    // End snapshot
+    send_control(transport, 2, request_id)?;
+    Ok(())
 }
 
 trait ChunkTransport {
@@ -573,6 +877,9 @@ impl ChunkTransport for StdoutTransport {
             WsChunkKind::Instances => "instance",
             WsChunkKind::FlatTriangles | WsChunkKind::DefinitionTriangles => {
                 return Err(anyhow::anyhow!("Triangles require WebSocket transport"));
+            }
+            WsChunkKind::Control => {
+                return Err(anyhow::anyhow!("Control frames require WebSocket transport"));
             }
         };
 

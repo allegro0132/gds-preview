@@ -11,6 +11,7 @@ pub enum WsChunkKind {
     DefinitionTriangles = 2,
     Instances = 3,
     FlatPolygons = 4,
+    Control = 5,
 }
 
 pub struct WsServer {
