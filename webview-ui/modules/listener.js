@@ -3,6 +3,64 @@ import { updateStatus } from './utils.js';
 import { draw, drawWebGL, drawLabels } from './renderer.js';
 import { updateTransform, resizeCanvas, fitView, screenToWorld } from './transform.js';
 
+function computeViewportWorldBounds() {
+    const container = elements.viewContainer;
+    if (!container) return null;
+
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    if (!w || !h) return null;
+
+    const p1 = screenToWorld(0, 0);
+    const p2 = screenToWorld(w, 0);
+    const p3 = screenToWorld(w, h);
+    const p4 = screenToWorld(0, h);
+
+    let minX = Math.min(p1.x, p2.x, p3.x, p4.x);
+    let maxX = Math.max(p1.x, p2.x, p3.x, p4.x);
+    let minY = Math.min(p1.y, p2.y, p3.y, p4.y);
+    let maxY = Math.max(p1.y, p2.y, p3.y, p4.y);
+
+    const vw = maxX - minX;
+    const vh = maxY - minY;
+    const pad = Math.max(vw, vh) * (state.viewportPaddingFactor || 0);
+
+    minX -= pad;
+    maxX += pad;
+    minY -= pad;
+    maxY += pad;
+
+    return { minX, maxX, minY, maxY };
+}
+
+function scheduleViewportRequest() {
+    // Only for Rust+WebGL path.
+    if (!state.viewportStreaming) return;
+    if (state.currentEngine !== 'webgl') return;
+    if (!state.config || state.config.engineType !== 'rust') return;
+    if (!state.useInstancing) return;
+
+    if (state.viewportTimer) {
+        clearTimeout(state.viewportTimer);
+        state.viewportTimer = null;
+    }
+
+    state.viewportTimer = setTimeout(() => {
+        const bbox = computeViewportWorldBounds();
+        if (!bbox) return;
+
+        const requestId = (state.viewportRequestSeq + 1) >>> 0;
+        state.viewportRequestSeq = requestId;
+
+        state.vscode.postMessage({
+            command: 'viewport',
+            requestId,
+            bbox,
+            layers: Array.from(state.activeLayers)
+        });
+    }, state.viewportDebounceMs);
+}
+
 export function onInteraction() {
     state.hasUserInteracted = true;
     if (!state.isInteracting) {
@@ -16,6 +74,7 @@ export function onInteraction() {
     state.interactionTimeout = setTimeout(() => {
         state.isInteracting = false;
         requestAnimationFrame(draw);
+        scheduleViewportRequest();
     }, 300);
 }
 
@@ -38,7 +97,10 @@ export function findAndHighlight(x, y) {
 
 export function setupListeners() {
     window.addEventListener('resize', () => {
-        if (state.currentEngine === 'canvas' || state.currentEngine === 'webgl') resizeCanvas();
+        if (state.currentEngine === 'canvas' || state.currentEngine === 'webgl') {
+            resizeCanvas();
+            scheduleViewportRequest();
+        }
         else if (state.panZoomInstance) {
             state.panZoomInstance.resize();
             state.panZoomInstance.fit();
@@ -95,6 +157,7 @@ export function setupListeners() {
             if (state.currentEngine === 'canvas') requestAnimationFrame(draw);
             else requestAnimationFrame(drawWebGL);
             requestAnimationFrame(drawLabels);
+            scheduleViewportRequest();
         }
     });
 
@@ -153,6 +216,7 @@ export function setupListeners() {
         if (state.currentEngine === 'canvas') requestAnimationFrame(draw);
         else requestAnimationFrame(drawWebGL);
         requestAnimationFrame(drawLabels);
+        scheduleViewportRequest();
     }, { capture: true });
 
     viewContainer.addEventListener('contextmenu', e => {
@@ -190,6 +254,7 @@ export function setupListeners() {
         if (state.currentEngine === 'canvas') requestAnimationFrame(draw);
         else requestAnimationFrame(drawWebGL);
         requestAnimationFrame(drawLabels);
+        scheduleViewportRequest();
     });
 
     if (elements.layerControlHeader) {
@@ -291,6 +356,7 @@ export function setupListeners() {
             if (state.currentEngine === 'canvas') draw();
             else if (state.currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
             requestAnimationFrame(drawLabels);
+            scheduleViewportRequest();
             if (state.currentEngine === 'svg') {
                 const el = document.getElementById('layer-group-' + layerId);
                 if (el) el.style.display = target.checked ? 'block' : 'none';
@@ -300,6 +366,7 @@ export function setupListeners() {
             if (state.currentEngine === 'canvas') draw();
             else if (state.currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
             requestAnimationFrame(drawLabels);
+            scheduleViewportRequest();
             if (state.currentEngine === 'svg') {
                 const el = document.getElementById('layer-group-' + layerId);
                 if (el) {
@@ -313,6 +380,7 @@ export function setupListeners() {
             if (state.currentEngine === 'canvas') draw();
             else if (state.currentEngine === 'webgl') requestAnimationFrame(drawWebGL);
             requestAnimationFrame(drawLabels);
+            scheduleViewportRequest();
             if (state.currentEngine === 'svg') {
                 const el = document.getElementById('layer-group-' + layerId);
                 if (el) el.style.opacity = target.value;

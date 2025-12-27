@@ -125,6 +125,21 @@
           "type": "boolean",
           "default": false,
           "description": "Enable profiling logs in the Debug Console."
+        },
+        "gdsPreview.viewportStreaming": {
+          "type": "boolean",
+          "default": false,
+          "description": "(WebGL + Rust) Request geometry on-demand based on current viewport (frustum + neighborhood) to reduce memory usage for huge layouts."
+        },
+        "gdsPreview.viewportPaddingFactor": {
+          "type": "number",
+          "default": 0.25,
+          "description": "Extra neighborhood margin around the current viewport. Interpreted as a fraction of max(viewportWidth, viewportHeight) in world units."
+        },
+        "gdsPreview.viewportDebounceMs": {
+          "type": "number",
+          "default": 80,
+          "description": "Debounce interval (ms) for viewport geometry requests during pan/zoom."
         }
       }
     },

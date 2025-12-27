@@ -1,7 +1,7 @@
 import { state, elements } from './state.js';
 import { updateStatus, checkCompletion } from './utils.js';
 import { draw, drawWebGL, drawLabels, setupCanvasMode, setupSvgMode, setupWebGLMode } from './renderer.js';
-import { updateTransform, resizeCanvas, fitView } from './transform.js';
+import { updateTransform, resizeCanvas, fitView, screenToWorld } from './transform.js';
 
 let geometryWs = null;
 let geometryWsConnected = false;
@@ -80,6 +80,28 @@ function handleGeometryWsBinary(buffer) {
     // 2 DefinitionTriangles
     // 3 Instances
     // 4 FlatPolygons
+    // 5 Control (viewport snapshots)
+    if (kind === 5) {
+        const opcode = dv.getUint8(off); off += 1;
+        const requestId = dv.getUint32(off, true); off += 4;
+
+        // opcode:
+        // 1 BeginViewport (clear per-viewport buffers)
+        // 2 EndViewport (optional)
+        if (opcode === 1) {
+            if (requestId >= (state.viewportActiveRequestId >>> 0)) {
+                state.viewportActiveRequestId = requestId >>> 0;
+                // Clear dynamic buffers; keep definitions cached.
+                state.layerBuffers = {};
+                state.instanceBuffers = {};
+                state.instanceTransforms = {};
+            }
+            requestAnimationFrame(drawWebGL);
+        } else if (opcode === 2) {
+            requestAnimationFrame(drawWebGL);
+        }
+        return;
+    }
     if (kind === 3) {
         const payload = buffer.slice(off);
         const count = handleInstanceData(cellName, payload);
@@ -599,6 +621,41 @@ export function handleInitialize(data) {
     }
 
     updateStatus("Loading layers...");
+
+    // Kick an initial viewport request as soon as we have bbox + transform.
+    // Listener code will also refresh on user interaction.
+    if (state.currentEngine === 'webgl' && state.config.engineType === 'rust' && state.viewportStreaming && state.useInstancing) {
+        // Defer to allow canvas sizing/fitView to run.
+        setTimeout(() => {
+            const container = elements.viewContainer;
+            if (!container) return;
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (!w || !h) return;
+
+            const p1 = screenToWorld(0, 0);
+            const p2 = screenToWorld(w, 0);
+            const p3 = screenToWorld(w, h);
+            const p4 = screenToWorld(0, h);
+
+            let minX = Math.min(p1.x, p2.x, p3.x, p4.x);
+            let maxX = Math.max(p1.x, p2.x, p3.x, p4.x);
+            let minY = Math.min(p1.y, p2.y, p3.y, p4.y);
+            let maxY = Math.max(p1.y, p2.y, p3.y, p4.y);
+
+            const vw = maxX - minX;
+            const vh = maxY - minY;
+            const pad = Math.max(vw, vh) * (state.viewportPaddingFactor || 0);
+            minX -= pad;
+            maxX += pad;
+            minY -= pad;
+            maxY += pad;
+
+            const requestId = (state.viewportRequestSeq + 1) >>> 0;
+            state.viewportRequestSeq = requestId;
+            state.vscode.postMessage({ command: 'viewport', requestId, bbox: { minX, maxX, minY, maxY }, layers: Array.from(state.activeLayers) });
+        }, 0);
+    }
 }
 
 export function handleDataUpdate(data) {

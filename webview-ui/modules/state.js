@@ -53,6 +53,14 @@ export const state = {
     spatialGrid: null,
     totalPolyCount: 0,
 
+    // Viewport-driven streaming (WebGL + Rust)
+    viewportStreaming: false,
+    viewportPaddingFactor: 0.25,
+    viewportDebounceMs: 80,
+    viewportRequestSeq: 0,
+    viewportActiveRequestId: 0,
+    viewportTimer: null,
+
     // Workers
     workerPool: [],
     searchWorker: null,
@@ -125,6 +133,9 @@ export function initializeState() {
     state.enableProfiling = state.config.enableProfiling || false;
     state.flowControlStep = state.config.flowControlStep || 10;
     state.useInstancing = state.config.useInstancing !== undefined ? state.config.useInstancing : true;
+    state.viewportStreaming = state.config.viewportStreaming !== undefined ? state.config.viewportStreaming : false;
+    state.viewportPaddingFactor = typeof state.config.viewportPaddingFactor === 'number' ? state.config.viewportPaddingFactor : 0.25;
+    state.viewportDebounceMs = typeof state.config.viewportDebounceMs === 'number' ? state.config.viewportDebounceMs : 80;
     state.flipState.y = state.currentEngine === 'svg' ? -1 : 1;
 
     // Initialize elements
