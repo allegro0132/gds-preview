@@ -472,6 +472,8 @@ export function handleInitialize(data) {
     state.pendingTasks = 0;
     state.pythonFinished = false;
     state.completionShown = false;
+    state.completionScheduled = false;
+    state.statusPinUntil = 0;
     state.isViewFitted = false;
     state.hasUserInteracted = false;
     updateStatus("Initializing...");
@@ -662,6 +664,8 @@ export function handleDataUpdate(data) {
     updateStatus("Rendering...");
 
     state.completionShown = false;
+    state.completionScheduled = false;
+    state.statusPinUntil = 0;
 
     state.highlightedPolygons = [];
     state.searchWorker.postMessage({ command: 'clear' });
@@ -775,7 +779,9 @@ export function handleDataUpdate(data) {
         updateTransform();
     }
 
-    updateStatus("Ready");
+    if (!state.completionShown && !state.completionScheduled) {
+        updateStatus("Ready");
+    }
 }
 
 export function selectCell(cellName) {
