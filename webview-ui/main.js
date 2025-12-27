@@ -117,6 +117,22 @@ window.addEventListener('message', event => {
             // state.searchWorker.postMessage({ command: 'updateConfig', maxSteps: message.maxSteps });
             console.log("Updated maxSteps to:", message.maxSteps);
         }
+
+        if (message.viewportPaddingFactor !== undefined) {
+            state.viewportPaddingFactor = message.viewportPaddingFactor;
+            if (elements.viewportPaddingFactorInput) {
+                elements.viewportPaddingFactorInput.value = state.viewportPaddingFactor;
+            }
+            console.log("Updated viewportPaddingFactor to:", state.viewportPaddingFactor);
+        }
+
+        if (message.viewportDebounceMs !== undefined) {
+            state.viewportDebounceMs = message.viewportDebounceMs;
+            if (elements.viewportDebounceMsInput) {
+                elements.viewportDebounceMsInput.value = state.viewportDebounceMs;
+            }
+            console.log("Updated viewportDebounceMs to:", state.viewportDebounceMs);
+        }
     } else if (message.command === 'reset') {
         state.flipState = { x: 1, y: state.currentEngine === 'svg' ? -1 : 1 };
         state.rotationState = 0;

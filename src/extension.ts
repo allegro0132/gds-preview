@@ -601,26 +601,32 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                 e.affectsConfiguration('gdsPreview.labelFontSize') ||
                 e.affectsConfiguration('gdsPreview.portFontSize') ||
                 e.affectsConfiguration('gdsPreview.portArrowScale') ||
-                e.affectsConfiguration('gdsPreview.maxSteps')) {
+                e.affectsConfiguration('gdsPreview.maxSteps') ||
+                e.affectsConfiguration('gdsPreview.viewportPaddingFactor') ||
+                e.affectsConfiguration('gdsPreview.viewportDebounceMs')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
                 const newThreshold = config.get<number>('fastModeThreshold', 10);
                 const newFontSize = config.get<number>('labelFontSize', 12);
                 const newPortFontSize = config.get<number>('portFontSize', 12);
                 const newPortArrowScale = config.get<number>('portArrowScale', 1.0);
                 const newMaxSteps = config.get<number>('maxSteps', 5000);
+                const viewportPaddingFactor = config.get<number>('viewportPaddingFactor', 0.25);
+                const viewportDebounceMs = config.get<number>('viewportDebounceMs', 80);
                 webviewPanel.webview.postMessage({
                     command: 'updateSettings',
                     fastModeThreshold: newThreshold,
                     labelFontSize: newFontSize,
                     portFontSize: newPortFontSize,
                     portArrowScale: newPortArrowScale,
-                    maxSteps: newMaxSteps
+                    maxSteps: newMaxSteps,
+                    viewportPaddingFactor,
+                    viewportDebounceMs
                 });
             }
             if (e.affectsConfiguration('gdsPreview.renderingEngine')) {
                 void updateWebview(currentCell, isNegative);
             }
-            if (e.affectsConfiguration('gdsPreview.maxWorkers') || e.affectsConfiguration('gdsPreview.chunkSize') || e.affectsConfiguration('gdsPreview.flowControlStep') || e.affectsConfiguration('gdsPreview.useInstancing') || e.affectsConfiguration('gdsPreview.viewportStreaming') || e.affectsConfiguration('gdsPreview.viewportPaddingFactor') || e.affectsConfiguration('gdsPreview.viewportDebounceMs')) {
+            if (e.affectsConfiguration('gdsPreview.maxWorkers') || e.affectsConfiguration('gdsPreview.chunkSize') || e.affectsConfiguration('gdsPreview.flowControlStep') || e.affectsConfiguration('gdsPreview.useInstancing') || e.affectsConfiguration('gdsPreview.viewportStreaming')) {
                 const config = vscode.workspace.getConfiguration('gdsPreview');
                 const initialRenderingEngine = config.get<string>('renderingEngine', 'canvas');
                 const fastModeThreshold = config.get<number>('fastModeThreshold', 10);

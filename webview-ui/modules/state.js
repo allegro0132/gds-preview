@@ -111,6 +111,9 @@ export const elements = {
     chunkSizeInput: null,
     flowControlStepInput: null,
     useInstancingInput: null,
+    viewportStreamingInput: null,
+    viewportPaddingFactorInput: null,
+    viewportDebounceMsInput: null,
     fontSizeInput: null,
     portFontSizeInput: null,
     portArrowScaleInput: null,
@@ -163,6 +166,9 @@ export function initializeState() {
     elements.chunkSizeInput = document.getElementById('chunk-size-input');
     elements.flowControlStepInput = document.getElementById('flow-control-step-input');
     elements.useInstancingInput = document.getElementById('use-instancing-input');
+    elements.viewportStreamingInput = document.getElementById('viewport-streaming-input');
+    elements.viewportPaddingFactorInput = document.getElementById('viewport-padding-factor-input');
+    elements.viewportDebounceMsInput = document.getElementById('viewport-debounce-ms-input');
     elements.fontSizeInput = document.getElementById('font-size-input');
     elements.portFontSizeInput = document.getElementById('port-font-size-input');
     elements.portArrowScaleInput = document.getElementById('port-arrow-scale-input');

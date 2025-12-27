@@ -180,6 +180,18 @@
                 <input type="checkbox" id="use-instancing-input">
             </div>
             <div class="control-group">
+                <label for="viewport-streaming-input">Viewport Streaming (WebGL + Rust):</label>
+                <input type="checkbox" id="viewport-streaming-input">
+            </div>
+            <div class="control-group">
+                <label for="viewport-padding-factor-input">Viewport Padding Factor:</label>
+                <input type="number" id="viewport-padding-factor-input" value="" min="0" step="0.05">
+            </div>
+            <div class="control-group">
+                <label for="viewport-debounce-ms-input">Viewport Debounce (ms):</label>
+                <input type="number" id="viewport-debounce-ms-input" value="" min="0" step="10">
+            </div>
+            <div class="control-group">
                 <label for="font-size-input">Label Font Size:</label>
                 <input type="number" id="font-size-input" value="" min="1" step="1">
             </div>
@@ -219,6 +231,9 @@
         document.getElementById('chunk-size-input').value = window.gdsConfig.chunkSize;
         document.getElementById('flow-control-step-input').value = window.gdsConfig.flowControlStep;
         document.getElementById('use-instancing-input').checked = window.gdsConfig.useInstancing;
+        document.getElementById('viewport-streaming-input').checked = window.gdsConfig.viewportStreaming;
+        document.getElementById('viewport-padding-factor-input').value = window.gdsConfig.viewportPaddingFactor;
+        document.getElementById('viewport-debounce-ms-input').value = window.gdsConfig.viewportDebounceMs;
         document.getElementById('font-size-input').value = window.gdsConfig.labelFontSize;
         document.getElementById('port-font-size-input').value = window.gdsConfig.portFontSize;
         document.getElementById('port-arrow-scale-input').value = window.gdsConfig.portArrowScale;
