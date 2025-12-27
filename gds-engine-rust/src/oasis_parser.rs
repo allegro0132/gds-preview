@@ -493,12 +493,16 @@ impl<R: Read + Seek> OasisStream<R> {
         Ok(list_type)
     }
 
-    fn read_repetition(&mut self, scale: f64, previous: &Option<Repetition>) -> Result<Option<Repetition>> {
+    fn read_repetition(
+        &mut self,
+        scale: f64,
+        previous: &Option<Repetition>,
+    ) -> Result<(Option<Repetition>, bool)> {
         let rtype = self.read_u8()?;
         // OASIS repetition type 0 means "Previous" (reuse the modal repetition).
         // "No repetition" is represented by omitting the repetition field entirely.
         if rtype == 0 {
-            return Ok(previous.clone());
+            return Ok((previous.clone(), true));
         }
         match rtype {
             1 => {
@@ -506,17 +510,41 @@ impl<R: Read + Seek> OasisStream<R> {
                 let rows = 2 + self.read_var_uint()?;
                 let spacing_x = self.read_var_uint()? as f64 * scale;
                 let spacing_y = self.read_var_uint()? as f64 * scale;
-                Ok(Some(Repetition::Rect(RectRepetition { columns: cols, rows, spacing_x, spacing_y })))
+                Ok((
+                    Some(Repetition::Rect(RectRepetition {
+                        columns: cols,
+                        rows,
+                        spacing_x,
+                        spacing_y,
+                    })),
+                    true,
+                ))
             }
             2 => {
                 let cols = 2 + self.read_var_uint()?;
                 let spacing_x = self.read_var_uint()? as f64 * scale;
-                Ok(Some(Repetition::Rect(RectRepetition { columns: cols, rows: 1, spacing_x, spacing_y: 0.0 })))
+                Ok((
+                    Some(Repetition::Rect(RectRepetition {
+                        columns: cols,
+                        rows: 1,
+                        spacing_x,
+                        spacing_y: 0.0,
+                    })),
+                    true,
+                ))
             }
             3 => {
                 let rows = 2 + self.read_var_uint()?;
                 let spacing_y = self.read_var_uint()? as f64 * scale;
-                Ok(Some(Repetition::Rect(RectRepetition { columns: 1, rows, spacing_x: 0.0, spacing_y })))
+                Ok((
+                    Some(Repetition::Rect(RectRepetition {
+                        columns: 1,
+                        rows,
+                        spacing_x: 0.0,
+                        spacing_y,
+                    })),
+                    true,
+                ))
             }
             4 | 5 => {
                 // Explicit X coordinates
@@ -533,7 +561,7 @@ impl<R: Read + Seek> OasisStream<R> {
                     offsets.push(Point { x, y: 0.0 });
                     count -= 1;
                 }
-                Ok(Some(Repetition::Offsets(offsets)))
+                Ok((Some(Repetition::Offsets(offsets)), true))
             }
             6 | 7 => {
                 // Explicit Y coordinates
@@ -549,7 +577,7 @@ impl<R: Read + Seek> OasisStream<R> {
                     offsets.push(Point { x: 0.0, y });
                     count -= 1;
                 }
-                Ok(Some(Repetition::Offsets(offsets)))
+                Ok((Some(Repetition::Offsets(offsets)), true))
             }
             8 => {
                 // Regular with two vectors
@@ -557,12 +585,21 @@ impl<R: Read + Seek> OasisStream<R> {
                 let rows = 2 + self.read_var_uint()?;
                 let (dx1, dy1) = self.read_gdelta()?;
                 let (dx2, dy2) = self.read_gdelta()?;
-                Ok(Some(Repetition::Regular {
-                    columns: cols,
-                    rows,
-                    v1: Point { x: dx1 as f64 * scale, y: dy1 as f64 * scale },
-                    v2: Point { x: dx2 as f64 * scale, y: dy2 as f64 * scale },
-                }))
+                Ok((
+                    Some(Repetition::Regular {
+                        columns: cols,
+                        rows,
+                        v1: Point {
+                            x: dx1 as f64 * scale,
+                            y: dy1 as f64 * scale,
+                        },
+                        v2: Point {
+                            x: dx2 as f64 * scale,
+                            y: dy2 as f64 * scale,
+                        },
+                    }),
+                    true,
+                ))
             }
             9 => {
                 // Regular with perpendicular vector
@@ -570,7 +607,7 @@ impl<R: Read + Seek> OasisStream<R> {
                 let (dx1, dy1) = self.read_gdelta()?;
                 let v1 = Point { x: dx1 as f64 * scale, y: dy1 as f64 * scale };
                 let v2 = Point { x: -v1.y, y: v1.x };
-                Ok(Some(Repetition::Regular { columns: cols, rows: 1, v1, v2 }))
+                Ok((Some(Repetition::Regular { columns: cols, rows: 1, v1, v2 }), true))
             }
             10 | 11 => {
                 // Explicit offset list
@@ -588,9 +625,22 @@ impl<R: Read + Seek> OasisStream<R> {
                     v.y += dy as f64 * grid;
                     offsets.push(v.clone());
                 }
-                Ok(Some(Repetition::Offsets(offsets)))
+                Ok((Some(Repetition::Offsets(offsets)), true))
             }
-            _ => Err(anyhow!("Unsupported repetition type {}", rtype)),
+            _ => {
+                // OASIS defines repetition types 0..=11. For preview, treat unknown values as a
+                // likely "false positive" repetition flag and rewind so the caller can continue
+                // parsing at the next record.
+                if std::env::var("OASIS_TRACE").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "[oasis] unknown repetition type {} at pos {}, rewinding",
+                        rtype,
+                        self.pos.saturating_sub(1)
+                    );
+                }
+                self.unread_u8(rtype);
+                Ok((None, false))
+            }
         }
     }
 
@@ -839,6 +889,128 @@ fn trapezoid_points(kind: OasisRecord, pos: Point, dim: Point, delta_a: f64, del
         _ => {}
     }
     pts
+}
+
+fn ctrapezoid_points(ct_type: u8, pos: Point, dim: &mut Point) -> Vec<Point> {
+    // Ported from gdstk's OASIS reader (CTRAPEZOID).
+    // Important: some ctrapezoid types update the modal dimensions.
+    let mut v: Vec<Point>;
+
+    if ct_type > 15 && ct_type < 24 {
+        // 3-point polygon, all initialized at pos.
+        v = vec![pos.clone(), pos.clone(), pos.clone()];
+    } else {
+        // 4-point rectangle initialized from pos + dim.
+        v = vec![
+            Point { x: pos.x, y: pos.y },
+            Point { x: pos.x + dim.x, y: pos.y },
+            Point { x: pos.x + dim.x, y: pos.y + dim.y },
+            Point { x: pos.x, y: pos.y + dim.y },
+        ];
+    }
+
+    match ct_type {
+        0 => v[2].x -= dim.y,
+        1 => v[1].x -= dim.y,
+        2 => v[3].x += dim.y,
+        3 => v[0].x += dim.y,
+        4 => {
+            v[2].x -= dim.y;
+            v[3].x += dim.y;
+        }
+        5 => {
+            v[0].x += dim.y;
+            v[1].x -= dim.y;
+        }
+        6 => {
+            v[1].x -= dim.y;
+            v[2].x -= dim.y;
+        }
+        7 => {
+            v[0].x += dim.y;
+            v[3].x += dim.y;
+        }
+        8 => v[2].y -= dim.x,
+        9 => v[1].y -= dim.x,
+        10 => v[3].y += dim.x,
+        11 => v[0].y += dim.x,
+        12 => {
+            v[2].y -= dim.x;
+            v[3].y += dim.x;
+        }
+        13 => {
+            v[0].y += dim.x;
+            v[1].y -= dim.x;
+        }
+        14 => {
+            v[1].y += dim.x;
+            v[3].y -= dim.x;
+        }
+        15 => {
+            v[0].y += dim.x;
+            v[2].y -= dim.x;
+        }
+        16 => {
+            v[1].x += dim.x;
+            v[2].y += dim.x;
+            dim.y = dim.x;
+        }
+        17 => {
+            v[1].x += dim.x;
+            v[1].y += dim.x;
+            v[2].y += dim.x;
+            dim.y = dim.x;
+        }
+        18 => {
+            v[1].x += dim.x;
+            v[2].x += dim.x;
+            v[2].y += dim.x;
+            dim.y = dim.x;
+        }
+        19 => {
+            v[0].x += dim.x;
+            v[1].x += dim.x;
+            v[1].y += dim.x;
+            v[2].y += dim.x;
+            dim.y = dim.x;
+        }
+        20 => {
+            v[1].x += 2.0 * dim.y;
+            v[2].x += dim.y;
+            v[2].y += dim.y;
+            dim.x = 2.0 * dim.y;
+        }
+        21 => {
+            v[0].x += dim.y;
+            v[1].x += 2.0 * dim.y;
+            v[1].y += dim.y;
+            v[2].y += dim.y;
+            dim.x = 2.0 * dim.y;
+        }
+        22 => {
+            v[1].x += dim.x;
+            v[1].y += dim.x;
+            v[2].y += 2.0 * dim.x;
+            dim.y = 2.0 * dim.x;
+        }
+        23 => {
+            v[0].x += dim.x;
+            v[1].x += dim.x;
+            v[1].y += 2.0 * dim.x;
+            v[2].y += dim.x;
+            dim.y = 2.0 * dim.x;
+        }
+        25 => {
+            // Height comes from dim.x for this type.
+            v[2].y = pos.y + dim.x;
+            v[3].y = pos.y + dim.x;
+        }
+        _ => {
+            // Type 24 appears unused/reserved; for unknown types keep the base shape.
+        }
+    }
+
+    v
 }
 
 fn circle_points(center: Point, radius: f64, segments: usize) -> Vec<Point> {
@@ -1195,8 +1367,10 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 };
 
                 let placement_rep = if info & 0x08 != 0 {
-                    let rep = stream.read_repetition(scale, &modal_place_repetition)?;
-                    modal_place_repetition = rep.clone();
+                    let (rep, consumed) = stream.read_repetition(scale, &modal_place_repetition)?;
+                    if consumed {
+                        modal_place_repetition = rep.clone();
+                    }
                     rep
                 } else {
                     None
@@ -1338,7 +1512,10 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 label.y = modal_geom_pos.y;
 
                 if info & 0x04 != 0 {
-                    modal_geom_repetition = stream.read_repetition(scale, &modal_geom_repetition)?;
+                    let (rep, consumed) = stream.read_repetition(scale, &modal_geom_repetition)?;
+                    if consumed {
+                        modal_geom_repetition = rep;
+                    }
                 }
 
                 library.cells[cell_idx].labels.push(label);
@@ -1374,8 +1551,10 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     Point { x: modal_geom_pos.x, y: modal_geom_pos.y + modal_geom_dim.y },
                 ];
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
-                    modal_geom_repetition = rep.clone();
+                    let (rep, consumed) = stream.read_repetition(scale, &modal_geom_repetition)?;
+                    if consumed {
+                        modal_geom_repetition = rep.clone();
+                    }
                     rep
                 } else {
                     None
@@ -1425,8 +1604,10 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     .map(|p| Point { x: p.x + modal_geom_pos.x, y: p.y + modal_geom_pos.y })
                     .collect();
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
-                    modal_geom_repetition = rep.clone();
+                    let (rep, consumed) = stream.read_repetition(scale, &modal_geom_repetition)?;
+                    if consumed {
+                        modal_geom_repetition = rep.clone();
+                    }
                     rep
                 } else {
                     None
@@ -1501,8 +1682,10 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     modal_path_extensions.y,
                 );
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
-                    modal_geom_repetition = rep.clone();
+                    let (rep, consumed) = stream.read_repetition(scale, &modal_geom_repetition)?;
+                    if consumed {
+                        modal_geom_repetition = rep.clone();
+                    }
                     rep
                 } else {
                     None
@@ -1549,8 +1732,10 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     delta_b,
                 );
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
-                    modal_geom_repetition = rep.clone();
+                    let (rep, consumed) = stream.read_repetition(scale, &modal_geom_repetition)?;
+                    if consumed {
+                        modal_geom_repetition = rep.clone();
+                    }
                     rep
                 } else {
                     None
@@ -1570,7 +1755,6 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
             }
             OasisRecord::CTrapezoid => {
-                // Simplify ctrapezoid as bounding rectangle
                 if current_cell.is_none() { return Err(anyhow!("CTRAPEZOID outside of CELL")); }
                 let cell_idx = current_cell.unwrap();
                 let info = stream.read_u8()?;
@@ -1587,16 +1771,12 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     let y = stream.read_integer()? as f64 * scale;
                     if modal_absolute_pos { modal_geom_pos.y = y; } else { modal_geom_pos.y += y; }
                 }
-                let pts = vec![
-                    Point { x: modal_geom_pos.x, y: modal_geom_pos.y },
-                    Point { x: modal_geom_pos.x + modal_geom_dim.x, y: modal_geom_pos.y },
-                    Point { x: modal_geom_pos.x + modal_geom_dim.x, y: modal_geom_pos.y + modal_geom_dim.y },
-                    Point { x: modal_geom_pos.x, y: modal_geom_pos.y + modal_geom_dim.y },
-                ];
-                let _ = modal_ctrapezoid_type;
+                let pts = ctrapezoid_points(modal_ctrapezoid_type, modal_geom_pos.clone(), &mut modal_geom_dim);
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
-                    modal_geom_repetition = rep.clone();
+                    let (rep, consumed) = stream.read_repetition(scale, &modal_geom_repetition)?;
+                    if consumed {
+                        modal_geom_repetition = rep.clone();
+                    }
                     rep
                 } else {
                     None
@@ -1632,8 +1812,10 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
                 let pts = circle_points(modal_geom_pos.clone(), modal_circle_radius, 48);
                 let repetition = if info & 0x04 != 0 {
-                    let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
-                    modal_geom_repetition = rep.clone();
+                    let (rep, consumed) = stream.read_repetition(scale, &modal_geom_repetition)?;
+                    if consumed {
+                        modal_geom_repetition = rep.clone();
+                    }
                     rep
                 } else {
                     None
@@ -1801,4 +1983,45 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
     }
 
     Ok(library)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn ctrapezoid_type_0_is_not_rectangle() {
+        let mut dim = Point { x: 10.0, y: 3.0 };
+        let pts = ctrapezoid_points(0, Point { x: 0.0, y: 0.0 }, &mut dim);
+        assert_eq!(pts.len(), 4);
+        // case 0: v[2].x -= dim.y
+        assert!((pts[2].x - (10.0 - 3.0)).abs() < 1e-12);
+        assert!((pts[2].y - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ctrapezoid_type_16_updates_modal_dim_and_makes_triangle() {
+        let mut dim = Point { x: 7.0, y: 99.0 };
+        let pts = ctrapezoid_points(16, Point { x: 1.0, y: 2.0 }, &mut dim);
+        assert_eq!(pts.len(), 3);
+        // case 16: v1.x += dim.x; v2.y += dim.x; dim.y = dim.x
+        assert!((pts[0].x - 1.0).abs() < 1e-12 && (pts[0].y - 2.0).abs() < 1e-12);
+        assert!((pts[1].x - 8.0).abs() < 1e-12 && (pts[1].y - 2.0).abs() < 1e-12);
+        assert!((pts[2].x - 1.0).abs() < 1e-12 && (pts[2].y - 9.0).abs() < 1e-12);
+        assert!((dim.y - dim.x).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unknown_repetition_type_rewinds_one_byte() {
+        let data = vec![99u8];
+        let mut stream = OasisStream::new(Cursor::new(data));
+        let (rep, consumed) = stream.read_repetition(1.0, &None).expect("read_repetition");
+        assert!(rep.is_none());
+        assert!(!consumed);
+
+        // The byte should have been pushed back.
+        let b = stream.read_u8().expect("read_u8");
+        assert_eq!(b, 99u8);
+    }
 }
