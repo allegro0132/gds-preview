@@ -756,6 +756,64 @@ fn push_polygon_with_repetition(
     }
 }
 
+fn push_label_with_repetition(
+    labels: &mut Vec<Label>,
+    base_label: &Label,
+    repetition: Option<Repetition>,
+) -> usize {
+    let before = labels.len();
+
+    // Always push the base label
+    labels.push(base_label.clone());
+
+    match repetition {
+        Some(Repetition::Rect(rep)) => {
+            for row in 0..rep.rows {
+                for col in 0..rep.columns {
+                    if row == 0 && col == 0 {
+                        continue;
+                    }
+                    let dx = col as f64 * rep.spacing_x;
+                    let dy = row as f64 * rep.spacing_y;
+                    let mut l = base_label.clone();
+                    l.x += dx;
+                    l.y += dy;
+                    labels.push(l);
+                }
+            }
+        }
+        Some(Repetition::Regular { columns, rows, v1, v2 }) => {
+            for row in 0..rows {
+                for col in 0..columns {
+                    if row == 0 && col == 0 {
+                        continue;
+                    }
+                    let dx = v1.x * col as f64 + v2.x * row as f64;
+                    let dy = v1.y * col as f64 + v2.y * row as f64;
+                    let mut l = base_label.clone();
+                    l.x += dx;
+                    l.y += dy;
+                    labels.push(l);
+                }
+            }
+        }
+        Some(Repetition::Offsets(offsets)) => {
+            for off in offsets {
+                if off.x == 0.0 && off.y == 0.0 {
+                    continue;
+                }
+                let mut l = base_label.clone();
+                l.x += off.x;
+                l.y += off.y;
+                labels.push(l);
+            }
+        }
+        None => {}
+    }
+
+    labels.len() - before
+}
+
 fn stroke_path_to_polygon(
     centerline: &[Point],
     width: f64,
@@ -1454,6 +1512,7 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
                 let cell_idx = current_cell.unwrap();
                 let info = stream.read_u8()?;
+                let mut pending_text_table_idx: Option<u64> = None;
                 let mut label = Label {
                     layer: modal_textlayer,
                     texttype: modal_texttype,
@@ -1471,7 +1530,7 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                         if idx < label_text_table.len() {
                             label.text = label_text_table[idx].clone();
                         } else {
-                            pending_label_ids.push((cell_idx, library.cells[cell_idx].labels.len(), idx as u64));
+                            pending_text_table_idx = Some(idx as u64);
                         }
                         modal_text_string = Some((None, Some(idx as u64)));
                     } else {
@@ -1486,6 +1545,8 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     } else if let Some(idx) = t.1 {
                         if (idx as usize) < label_text_table.len() {
                             label.text = label_text_table[idx as usize].clone();
+                        } else {
+                            pending_text_table_idx = Some(idx);
                         }
                     }
                 }
@@ -1511,14 +1572,29 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 label.x = modal_geom_pos.x;
                 label.y = modal_geom_pos.y;
 
-                if info & 0x04 != 0 {
+                let repetition = if info & 0x04 != 0 {
                     let (rep, consumed) = stream.read_repetition(scale, &modal_geom_repetition)?;
                     if consumed {
-                        modal_geom_repetition = rep;
+                        modal_geom_repetition = rep.clone();
+                    }
+                    rep
+                } else {
+                    None
+                };
+                note_repetition(&repetition);
+
+                let before = library.cells[cell_idx].labels.len();
+                let added = push_label_with_repetition(
+                    &mut library.cells[cell_idx].labels,
+                    &label,
+                    repetition,
+                );
+
+                if let Some(idx) = pending_text_table_idx {
+                    for i in 0..added {
+                        pending_label_ids.push((cell_idx, before + i, idx));
                     }
                 }
-
-                library.cells[cell_idx].labels.push(label);
             }
             OasisRecord::Rectangle => {
                 if current_cell.is_none() {
