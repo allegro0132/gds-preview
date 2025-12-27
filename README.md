@@ -28,6 +28,7 @@ A high-performance GDSII/OASIS file viewer for Visual Studio Code, featuring GPU
     - **Rust engine**: Streams geometry as raw binary frames over a local WebSocket (served by the extension) to avoid Base64 overhead.
   - **Incremental Rendering**: Streams data for all modes (WebGL, Canvas) to provide immediate visual feedback.
   - **Viewport Culling**: Only renders what is visible on screen.
+  - **Viewport Streaming (WebGL + Rust)**: Requests geometry on-demand for the current camera viewport (with a small neighborhood padding) to keep huge layouts responsive and avoid client-side memory blowups.
   - **Dynamic Level of Detail (LOD)**: Automatically reduces detail during fast interactions to maintain high frame rates.
   - **Instanced Rendering**: Uses hardware instancing (`ANGLE_instanced_arrays`) to efficiently render hierarchical designs with thousands of repeated cells.
   - **Backend Triangulation (Rust/WebGL)**: WebGL triangles can be generated in the Rust backend (parallelized) and streamed directly to the webview.
@@ -43,7 +44,7 @@ This extension provides three rendering pipelines to suit different needs:
 - **Technology**: GPU-accelerated rendering using WebGL.
 - **Pros**: Extremely smooth Pan/Zoom performance ("Silky Smooth"). Handles millions of polygons with ease. Supports **Instanced Rendering** for hierarchical designs.
 - **Cons**: Slightly longer initial load time due to polygon triangulation.
-- **Best For**: Large, complex layouts (10MB+), hierarchical designs.
+- **Best For**: Large, complex layouts (1GB+), hierarchical designs.
 
 ### 2. SVG
 - **Technology**: Scalable Vector Graphics (DOM-based).
@@ -99,6 +100,20 @@ This extension contributes the following settings:
   * Number of chunks to send before waiting for a signal from the frontend.
   * Helps prevent the extension host from being overwhelmed by data.
   * Set to `-1` to disable flow control.
+  * Note: This setting applies to legacy stdout/Base64 streaming. In Rust TCP/WebSocket binary streaming mode, stdin is reserved for JSON commands and stdin-based flow control is disabled.
+
+* `gdsPreview.viewportStreaming`: (Default: `false`)
+  * **(WebGL + Rust)** Streams geometry on-demand based on the current viewport instead of streaming the entire design.
+  * Best for extremely large layouts where full streaming would be too slow or memory-heavy.
+
+* `gdsPreview.viewportPaddingFactor`: (Default: `0.25`)
+  * Extra neighborhood margin around the current viewport.
+  * Interpreted as a fraction of `max(viewportWidth, viewportHeight)` in world units.
+  * Higher values reduce visible pop-in while panning, at the cost of fetching more geometry per request.
+
+* `gdsPreview.viewportDebounceMs`: (Default: `80`)
+  * Debounce interval (ms) for viewport geometry requests during pan/zoom.
+  * Higher values reduce request frequency (less CPU/network churn) but increase latency.
 
 * `gdsPreview.maxSteps`: (Default: `5000`)
   * The max steps for connected objects finding algorithm.
@@ -131,6 +146,7 @@ This extension supports two backend engines for processing GDSII/OASIS files:
 
 - In Rust + WebGL mode, geometry may be streamed as binary frames over a local WebSocket.
 - When streaming in true incremental mode, the total number of chunks may be unknown up-front (the UI will show per-chunk progress without a total).
+- When using TCP/WebSocket streaming, stdin is reserved for JSON commands (e.g. viewport updates, search). Stdin-based flow-control is disabled in this mode.
 
 ### Python Backend
 - **Status**: Stable, original implementation

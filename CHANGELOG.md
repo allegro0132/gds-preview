@@ -4,6 +4,19 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.3.10] - 2025-12-27
+
+### Added
+- **Viewport (Viewpoint) Streaming (WebGL + Rust)**: Request geometry on-demand for the current viewport (with neighborhood padding) to keep huge layouts responsive and reduce memory usage.
+- **Viewport streaming settings**:
+  - `gdsPreview.viewportStreaming`
+  - `gdsPreview.viewportPaddingFactor`
+  - `gdsPreview.viewportDebounceMs`
+- **Backend dedup for viewport snapshots**: The Rust backend can suppress redundant viewport refreshes when the visible instance set has not changed.
+
+### Changed
+- **Rust TCP streaming**: Disabled stdin-based flow control whenever `--tcp-port` is active to avoid consuming stdin JSON commands (viewport/search/etc.).
+
 ## [0.3.9] - 2025-12-27
 
 ### Added
