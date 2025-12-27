@@ -7,7 +7,9 @@ mod analysis;
 
 use clap::Parser;
 use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::DefaultHasher;
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read, Seek, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
@@ -301,7 +303,7 @@ fn main() -> Result<()> {
                     "message": "Search stopped"
                 }));
             } else if cmd["command"] == "viewport" {
-                if let Some(rt) = viewport_runtime.as_ref() {
+                if let Some(rt) = viewport_runtime.as_mut() {
                     let req_id = cmd["requestId"].as_u64().unwrap_or(0) as u32;
                     let bbox = &cmd["bbox"];
                     let vminx = bbox["minX"].as_f64().unwrap_or(0.0);
@@ -536,6 +538,83 @@ struct ViewportRuntime {
     multi_instances: HashMap<String, Vec<Matrix3x3>>,
     cell_bbox_local: HashMap<String, (f64, f64, f64, f64)>,
     cell_max_radius: HashMap<String, f64>,
+    last_fingerprint: Option<u64>,
+}
+
+fn hash_matrix_f32(hasher: &mut DefaultHasher, t: &Matrix3x3) {
+    for col in 0..3 {
+        for row in 0..3 {
+            let v = t.m[row][col] as f32;
+            hasher.write_u32(v.to_bits());
+        }
+    }
+}
+
+fn viewport_selection_fingerprint(
+    rt: &ViewportRuntime,
+    view: (f64, f64, f64, f64),
+    active_layers: &HashSet<(i16, i16)>,
+) -> u64 {
+    // Stable fingerprint for "what would be sent" for this viewport request.
+    // Note: HashMap iteration order is nondeterministic, so we sort keys.
+    let mut hasher = DefaultHasher::new();
+
+    // Version marker to allow future changes without accidental collisions.
+    1u8.hash(&mut hasher);
+
+    // Layer filter affects which triangles we would stream (single-instance path).
+    if active_layers.is_empty() {
+        0u8.hash(&mut hasher);
+    } else {
+        1u8.hash(&mut hasher);
+        let mut layers: Vec<(i16, i16)> = active_layers.iter().copied().collect();
+        layers.sort_unstable();
+        layers.hash(&mut hasher);
+    }
+
+    // Single-instance selection.
+    let mut single_keys: Vec<&String> = rt.single_instances.keys().collect();
+    single_keys.sort_unstable();
+    for cell_name in single_keys {
+        let transforms = match rt.single_instances.get(cell_name) {
+            Some(t) => t,
+            None => continue,
+        };
+        let local_bbox = *rt.cell_bbox_local.get(cell_name).unwrap_or(&(0.0, 0.0, 0.0, 0.0));
+        for t in transforms {
+            let tb = transform_bbox(t, local_bbox);
+            if !bbox_intersects(tb, view) {
+                continue;
+            }
+            // Tag + identity + transform.
+            1u8.hash(&mut hasher);
+            cell_name.hash(&mut hasher);
+            hash_matrix_f32(&mut hasher, t);
+        }
+    }
+
+    // Multi-instance selection.
+    let mut multi_keys: Vec<&String> = rt.multi_instances.keys().collect();
+    multi_keys.sort_unstable();
+    for cell_name in multi_keys {
+        let transforms = match rt.multi_instances.get(cell_name) {
+            Some(t) => t,
+            None => continue,
+        };
+        let radius = *rt.cell_max_radius.get(cell_name).unwrap_or(&1e9);
+        for t in transforms.iter() {
+            let tx = t.m[0][2];
+            let ty = t.m[1][2];
+            if tx + radius < view.0 || tx - radius > view.1 || ty + radius < view.2 || ty - radius > view.3 {
+                continue;
+            }
+            2u8.hash(&mut hasher);
+            cell_name.hash(&mut hasher);
+            hash_matrix_f32(&mut hasher, t);
+        }
+    }
+
+    hasher.finish()
 }
 
 fn cell_local_bbox(cell: &Cell) -> (f64, f64, f64, f64) {
@@ -703,24 +782,38 @@ fn process_instanced_viewport_preamble(
         }
     }
 
-    Ok(ViewportRuntime { single_instances, multi_instances, cell_bbox_local, cell_max_radius })
+    Ok(ViewportRuntime { single_instances, multi_instances, cell_bbox_local, cell_max_radius, last_fingerprint: None })
 }
 
 fn stream_viewport_geometry(
     lib: &Library,
-    rt: &ViewportRuntime,
+    rt: &mut ViewportRuntime,
     args: &Args,
     transport: &mut dyn ChunkTransport,
     request_id: u32,
     view: (f64, f64, f64, f64),
     active_layers: &HashSet<(i16, i16)>,
 ) -> Result<()> {
+    // Compute "what would be sent" fingerprint. If unchanged, skip sending anything.
+    // This reduces redundant retransmits during small pans/zooms.
+    let fp = viewport_selection_fingerprint(rt, view, active_layers);
+    if rt.last_fingerprint == Some(fp) {
+        return Ok(());
+    }
+    rt.last_fingerprint = Some(fp);
+
     // Begin snapshot
     send_control(transport, 1, request_id)?;
 
     // Single-instance cells: stream flattened triangles only if their transformed bbox intersects view.
     let mut tri_builders: HashMap<String, TriChunkBuilder> = HashMap::new();
-    for (cell_name, transforms) in rt.single_instances.iter() {
+    let mut single_keys: Vec<&String> = rt.single_instances.keys().collect();
+    single_keys.sort_unstable();
+    for cell_name in single_keys {
+        let transforms = match rt.single_instances.get(cell_name) {
+            Some(t) => t,
+            None => continue,
+        };
         let cell = match lib.cells.iter().find(|c| c.name == *cell_name) {
             Some(c) => c,
             None => continue,
@@ -743,7 +836,13 @@ fn stream_viewport_geometry(
     flush_all_triangle_builders(&mut tri_builders, args, transport, WsChunkKind::FlatTriangles, None)?;
 
     // Multi-instance cells: stream only instance transforms that could overlap view (translation +/- radius).
-    for (cell_name, transforms) in rt.multi_instances.iter() {
+    let mut multi_keys: Vec<&String> = rt.multi_instances.keys().collect();
+    multi_keys.sort_unstable();
+    for cell_name in multi_keys {
+        let transforms = match rt.multi_instances.get(cell_name) {
+            Some(t) => t,
+            None => continue,
+        };
         let radius = *rt.cell_max_radius.get(cell_name).unwrap_or(&1e9);
 
         let mut filtered: Vec<&Matrix3x3> = Vec::new();
