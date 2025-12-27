@@ -103,6 +103,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
         let wsPort: number | undefined;
         let tcpPort: number | undefined;
         let wsToken: string | undefined;
+        let wsUrl: string | undefined;
         let wsClients = new Set<WebSocket>();
         let tcpSockets = new Set<net.Socket>();
         let pendingWsFrames: Buffer[] = [];
@@ -132,6 +133,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             wsPort = undefined;
             tcpPort = undefined;
             wsToken = undefined;
+            wsUrl = undefined;
         };
 
         const startGeometryBridgeServers = async () => {
@@ -227,7 +229,15 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
             if (!wsPort || !tcpPort || !wsToken) {
                 throw new Error('Failed to start geometry bridge servers');
             }
-            return { wsPort, tcpPort, wsToken };
+
+            // Expose a URL that the webview can reach even in Remote-* scenarios.
+            // In local VS Code, this typically round-trips to http://127.0.0.1:<port>.
+            // In Remote-SSH/WSL/Containers, this becomes a forwarded/proxied https URL.
+            const externalHttp = await vscode.env.asExternalUri(vscode.Uri.parse(`http://127.0.0.1:${wsPort}`));
+            const externalStr = externalHttp.toString();
+            wsUrl = externalStr.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
+
+            return { wsPort, tcpPort, wsToken, wsUrl };
         };
 
         // Set initial HTML content
@@ -417,7 +427,8 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                             console.log("[PythonProcess] Sending initialize command to webview");
                             // Inject WS endpoint for Rust geometry streaming
                             if (engineType === 'rust' && wsPort && wsToken) {
-                                (data as any).ws = { port: wsPort, token: wsToken };
+                                // Prefer url (remote-friendly), keep port for backward compatibility.
+                                (data as any).ws = { url: wsUrl, port: wsPort, token: wsToken };
                             }
                             // Metadata
                             webviewPanel.webview.postMessage({

@@ -203,16 +203,21 @@ function handleGeometryWsBinary(buffer) {
 }
 
 function connectGeometryWebSocket(wsInfo) {
-    if (!wsInfo || !wsInfo.port || !wsInfo.token) return;
+    if (!wsInfo || !wsInfo.token) return;
+
+    const url = wsInfo.url ? String(wsInfo.url) : (wsInfo.port ? `ws://127.0.0.1:${wsInfo.port}` : null);
+    if (!url) return;
+
+    updateStatus(`Connecting geometry WS${wsInfo.url ? ' (remote)' : ''}...`);
 
     // If we are already connected to a different wsInfo, reconnect.
-    if (geometryWsConnected && geometryWsInfo && (geometryWsInfo.port !== wsInfo.port || geometryWsInfo.token !== wsInfo.token)) {
+    if (geometryWsConnected && geometryWsInfo && (geometryWsInfo.url !== url || geometryWsInfo.token !== wsInfo.token)) {
         try { geometryWs.close(); } catch (_) { }
         geometryWsConnected = false;
     }
     if (geometryWsConnected) return;
 
-    geometryWsInfo = { port: wsInfo.port, token: wsInfo.token };
+    geometryWsInfo = { url, token: wsInfo.token };
 
     geometryWsProf = {
         connectedAt: null,
@@ -222,7 +227,6 @@ function connectGeometryWebSocket(wsInfo) {
         kindCounts: Object.create(null)
     };
 
-    const url = `ws://127.0.0.1:${wsInfo.port}`;
     geometryWs = new WebSocket(url);
     geometryWs.binaryType = 'arraybuffer';
 
