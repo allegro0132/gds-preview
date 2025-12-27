@@ -1,21 +1,39 @@
 import { state, elements } from './state.js';
 
 export function updateStatus(msg) {
+    // During a short "pinned" window (e.g. right after load completion), avoid overwriting
+    // the status with other non-critical updates.
+    if (state.statusPinUntil && performance.now() < state.statusPinUntil) {
+        if (typeof msg === 'string' && !msg.startsWith('Loaded successfully')) {
+            return;
+        }
+    }
     if (elements.statusMsg) elements.statusMsg.textContent = msg;
     console.log("Status:", msg);
 }
 
 export function checkCompletion() {
     if (state.completionShown) return;
+    if (state.completionScheduled) return;
     if (state.pythonFinished && state.pendingTasks === 0) {
-        state.completionShown = true;
+        state.completionScheduled = true;
         const elapsed = (performance.now() - state.startTime).toFixed(0);
-        updateStatus(`Loaded successfully in ${elapsed}ms`);
-        if (state.enableProfiling) {
-            console.log("PROFILE: Total Load Time:", elapsed, "ms");
-            console.log("PROFILE: Total Worker Time (Cumulative):", state.perfMetrics.workerTime.toFixed(0), "ms");
-            console.log("PROFILE: Main Thread Parse Time:", state.perfMetrics.mainThreadParseTime.toFixed(0), "ms");
-        }
+
+        // Wait for at least one paint (double rAF) so the UI has had a chance to
+        // present the final rendered frame before we declare completion.
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                state.completionShown = true;
+                state.completionScheduled = false;
+                state.statusPinUntil = performance.now() + 1000;
+                updateStatus(`Loaded successfully in ${elapsed}ms`);
+                if (state.enableProfiling) {
+                    console.log("PROFILE: Total Load Time:", elapsed, "ms");
+                    console.log("PROFILE: Total Worker Time (Cumulative):", state.perfMetrics.workerTime.toFixed(0), "ms");
+                    console.log("PROFILE: Main Thread Parse Time:", state.perfMetrics.mainThreadParseTime.toFixed(0), "ms");
+                }
+            });
+        });
     }
 }
 
