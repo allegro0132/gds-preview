@@ -8,6 +8,7 @@ enum ElementType {
     None,
     Boundary,
     Path,
+    Box,
     Sref,
     Aref,
     Text,
@@ -29,6 +30,9 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
     let mut current_mag: Option<f64> = None;
     let mut current_strans: u16 = 0;
     let mut current_colrow: (u16, u16) = (1, 1);
+
+    // BOX handling (BOXTYPE is distinct from DATATYPE in GDSII)
+    let mut current_boxtype: i16 = 0;
 
     // PATH handling
     let mut current_width: Option<f64> = None; // in output units (microns)
@@ -97,6 +101,14 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
                                         current_bgnextn = 0.0;
                                         current_endextn = 0.0;
                                     }
+                                    0x2D => {
+                                        if let Some(ref mut cell) = current_cell { process_properties(&current_properties, cell, library.units); }
+                                        current_properties.clear();
+                                        el_type = ElementType::Box;
+                                        current_xy.clear();
+                                        current_layer = 0;
+                                        current_boxtype = 0;
+                                    }
                                     0x0A => {
                                         if let Some(ref mut cell) = current_cell { process_properties(&current_properties, cell, library.units); }
                                         current_properties.clear();
@@ -115,6 +127,7 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
 
                                     0x0D => if let GdsData::Int16(v) = record.data { current_layer = v[0]; }
                                     0x0E => if let GdsData::Int16(v) = record.data { current_datatype = v[0]; }
+                                    0x2E => if let GdsData::Int16(v) = record.data { if !v.is_empty() { current_boxtype = v[0]; } }
                                     0x0F => { // WIDTH
                                         if let GdsData::Int32(v) = record.data {
                                             if !v.is_empty() {
@@ -182,6 +195,24 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
                                                     points: outline,
                                                 });
                                             }
+                                        }
+                                    }
+                                    ElementType::Box => {
+                                        // BOX uses LAYER + BOXTYPE + XY (usually closed like BOUNDARY).
+                                        let mut pts = current_xy.clone();
+                                        if pts.len() >= 2 {
+                                            if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
+                                                if (first.x == last.x) && (first.y == last.y) {
+                                                    pts.pop();
+                                                }
+                                            }
+                                        }
+                                        if pts.len() >= 3 {
+                                            cell.polygons.push(Polygon {
+                                                layer: current_layer,
+                                                datatype: current_boxtype,
+                                                points: pts,
+                                            });
                                         }
                                     }
                                     ElementType::Sref => {

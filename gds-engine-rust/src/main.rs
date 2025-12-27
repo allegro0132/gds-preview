@@ -1294,6 +1294,8 @@ fn flush_triangle_builder(
     }
 
     // Triangulate buffered polygons in parallel.
+    // Note: We intentionally treat each boundary independently (no hole reconstruction).
+    // GDSII has no explicit "hole" primitive; hole semantics require boolean ops or upstream fracture.
     let parts: Vec<Vec<f32>> = builder
         .pending_coords
         .par_iter()

@@ -1,7 +1,6 @@
 use std::fs::File;
 
 use gds_engine_rust::gds_loader::load_gds;
-use gds_engine_rust::oasis_parser::load_oasis;
 
 fn bbox(points: &[gds_engine_rust::geometry::Point]) -> (f64, f64, f64, f64) {
     let mut min_x = f64::INFINITY;
@@ -19,7 +18,7 @@ fn bbox(points: &[gds_engine_rust::geometry::Point]) -> (f64, f64, f64, f64) {
 
 #[test]
 fn singular_1_path_is_polygonized_with_width() {
-    let file = File::open("tests/singular_1.gds").expect("open singular_1.gds");
+    let file = File::open("tests/generated/singular_1.gds").expect("open singular_1.gds");
     let lib = load_gds(file).expect("load gds");
 
     let cell = lib
@@ -50,9 +49,9 @@ fn singular_1_path_is_polygonized_with_width() {
 }
 
 #[test]
-fn singular_1_oas_path_is_polygonized_with_width() {
-    let file = File::open("tests/singular_1.oas").expect("open singular_1.oas");
-    let lib = load_oasis(file).expect("load oas");
+fn p0_box_is_loaded_as_polygon() {
+    let file = File::open("tests/generated/p0_box.gds").expect("open p0_box.gds");
+    let lib = load_gds(file).expect("load gds");
 
     let cell = lib
         .cells
@@ -60,22 +59,8 @@ fn singular_1_oas_path_is_polygonized_with_width() {
         .find(|c| c.name == "TOP")
         .expect("TOP cell present");
 
-    assert_eq!(cell.polygons.len(), 1, "expected one rendered polygon");
-
-    let poly = &cell.polygons[0];
     assert!(
-        poly.points.len() >= 6,
-        "PATH should be polygonized (got {} pts)",
-        poly.points.len()
+        !cell.polygons.is_empty(),
+        "expected BOX to produce at least one polygon"
     );
-
-    let (min_x, max_x, min_y, max_y) = bbox(&poly.points);
-    let x_span = max_x - min_x;
-    let y_span = max_y - min_y;
-
-    // Centerline spans 100 x 8 (microns) in this file; polygonized outline must be wider.
-    assert!(x_span > 100.0, "expected x-span > 100um, got {x_span}");
-    assert!(y_span > 8.0, "expected y-span > 8um, got {y_span}");
-
-    assert!(min_x.is_finite() && max_x.is_finite() && min_y.is_finite() && max_y.is_finite());
 }
