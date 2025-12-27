@@ -58,6 +58,10 @@ function scheduleViewportRequest() {
             bbox,
             layers: Array.from(state.activeLayers)
         });
+
+        if (state.enableProfiling) {
+            console.log('[prof] send viewport (debounced)', { requestId, bbox, layers: state.activeLayers.size });
+        }
     }, state.viewportDebounceMs);
 }
 
@@ -632,6 +636,18 @@ export function setupListeners() {
                 command: 'updateConfig',
                 key: 'viewportDebounceMs',
                 value: v
+            });
+        });
+    }
+
+    if (elements.enableProfilingInput) {
+        elements.enableProfilingInput.addEventListener('change', (e) => {
+            const enabled = !!e.target.checked;
+            state.enableProfiling = enabled;
+            state.vscode.postMessage({
+                command: 'updateConfig',
+                key: 'enableProfiling',
+                value: enabled
             });
         });
     }

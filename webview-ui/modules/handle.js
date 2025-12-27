@@ -5,7 +5,40 @@ import { updateTransform, resizeCanvas, fitView, screenToWorld } from './transfo
 
 let geometryWs = null;
 let geometryWsConnected = false;
+let geometryWsInfo = null;
+let geometryWsReadyCallbacks = [];
 const wsTextDecoder = new TextDecoder();
+
+const profLog = (...args) => {
+    if (!state.enableProfiling) return;
+    console.log(...args);
+};
+
+let geometryWsProf = {
+    connectedAt: null,
+    authedAt: null,
+    firstBinaryAt: null,
+    framesSeen: 0,
+    kindCounts: Object.create(null)
+};
+
+function onGeometryWsReady(cb) {
+    if (geometryWsConnected) {
+        setTimeout(cb, 0);
+        return;
+    }
+    geometryWsReadyCallbacks.push(cb);
+}
+
+function flushGeometryWsReadyCallbacks() {
+    if (!geometryWsConnected) return;
+    if (!geometryWsReadyCallbacks || geometryWsReadyCallbacks.length === 0) return;
+    const cbs = geometryWsReadyCallbacks;
+    geometryWsReadyCallbacks = [];
+    for (const cb of cbs) {
+        try { setTimeout(cb, 0); } catch (_) { }
+    }
+}
 
 function formatChunkProgress(chunkIndex, totalChunks) {
     const cur = (chunkIndex ?? 0) + 1;
@@ -171,7 +204,23 @@ function handleGeometryWsBinary(buffer) {
 
 function connectGeometryWebSocket(wsInfo) {
     if (!wsInfo || !wsInfo.port || !wsInfo.token) return;
+
+    // If we are already connected to a different wsInfo, reconnect.
+    if (geometryWsConnected && geometryWsInfo && (geometryWsInfo.port !== wsInfo.port || geometryWsInfo.token !== wsInfo.token)) {
+        try { geometryWs.close(); } catch (_) { }
+        geometryWsConnected = false;
+    }
     if (geometryWsConnected) return;
+
+    geometryWsInfo = { port: wsInfo.port, token: wsInfo.token };
+
+    geometryWsProf = {
+        connectedAt: null,
+        authedAt: null,
+        firstBinaryAt: null,
+        framesSeen: 0,
+        kindCounts: Object.create(null)
+    };
 
     const url = `ws://127.0.0.1:${wsInfo.port}`;
     geometryWs = new WebSocket(url);
@@ -179,10 +228,42 @@ function connectGeometryWebSocket(wsInfo) {
 
     geometryWs.onopen = () => {
         geometryWsConnected = true;
+        geometryWsProf.connectedAt = performance.now();
+        profLog(`[prof] geometry WS open: ${url}`);
+
         geometryWs.send(wsInfo.token);
+        geometryWsProf.authedAt = performance.now();
+        flushGeometryWsReadyCallbacks();
     };
     geometryWs.onmessage = (ev) => {
         if (typeof ev.data === 'string') return;
+
+        if (!geometryWsProf.firstBinaryAt) {
+            geometryWsProf.firstBinaryAt = performance.now();
+            const bytes = ev.data instanceof ArrayBuffer ? ev.data.byteLength : (ev.data?.byteLength ?? 0);
+            let version = null;
+            let kind = null;
+            try {
+                if (ev.data instanceof ArrayBuffer && ev.data.byteLength >= 2) {
+                    const u8 = new Uint8Array(ev.data, 0, 2);
+                    version = u8[0];
+                    kind = u8[1];
+                }
+            } catch (_) { }
+            profLog(`[prof] geometry WS first binary: version=${version} kind=${kind} bytes=${bytes}`);
+        }
+
+        try {
+            if (ev.data instanceof ArrayBuffer && ev.data.byteLength >= 2) {
+                const kind = new Uint8Array(ev.data, 1, 1)[0];
+                geometryWsProf.framesSeen += 1;
+                geometryWsProf.kindCounts[kind] = (geometryWsProf.kindCounts[kind] || 0) + 1;
+                if (geometryWsProf.framesSeen === 100) {
+                    profLog(`[prof] geometry WS first 100 frames kindCounts=${JSON.stringify(geometryWsProf.kindCounts)}`);
+                }
+            }
+        } catch (_) { }
+
         state.pendingTasks++;
         try {
             handleGeometryWsBinary(ev.data);
@@ -197,6 +278,7 @@ function connectGeometryWebSocket(wsInfo) {
     };
     geometryWs.onclose = () => {
         geometryWsConnected = false;
+        profLog(`[prof] geometry WS closed (framesSeen=${geometryWsProf.framesSeen})`);
     };
 }
 
@@ -627,8 +709,10 @@ export function handleInitialize(data) {
     // Kick an initial viewport request as soon as we have bbox + transform.
     // Listener code will also refresh on user interaction.
     if (state.currentEngine === 'webgl' && state.config.engineType === 'rust' && state.viewportStreaming && state.useInstancing) {
-        // Defer to allow canvas sizing/fitView to run.
-        setTimeout(() => {
+        let sent = false;
+        const sendViewport = () => {
+            if (sent) return;
+
             const container = elements.viewContainer;
             if (!container) return;
             const w = container.clientWidth;
@@ -653,10 +737,22 @@ export function handleInitialize(data) {
             minY -= pad;
             maxY += pad;
 
+            if (![minX, maxX, minY, maxY].every(Number.isFinite)) return;
+
             const requestId = (state.viewportRequestSeq + 1) >>> 0;
             state.viewportRequestSeq = requestId;
+            sent = true;
+            if (state.enableProfiling) {
+                console.log('[prof] send initial viewport', { requestId, bbox: { minX, maxX, minY, maxY }, layers: state.activeLayers.size });
+            }
             state.vscode.postMessage({ command: 'viewport', requestId, bbox: { minX, maxX, minY, maxY }, layers: Array.from(state.activeLayers) });
-        }, 0);
+        };
+
+        // In desktop mode, the first viewport snapshot can be produced before the WS is open/auth'd,
+        // causing the initial view to appear blank until the next interaction.
+        // Wait for WS open when available, but keep a timeout fallback.
+        onGeometryWsReady(sendViewport);
+        setTimeout(sendViewport, 500);
     }
 }
 
