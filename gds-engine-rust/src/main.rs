@@ -415,7 +415,10 @@ fn process_flattened(
         "polygons" => {
             let mut builders: HashMap<String, PolyChunkBuilder> = HashMap::new();
             if let Some(tcp_ref) = tcp.as_deref_mut() {
-                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: args.flow_control_step };
+                // IMPORTANT: When streaming over TCP (--tcp-port), stdin is reserved for JSON commands.
+                // The legacy flow-control mechanism reads from stdin inside `send()`, which can
+                // accidentally consume those JSON commands. Disable stdin-based flow control.
+                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
                 stream_recursive_polygons(lib, main_cell, &Matrix3x3::identity(), &mut builders, args, &mut transport, WsChunkKind::FlatPolygons, None)?;
                 flush_all_polygon_builders(&mut builders, args, &mut transport, WsChunkKind::FlatPolygons, None)?;
             } else {
@@ -427,7 +430,7 @@ fn process_flattened(
         "triangles" => {
             let mut builders: HashMap<String, TriChunkBuilder> = HashMap::new();
             let tcp_ref = tcp.as_deref_mut().ok_or_else(|| anyhow::anyhow!("tcp required"))?;
-            let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: args.flow_control_step };
+            let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
             stream_recursive_triangles(lib, main_cell, &Matrix3x3::identity(), &mut builders, args, &mut transport, WsChunkKind::FlatTriangles, None)?;
             flush_all_triangle_builders(&mut builders, args, &mut transport, WsChunkKind::FlatTriangles, None)?;
         }
@@ -1446,7 +1449,9 @@ fn process_instanced(
         "polygons" => {
             let mut builders: HashMap<String, PolyChunkBuilder> = HashMap::new();
             if let Some(tcp_ref) = tcp.as_deref_mut() {
-                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: args.flow_control_step };
+                // IMPORTANT: When streaming over TCP (--tcp-port), stdin is reserved for JSON commands.
+                // Disable stdin-based flow control to avoid consuming those commands.
+                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
                 for (cell_name, transforms) in &single_instances {
                     if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
                         for t in transforms {
@@ -1475,7 +1480,7 @@ fn process_instanced(
         }
         "triangles" => {
             let tcp_ref = tcp.as_deref_mut().ok_or_else(|| anyhow::anyhow!("tcp required"))?;
-            let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: args.flow_control_step };
+            let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
             let mut builders: HashMap<String, TriChunkBuilder> = HashMap::new();
             for (cell_name, transforms) in &single_instances {
                 if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
@@ -1521,7 +1526,7 @@ fn process_instanced(
             for (cell_name, _transforms) in multi_instances.iter() {
                 let mut builders: HashMap<String, PolyChunkBuilder> = HashMap::new();
                 if let Some(tcp_ref) = tcp.as_deref_mut() {
-                    let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: args.flow_control_step };
+                    let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
                     if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
                         for poly in &cell.polygons {
                             let key = format!("{}_{}", poly.layer, poly.datatype);
@@ -1544,7 +1549,7 @@ fn process_instanced(
         "triangles" => {
             for (cell_name, _transforms) in multi_instances.iter() {
                 let tcp_ref = tcp.as_deref_mut().ok_or_else(|| anyhow::anyhow!("tcp required"))?;
-                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: args.flow_control_step };
+                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
                 let mut builders: HashMap<String, TriChunkBuilder> = HashMap::new();
                 if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
                     for poly in &cell.polygons {
@@ -1573,7 +1578,7 @@ fn process_instanced(
             }
 
             if let Some(tcp_ref) = tcp.as_deref_mut() {
-                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: args.flow_control_step };
+                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
                 transport.send(WsChunkKind::Instances, "", Some(cell_name.as_str()), i as u32, total_chunks as u32, &buffer)?;
             } else {
                 let mut transport = StdoutTransport { flow_control_step: args.flow_control_step };
