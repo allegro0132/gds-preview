@@ -706,6 +706,113 @@ fn push_polygon_with_repetition(
     }
 }
 
+fn stroke_path_to_polygon(
+    centerline: &[Point],
+    width: f64,
+    bgnextn: f64,
+    endextn: f64,
+) -> Option<Vec<Point>> {
+    if centerline.len() < 2 || width <= 0.0 {
+        return None;
+    }
+
+    let hw = width * 0.5;
+
+    let mut pts: Vec<Point> = centerline.to_vec();
+
+    let tangent = |a: &Point, b: &Point| -> Option<(f64, f64)> {
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len <= 0.0 {
+            None
+        } else {
+            Some((dx / len, dy / len))
+        }
+    };
+
+    // Extend endpoints along their tangents.
+    if bgnextn != 0.0 {
+        if let Some((tx, ty)) = tangent(&pts[0], &pts[1]) {
+            pts[0].x -= tx * bgnextn;
+            pts[0].y -= ty * bgnextn;
+        }
+    }
+    if endextn != 0.0 {
+        let n = pts.len();
+        if let Some((tx, ty)) = tangent(&pts[n - 2], &pts[n - 1]) {
+            pts[n - 1].x += tx * endextn;
+            pts[n - 1].y += ty * endextn;
+        }
+    }
+
+    // Segment normals.
+    let mut seg_normals: Vec<(f64, f64)> = Vec::with_capacity(pts.len() - 1);
+    for i in 0..(pts.len() - 1) {
+        if let Some((tx, ty)) = tangent(&pts[i], &pts[i + 1]) {
+            seg_normals.push((-ty, tx));
+        } else {
+            seg_normals.push((0.0, 0.0));
+        }
+    }
+
+    // Offset points with miter joins.
+    let mut left: Vec<Point> = Vec::with_capacity(pts.len());
+    let mut right: Vec<Point> = Vec::with_capacity(pts.len());
+
+    for i in 0..pts.len() {
+        let (nx, ny, miter_len) = if i == 0 {
+            let (nx, ny) = seg_normals[0];
+            (nx, ny, hw)
+        } else if i == pts.len() - 1 {
+            let (nx, ny) = seg_normals[seg_normals.len() - 1];
+            (nx, ny, hw)
+        } else {
+            let (n1x, n1y) = seg_normals[i - 1];
+            let (n2x, n2y) = seg_normals[i];
+            let mx = n1x + n2x;
+            let my = n1y + n2y;
+            let mlen = (mx * mx + my * my).sqrt();
+            if mlen <= 1e-12 {
+                (n2x, n2y, hw)
+            } else {
+                let ux = mx / mlen;
+                let uy = my / mlen;
+                let dot = ux * n2x + uy * n2y;
+                if dot.abs() <= 1e-6 {
+                    (n2x, n2y, hw)
+                } else {
+                    (ux, uy, hw / dot)
+                }
+            }
+        };
+
+        left.push(Point {
+            x: pts[i].x + nx * miter_len,
+            y: pts[i].y + ny * miter_len,
+        });
+        right.push(Point {
+            x: pts[i].x - nx * miter_len,
+            y: pts[i].y - ny * miter_len,
+        });
+    }
+
+    // Combine to a single polygon ring.
+    let mut out: Vec<Point> = Vec::with_capacity(left.len() + right.len());
+    out.extend_from_slice(&left);
+    for p in right.iter().rev() {
+        out.push(p.clone());
+    }
+
+    // Remove immediate duplicates to keep earcut stable.
+    out.dedup_by(|a, b| a.x == b.x && a.y == b.y);
+    if out.len() >= 3 {
+        Some(out)
+    } else {
+        None
+    }
+}
+
 fn trapezoid_points(kind: OasisRecord, pos: Point, dim: Point, delta_a: f64, delta_b: f64) -> Vec<Point> {
     // Very small helper to approximate trapezoids; this follows the gdstk rectangle orientation.
     let mut pts = vec![
@@ -795,6 +902,7 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
     let mut modal_polygon_points: Vec<Point> = vec![Point { x: 0.0, y: 0.0 }];
     let mut modal_path_points: Vec<Point> = vec![Point { x: 0.0, y: 0.0 }];
     let mut modal_path_halfwidth: f64 = 0.0;
+    let mut modal_path_extensions = Point { x: 0.0, y: 0.0 };
     let mut modal_circle_radius: f64 = 0.0;
     let mut modal_ctrapezoid_type: u8 = 0;
     let mut modal_geom_repetition: Option<Repetition> = None;
@@ -1001,6 +1109,7 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 modal_path_points.clear();
                 modal_path_points.push(Point { x: 0.0, y: 0.0 });
                 modal_path_halfwidth = 0.0;
+                modal_path_extensions = Point { x: 0.0, y: 0.0 };
                 modal_circle_radius = 0.0;
                 modal_ctrapezoid_type = 0;
                 modal_geom_repetition = None;
@@ -1347,6 +1456,21 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 if info & 0x01 != 0 { modal_layer = stream.read_var_uint()? as i16; }
                 if info & 0x02 != 0 { modal_datatype = stream.read_var_uint()? as i16; }
                 if info & 0x40 != 0 { modal_path_halfwidth = stream.read_var_uint()? as f64 * scale; }
+                if info & 0x80 != 0 {
+                    let extension_scheme = stream.read_u8()?;
+                    match extension_scheme & 0x0c {
+                        0x04 => modal_path_extensions.x = 0.0,
+                        0x08 => modal_path_extensions.x = modal_path_halfwidth,
+                        0x0c => modal_path_extensions.x = stream.read_integer()? as f64 * scale,
+                        _ => modal_path_extensions.x = 0.0,
+                    }
+                    match extension_scheme & 0x03 {
+                        0x01 => modal_path_extensions.y = 0.0,
+                        0x02 => modal_path_extensions.y = modal_path_halfwidth,
+                        0x03 => modal_path_extensions.y = stream.read_integer()? as f64 * scale,
+                        _ => modal_path_extensions.y = 0.0,
+                    }
+                }
                 if info & 0x20 != 0 {
                     modal_path_points.clear();
                     modal_path_points.push(Point { x: 0.0, y: 0.0 });
@@ -1361,11 +1485,22 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     if modal_absolute_pos { modal_geom_pos.y = y; } else { modal_geom_pos.y += y; }
                 }
 
-                // Simplified: store spine as polygon without width
-                let mut pts = Vec::new();
-                for p in modal_path_points.iter() {
-                    pts.push(Point { x: p.x + modal_geom_pos.x, y: p.y + modal_geom_pos.y });
-                }
+                // Polygonize PATH centerline using halfwidth + end extensions (match gdstk semantics).
+                let centerline: Vec<Point> = modal_path_points
+                    .iter()
+                    .map(|p| Point {
+                        x: p.x + modal_geom_pos.x,
+                        y: p.y + modal_geom_pos.y,
+                    })
+                    .collect();
+
+                let width = 2.0 * modal_path_halfwidth;
+                let outline = stroke_path_to_polygon(
+                    &centerline,
+                    width,
+                    modal_path_extensions.x,
+                    modal_path_extensions.y,
+                );
                 let repetition = if info & 0x04 != 0 {
                     let rep = stream.read_repetition(scale, &modal_geom_repetition)?;
                     modal_geom_repetition = rep.clone();
@@ -1375,18 +1510,19 @@ pub fn load_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 };
                 note_repetition(&repetition);
                 let before = library.cells[cell_idx].polygons.len();
-                push_polygon_with_repetition(
-                    &mut library.cells[cell_idx].polygons,
-                    modal_layer,
-                    modal_datatype,
-                    &pts,
-                    repetition,
-                );
+                if let Some(outline) = outline {
+                    push_polygon_with_repetition(
+                        &mut library.cells[cell_idx].polygons,
+                        modal_layer,
+                        modal_datatype,
+                        &outline,
+                        repetition,
+                    );
+                }
                 if collect_stats {
                     geom_poly_counts[OasisRecord::Path as usize] +=
                         (library.cells[cell_idx].polygons.len() - before) as u64;
                 }
-                let _ = modal_path_halfwidth; // kept for completeness
             }
             OasisRecord::TrapezoidAb | OasisRecord::TrapezoidA | OasisRecord::TrapezoidB => {
                 if current_cell.is_none() { return Err(anyhow!("TRAPEZOID outside of CELL")); }

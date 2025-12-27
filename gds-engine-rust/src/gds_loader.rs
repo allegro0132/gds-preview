@@ -30,6 +30,12 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
     let mut current_strans: u16 = 0;
     let mut current_colrow: (u16, u16) = (1, 1);
 
+    // PATH handling
+    let mut current_width: Option<f64> = None; // in output units (microns)
+    let mut current_pathtype: i16 = 0;
+    let mut current_bgnextn: f64 = 0.0;
+    let mut current_endextn: f64 = 0.0;
+
     // Property handling
     let mut current_prop_attr: Option<i16> = None;
     let mut current_properties: Vec<(i16, String)> = Vec::new();
@@ -82,7 +88,14 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
                                     0x09 => {
                                         if let Some(ref mut cell) = current_cell { process_properties(&current_properties, cell, library.units); }
                                         current_properties.clear();
-                                        el_type = ElementType::Path; current_xy.clear(); current_layer = 0; current_datatype = 0;
+                                        el_type = ElementType::Path;
+                                        current_xy.clear();
+                                        current_layer = 0;
+                                        current_datatype = 0;
+                                        current_width = None;
+                                        current_pathtype = 0;
+                                        current_bgnextn = 0.0;
+                                        current_endextn = 0.0;
                                     }
                                     0x0A => {
                                         if let Some(ref mut cell) = current_cell { process_properties(&current_properties, cell, library.units); }
@@ -102,6 +115,19 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
 
                                     0x0D => if let GdsData::Int16(v) = record.data { current_layer = v[0]; }
                                     0x0E => if let GdsData::Int16(v) = record.data { current_datatype = v[0]; }
+                                    0x0F => { // WIDTH
+                                        if let GdsData::Int32(v) = record.data {
+                                            if !v.is_empty() {
+                                                let scale = library.units.1 / 1e-6;
+                                                current_width = Some((v[0].abs() as f64) * scale);
+                                            }
+                                        } else if let GdsData::Int16(v) = record.data {
+                                            if !v.is_empty() {
+                                                let scale = library.units.1 / 1e-6;
+                                                current_width = Some((v[0].abs() as f64) * scale);
+                                            }
+                                        }
+                                    }
                                     0x10 => { // XY
                                         if let GdsData::Int32(v) = record.data {
                                             let scale = library.units.1 / 1e-6;
@@ -121,12 +147,42 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
 
                                             match el_type {
 
-                                    ElementType::Boundary | ElementType::Path => {
-                                        cell.polygons.push(Polygon {
-                                            layer: current_layer,
-                                            datatype: current_datatype,
-                                            points: current_xy.clone(),
-                                        });
+                                    ElementType::Boundary => {
+                                        let mut pts = current_xy.clone();
+                                        // GDSII boundary is closed: last point often repeats first.
+                                        if pts.len() >= 2 {
+                                            if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
+                                                if (first.x == last.x) && (first.y == last.y) {
+                                                    pts.pop();
+                                                }
+                                            }
+                                        }
+
+                                        if pts.len() >= 3 {
+                                            cell.polygons.push(Polygon {
+                                                layer: current_layer,
+                                                datatype: current_datatype,
+                                                points: pts,
+                                            });
+                                        }
+                                    }
+                                    ElementType::Path => {
+                                        let width = current_width.unwrap_or(0.0);
+                                        if width > 0.0 {
+                                            if let Some(outline) = stroke_path_to_polygon(
+                                                &current_xy,
+                                                width,
+                                                current_pathtype,
+                                                current_bgnextn,
+                                                current_endextn,
+                                            ) {
+                                                cell.polygons.push(Polygon {
+                                                    layer: current_layer,
+                                                    datatype: current_datatype,
+                                                    points: outline,
+                                                });
+                                            }
+                                        }
                                     }
                                     ElementType::Sref => {
                                         if !current_xy.is_empty() {
@@ -201,6 +257,24 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
                         0x1B => if let GdsData::Real8(v) = record.data { current_mag = Some(v[0]); }
                         0x1C => if let GdsData::Real8(v) = record.data { current_angle = Some(v[0]); }
 
+                        0x21 => if let GdsData::Int16(v) = record.data { if !v.is_empty() { current_pathtype = v[0]; } }
+                        0x30 => { // BGNEXTN
+                            if let GdsData::Int32(v) = record.data {
+                                if !v.is_empty() {
+                                    let scale = library.units.1 / 1e-6;
+                                    current_bgnextn = v[0] as f64 * scale;
+                                }
+                            }
+                        }
+                        0x31 => { // ENDEXTN
+                            if let GdsData::Int32(v) = record.data {
+                                if !v.is_empty() {
+                                    let scale = library.units.1 / 1e-6;
+                                    current_endextn = v[0] as f64 * scale;
+                                }
+                            }
+                        }
+
                         // Property Records
                         0x2B => if let GdsData::Int16(v) = record.data { current_prop_attr = Some(v[0]); }
                         0x2C => if let GdsData::Str(s) = record.data {
@@ -213,6 +287,130 @@ pub fn load_gds<R: Read>(reader: R) -> Result<Library> {
                 }
 
                 Ok(library)
+            }
+
+            fn stroke_path_to_polygon(
+                centerline: &[Point],
+                width: f64,
+                pathtype: i16,
+                bgnextn: f64,
+                endextn: f64,
+            ) -> Option<Vec<Point>> {
+                if centerline.len() < 2 || width <= 0.0 {
+                    return None;
+                }
+
+                let hw = width * 0.5;
+
+                // Copy and optionally extend endpoints along their tangents.
+                let mut pts: Vec<Point> = centerline.to_vec();
+
+                let tangent = |a: &Point, b: &Point| -> Option<(f64, f64)> {
+                    let dx = b.x - a.x;
+                    let dy = b.y - a.y;
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len <= 0.0 {
+                        None
+                    } else {
+                        Some((dx / len, dy / len))
+                    }
+                };
+
+                // pathtype handling: mimic GDSTK mapping (0 Flush, 1 Round, 2 HalfWidth, else Extended).
+                // For our polygonization, we only model end extensions (caps). Joins use miter.
+                let mut ext_start = bgnextn;
+                let mut ext_end = endextn;
+                if pathtype == 2 {
+                    ext_start += hw;
+                    ext_end += hw;
+                }
+
+                // Extend start point backwards
+                if ext_start != 0.0 {
+                    if let Some((tx, ty)) = tangent(&pts[0], &pts[1]) {
+                        pts[0].x -= tx * ext_start;
+                        pts[0].y -= ty * ext_start;
+                    }
+                }
+
+                // Extend end point forwards
+                if ext_end != 0.0 {
+                    let n = pts.len();
+                    if let Some((tx, ty)) = tangent(&pts[n - 2], &pts[n - 1]) {
+                        pts[n - 1].x += tx * ext_end;
+                        pts[n - 1].y += ty * ext_end;
+                    }
+                }
+
+                // Precompute segment normals.
+                let mut seg_normals: Vec<(f64, f64)> = Vec::with_capacity(pts.len() - 1);
+                for i in 0..(pts.len() - 1) {
+                    if let Some((tx, ty)) = tangent(&pts[i], &pts[i + 1]) {
+                        // Left normal
+                        seg_normals.push((-ty, tx));
+                    } else {
+                        seg_normals.push((0.0, 0.0));
+                    }
+                }
+
+                // Build left/right offset points with miter joins.
+                let mut left: Vec<Point> = Vec::with_capacity(pts.len());
+                let mut right: Vec<Point> = Vec::with_capacity(pts.len());
+
+                for i in 0..pts.len() {
+                    let (nx, ny, miter_len) = if i == 0 {
+                        let (nx, ny) = seg_normals[0];
+                        (nx, ny, hw)
+                    } else if i == pts.len() - 1 {
+                        let (nx, ny) = seg_normals[seg_normals.len() - 1];
+                        (nx, ny, hw)
+                    } else {
+                        let (n1x, n1y) = seg_normals[i - 1];
+                        let (n2x, n2y) = seg_normals[i];
+                        let mx = n1x + n2x;
+                        let my = n1y + n2y;
+                        let mlen = (mx * mx + my * my).sqrt();
+                        if mlen <= 1e-12 {
+                            (n2x, n2y, hw)
+                        } else {
+                            let ux = mx / mlen;
+                            let uy = my / mlen;
+                            let dot = ux * n2x + uy * n2y;
+                            if dot.abs() <= 1e-6 {
+                                (n2x, n2y, hw)
+                            } else {
+                                (ux, uy, hw / dot)
+                            }
+                        }
+                    };
+
+                    left.push(Point {
+                        x: pts[i].x + nx * miter_len,
+                        y: pts[i].y + ny * miter_len,
+                    });
+                    right.push(Point {
+                        x: pts[i].x - nx * miter_len,
+                        y: pts[i].y - ny * miter_len,
+                    });
+                }
+
+                // Round caps (pathtype == 1) are not implemented (kept as square caps).
+                // This keeps implementation minimal while fixing the reported wrong geometry.
+
+                // Combine to a single polygon ring.
+                let mut out: Vec<Point> = Vec::with_capacity(left.len() + right.len());
+                out.extend_from_slice(&left);
+                for p in right.iter().rev() {
+                    out.push(p.clone());
+                }
+
+                // Remove immediate duplicates to keep earcut stable.
+                out.dedup_by(|a, b| a.x == b.x && a.y == b.y);
+                if out.len() >= 3 {
+                    Some(out)
+                } else {
+                    None
+                }
             }
 
             fn process_properties(properties: &[(i16, String)], cell: &mut Cell, units: (f64, f64)) {
