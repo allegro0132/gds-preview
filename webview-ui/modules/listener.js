@@ -3,6 +3,220 @@ import { updateStatus } from './utils.js';
 import { draw, drawWebGL, drawLabels } from './renderer.js';
 import { updateTransform, resizeCanvas, fitView, screenToWorld } from './transform.js';
 
+function clamp01(v) {
+    return Math.max(0, Math.min(1, v));
+}
+
+function closestPointOnSegment(ax, ay, bx, by, px, py) {
+    const abx = bx - ax;
+    const aby = by - ay;
+    const apx = px - ax;
+    const apy = py - ay;
+    const denom = abx * abx + aby * aby;
+    if (denom <= 0) {
+        return { x: ax, y: ay, t: 0 };
+    }
+    const t = clamp01((apx * abx + apy * aby) / denom);
+    return { x: ax + t * abx, y: ay + t * aby, t };
+}
+
+function applyAxisLock(startPoint, candidatePoint, shiftKey) {
+    if (!shiftKey) return candidatePoint;
+    if (!startPoint || typeof startPoint.x !== 'number' || typeof startPoint.y !== 'number') return candidatePoint;
+    if (!candidatePoint || typeof candidatePoint.x !== 'number' || typeof candidatePoint.y !== 'number') return candidatePoint;
+
+    const dx = candidatePoint.x - startPoint.x;
+    const dy = candidatePoint.y - startPoint.y;
+
+    // Choose the axis that keeps the point closer to the cursor/candidate.
+    if (Math.abs(dx) >= Math.abs(dy)) {
+        return { ...candidatePoint, y: startPoint.y, snapped: false, kind: 'axis' };
+    }
+    return { ...candidatePoint, x: startPoint.x, snapped: false, kind: 'axis' };
+}
+
+function computeViewportWorldBoundsFast() {
+    const container = elements.viewContainer;
+    if (!container) return null;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    if (!w || !h) return null;
+    const p1 = screenToWorld(0, 0);
+    const p2 = screenToWorld(w, 0);
+    const p3 = screenToWorld(w, h);
+    const p4 = screenToWorld(0, h);
+    const minX = Math.min(p1.x, p2.x, p3.x, p4.x);
+    const maxX = Math.max(p1.x, p2.x, p3.x, p4.x);
+    const minY = Math.min(p1.y, p2.y, p3.y, p4.y);
+    const maxY = Math.max(p1.y, p2.y, p3.y, p4.y);
+    return { minX, maxX, minY, maxY };
+}
+
+function polyIterVertices(poly) {
+    const isFlat = poly instanceof Float32Array;
+    const n = isFlat ? poly.length / 2 : poly.length;
+    return { isFlat, n };
+}
+
+function bboxIntersects(b, minX, minY, maxX, maxY) {
+    if (!b) return true;
+    return !(b.maxX < minX || b.minX > maxX || b.maxY < minY || b.minY > maxY);
+}
+
+function findSnapPoint(mouseScreenX, mouseScreenY) {
+    const mouseWorld = screenToWorld(mouseScreenX, mouseScreenY);
+
+    const geom = (state.currentEngine === 'webgl' && state.snapGeometry && Object.keys(state.snapGeometry).length > 0)
+        ? state.snapGeometry
+        : state.geometry;
+
+    // If we have no polygon geometry, snapping is not possible; fall back to free point.
+    if (!geom || Object.keys(geom).length === 0) {
+        return { x: mouseWorld.x, y: mouseWorld.y, snapped: false, kind: 'free' };
+    }
+
+    const snapPx = state.measureSnapPx || 10;
+    const scale = Math.max(state.scale || 1e-9, 1e-9);
+    const snapWorld = snapPx / scale;
+
+    const vb = computeViewportWorldBoundsFast();
+    const vMinX = vb ? vb.minX - snapWorld : -Infinity;
+    const vMaxX = vb ? vb.maxX + snapWorld : Infinity;
+    const vMinY = vb ? vb.minY - snapWorld : -Infinity;
+    const vMaxY = vb ? vb.maxY + snapWorld : Infinity;
+
+    const snapDist2 = (snapWorld * snapWorld);
+    let bestVertex = null;
+    let bestVertexDist2 = snapDist2;
+    let bestEdge = null;
+    let bestEdgeDist2 = snapDist2;
+
+    // Prefer visible layers only.
+    for (const layerKey of state.activeLayers) {
+        const polys = geom[layerKey];
+        if (!polys || polys.length === 0) continue;
+
+        for (const poly of polys) {
+            if (poly && poly.bbox && !bboxIntersects(poly.bbox, vMinX, vMinY, vMaxX, vMaxY)) continue;
+
+            const { isFlat, n } = polyIterVertices(poly);
+            if (n < 2) continue;
+
+            // Vertex snap (higher priority than edge)
+            for (let i = 0; i < n; i++) {
+                const vx = isFlat ? poly[i * 2] : poly[i][0];
+                const vy = isFlat ? poly[i * 2 + 1] : poly[i][1];
+                const dx = vx - mouseWorld.x;
+                const dy = vy - mouseWorld.y;
+                const d2 = dx * dx + dy * dy;
+                if (d2 <= bestVertexDist2) {
+                    bestVertexDist2 = d2;
+                    bestVertex = { x: vx, y: vy, snapped: true, kind: 'vertex', layerKey };
+                    if (bestVertexDist2 === 0) return bestVertex;
+                }
+            }
+
+            // Edge snap (used only when no vertex is within threshold)
+            for (let i = 0; i < n; i++) {
+                const j = (i + 1) % n;
+                const ax = isFlat ? poly[i * 2] : poly[i][0];
+                const ay = isFlat ? poly[i * 2 + 1] : poly[i][1];
+                const bx = isFlat ? poly[j * 2] : poly[j][0];
+                const by = isFlat ? poly[j * 2 + 1] : poly[j][1];
+                const cp = closestPointOnSegment(ax, ay, bx, by, mouseWorld.x, mouseWorld.y);
+                const dx = cp.x - mouseWorld.x;
+                const dy = cp.y - mouseWorld.y;
+                const d2 = dx * dx + dy * dy;
+                if (d2 <= bestEdgeDist2) {
+                    bestEdgeDist2 = d2;
+                    bestEdge = { x: cp.x, y: cp.y, snapped: true, kind: 'edge', layerKey };
+                    if (bestEdgeDist2 === 0) return bestEdge;
+                }
+            }
+        }
+    }
+
+    // Vertex has stronger influence than edge:
+    // if any vertex is within the snap radius, prefer the closest vertex.
+    if (bestVertex) return bestVertex;
+    if (bestEdge) return bestEdge;
+    return { x: mouseWorld.x, y: mouseWorld.y, snapped: false, kind: 'free' };
+}
+
+function setMeasureEnabled(enabled) {
+    const prev = !!state.measureEnabled;
+    state.measureEnabled = !!enabled;
+
+    if (!state.measureEnabled) {
+        // Closing measure: clear all records and snap cache.
+        state.measureClickCount = 0;
+        state.measureRecords = [];
+        state.measurePoints = [];
+        state.measureHover = null;
+
+        state.snapGeometry = {};
+        state.snapViewportTokenCurrent = null;
+    } else if (!prev) {
+        // Fresh measure session.
+        state.measureClickCount = 0;
+        state.measureRecords = [];
+        state.measurePoints = [];
+        state.measureHover = null;
+    }
+
+    if (elements.measureBtn) {
+        elements.measureBtn.style.backgroundColor = state.measureEnabled ? 'var(--vscode-toolbar-activeBackground)' : '';
+    }
+
+    if (state.measureEnabled) {
+        // Warn if current engine likely has no polygon geometry.
+        if (state.currentEngine === 'webgl' && (!state.snapGeometry || Object.keys(state.snapGeometry).length === 0)) {
+            updateStatus('Measure enabled. Snapping needs polygon geometry; switch to Canvas/SVG for snapping.');
+        } else {
+            updateStatus('Measure enabled: click to add measurements (snaps to vertex/edge). Esc clears current.');
+        }
+    } else {
+        updateStatus('Measure disabled');
+    }
+
+    // Pull fresh viewport polygons immediately when enabling measure in WebGL+Rust.
+    scheduleViewportRequest();
+
+    requestAnimationFrame(drawLabels);
+}
+
+function clearMeasureCurrent() {
+    state.measurePoints = [];
+    state.measureHover = null;
+    requestAnimationFrame(drawLabels);
+}
+
+function handleMeasureClick(mouseScreenX, mouseScreenY, shiftKey) {
+    const snap = findSnapPoint(mouseScreenX, mouseScreenY);
+    const p0 = { x: snap.x, y: snap.y };
+
+    if (!state.measurePoints) state.measurePoints = [];
+    if (!state.measureRecords) state.measureRecords = [];
+
+    state.measureClickCount = (state.measureClickCount || 0) + 1;
+
+    // Odd click starts a new record.
+    if ((state.measureClickCount % 2) === 1) {
+        state.measurePoints = [p0];
+        requestAnimationFrame(drawLabels);
+        return;
+    }
+
+    // Even click completes the current record.
+    const a = state.measurePoints[0];
+    const p = applyAxisLock(a, p0, !!shiftKey);
+    if (a && typeof a.x === 'number' && typeof a.y === 'number') {
+        state.measureRecords.push({ a, b: p });
+    }
+    state.measurePoints = [];
+    requestAnimationFrame(drawLabels);
+}
+
 function computeViewportWorldBounds() {
     const container = elements.viewContainer;
     if (!container) return null;
@@ -34,11 +248,18 @@ function computeViewportWorldBounds() {
 }
 
 function scheduleViewportRequest() {
-    // Only for Rust+WebGL path.
-    if (!state.viewportStreaming) return;
+    // Rust+WebGL path.
+    // - When viewportStreaming is enabled, this drives rendering snapshots.
+    // - When measureEnabled is true, this requests viewport polygons for snapping (snapPolygons).
     if (state.currentEngine !== 'webgl') return;
     if (!state.config || state.config.engineType !== 'rust') return;
-    if (!state.useInstancing) return;
+
+    const wantRenderViewport = !!state.viewportStreaming;
+    const wantSnapViewport = !!state.measureEnabled;
+    if (!wantRenderViewport && !wantSnapViewport) return;
+
+    // Rendering viewport streaming requires instancing; snapping does not.
+    if (wantRenderViewport && !state.useInstancing) return;
 
     if (state.viewportTimer) {
         clearTimeout(state.viewportTimer);
@@ -52,11 +273,23 @@ function scheduleViewportRequest() {
         const requestId = (state.viewportRequestSeq + 1) >>> 0;
         state.viewportRequestSeq = requestId;
 
+        // When requesting snap polygons, generate a new token so stale chunks can be dropped.
+        // IMPORTANT: we update the current token immediately (before any new data arrives)
+        // so any still-in-flight chunks from the previous token can be ignored without parsing.
+        const snapToken = wantSnapViewport ? `__snap__:${((state.snapViewportSeq + 1) >>> 0)}` : null;
+        if (wantSnapViewport) {
+            state.snapViewportSeq = (state.snapViewportSeq + 1) >>> 0;
+            state.snapViewportTokenCurrent = snapToken;
+            state.snapGeometry = {};
+        }
+
         state.vscode.postMessage({
             command: 'viewport',
             requestId,
             bbox,
-            layers: Array.from(state.activeLayers)
+            layers: Array.from(state.activeLayers),
+            snapPolygons: wantSnapViewport,
+            snapToken
         });
 
         if (state.enableProfiling) {
@@ -116,6 +349,19 @@ export function setupListeners() {
         if (e.key === 'F2') {
             fitView();
         }
+
+        if (e.key === 'Escape') {
+            if (state.measureEnabled) {
+                if (state.measurePoints && state.measurePoints.length > 0) {
+                    clearMeasureCurrent();
+                    updateStatus('Measure current cleared');
+                }
+            }
+        }
+
+        if (e.key === 'm' || e.key === 'M') {
+            setMeasureEnabled(!state.measureEnabled);
+        }
     });
 
     const viewContainer = elements.viewContainer;
@@ -137,6 +383,18 @@ export function setupListeners() {
 
     viewContainer.addEventListener('mousedown', e => {
         if (state.currentEngine !== 'canvas' && state.currentEngine !== 'webgl') return;
+
+        // In measure mode, a left click places a point (snapped if possible) and should not start a pan-drag.
+        if (state.measureEnabled && e.button === 0) {
+            const rect = viewContainer.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            handleMeasureClick(mouseX, mouseY, e.shiftKey);
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+
         state.isDragging = true;
         state.lastX = e.clientX;
         state.lastY = e.clientY;
@@ -163,6 +421,24 @@ export function setupListeners() {
             requestAnimationFrame(drawLabels);
             scheduleViewportRequest();
         }
+    });
+
+    // Measure hover tracking (runs only when enabled)
+    viewContainer.addEventListener('mousemove', e => {
+        if (!state.measureEnabled) return;
+        if (state.currentEngine !== 'canvas' && state.currentEngine !== 'webgl') return;
+
+        const rect = viewContainer.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        const hover = findSnapPoint(mouseX, mouseY);
+        if (state.measurePoints && state.measurePoints.length === 1) {
+            state.measureHover = applyAxisLock(state.measurePoints[0], hover, e.shiftKey);
+        } else {
+            state.measureHover = hover;
+        }
+        requestAnimationFrame(drawLabels);
     });
 
     viewContainer.addEventListener('wheel', e => {
@@ -399,6 +675,14 @@ export function setupListeners() {
     });
 
     elements.recenterBtn.addEventListener('click', fitView);
+
+    if (elements.measureBtn) {
+        elements.measureBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setMeasureEnabled(!state.measureEnabled);
+        });
+    }
 
     if (elements.negativeViewBtn) {
         elements.negativeViewBtn.addEventListener('click', () => {

@@ -154,7 +154,16 @@ window.addEventListener('message', event => {
         state.highlightedPath = null;
         state.hasUserInteracted = false;
 
+        state.measureEnabled = false;
+        state.measureClickCount = 0;
+        state.measureRecords = [];
+        state.measurePoints = [];
+        state.measureHover = null;
+
         state.geometry = {};
+        state.snapGeometry = {};
+        state.snapViewportSeq = 0;
+        state.snapViewportTokenCurrent = null;
         state.labels = {};
         state.definitions = {};
         state.instanceBuffers = {};

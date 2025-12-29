@@ -9,6 +9,9 @@ export const state = {
     completionScheduled: false,
     statusPinUntil: 0,
     geometry: {},
+    // Lightweight polygon cache for snapping (especially for WebGL).
+    // Format: { [layerKey]: Array< Float32Array | Array<[number, number]> > } where each poly may have poly.bbox
+    snapGeometry: {},
     labels: {},
     ports: [],
     bbox: { x_min: 0, x_max: 0, y_min: 0, y_max: 0 },
@@ -41,6 +44,17 @@ export const state = {
     highlightedPath: null,
     searchRequestId: null,
 
+    // Measure tool
+    measureEnabled: false,
+    // Completed measurements in the current measure session.
+    // Each record is { a: {x,y}, b: {x,y} }
+    measureRecords: [],
+    // Click count within the current measure session; odd click starts a new record.
+    measureClickCount: 0,
+    measurePoints: [], // world-space points: [{x,y}, {x,y}]
+    measureHover: null, // { x, y, snapped: boolean, kind: 'vertex'|'edge'|'free', layerKey?: string }
+    measureSnapPx: 10,
+
     // WebGL
     gl: null,
     glProgram: null,
@@ -63,6 +77,11 @@ export const state = {
     viewportRequestSeq: 0,
     viewportActiveRequestId: 0,
     viewportTimer: null,
+
+    // Snapping viewport polygon stream (measure tool)
+    // We tag each request with a token so stale polygon chunks can be dropped.
+    snapViewportSeq: 0,
+    snapViewportTokenCurrent: null,
 
     // Viewport snapshot staging (avoid flicker by swapping on EndViewport)
     viewportReceivingRequestId: 0,
@@ -132,6 +151,7 @@ export const elements = {
     viewContainer: null,
     layerControlHeader: null,
     toolbar: null,
+    measureBtn: null,
     negativeViewBtn: null
 };
 
@@ -188,5 +208,6 @@ export function initializeState() {
     elements.viewContainer = document.getElementById('view-container');
     elements.layerControlHeader = document.getElementById('layer-control-header');
     elements.toolbar = document.getElementById('toolbar');
+    elements.measureBtn = document.getElementById('measure-btn');
     elements.negativeViewBtn = document.getElementById('negative-view-btn');
 }

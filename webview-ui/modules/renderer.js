@@ -2,6 +2,117 @@ import { state, elements } from './state.js';
 import { updateStatus, darken, createShader, createProgram } from './utils.js';
 import { updateTransform, resizeCanvas, fitView, worldToScreen, screenToWorld, applyRotationAndFlip, applyContextTransform } from './transform.js';
 
+function drawMeasurementOverlay(ctx) {
+    if (!ctx) return;
+    if (!state.measureEnabled) return;
+
+    const fg = (getComputedStyle(document.body).getPropertyValue('--vscode-editor-foreground') || '').trim() || '#ffffff';
+    const stroke = fg;
+
+    const records = state.measureRecords || [];
+    const pts = state.measurePoints || [];
+    const hover = state.measureHover;
+
+    function drawDistanceLabel(a, b) {
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy);
+        const sa = worldToScreen(a.x, a.y);
+        const sb = worldToScreen(b.x, b.y);
+        const mx = (sa.x + sb.x) / 2;
+        const my = (sa.y + sb.y) / 2;
+
+        const label = `d=${dist.toPrecision(6)}`;
+
+        ctx.save();
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+
+        const bg = (getComputedStyle(document.body).getPropertyValue('--vscode-editor-background') || '').trim() || '#000000';
+        ctx.fillStyle = bg;
+        ctx.globalAlpha = 0.8;
+        const pad = 4;
+        const w = ctx.measureText(label).width;
+        const x0 = mx - w / 2 - pad;
+        const y0 = my - 14;
+        ctx.fillRect(x0, y0, w + pad * 2, 16);
+
+        ctx.globalAlpha = 0.95;
+        ctx.fillStyle = stroke;
+        ctx.fillText(label, mx, my - 2);
+        ctx.restore();
+    }
+
+    function drawSegment(a, b, drawEndMarkers) {
+        const sa = worldToScreen(a.x, a.y);
+        const sb = worldToScreen(b.x, b.y);
+
+        // Start marker
+        ctx.save();
+        ctx.fillStyle = stroke;
+        ctx.globalAlpha = 0.9;
+        ctx.beginPath();
+        ctx.arc(sa.x, sa.y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        // Line
+        ctx.save();
+        ctx.strokeStyle = stroke;
+        ctx.globalAlpha = 0.9;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(sa.x, sa.y);
+        ctx.lineTo(sb.x, sb.y);
+        ctx.stroke();
+        ctx.restore();
+
+        if (drawEndMarkers) {
+            ctx.save();
+            ctx.fillStyle = stroke;
+            ctx.globalAlpha = 0.9;
+            ctx.beginPath();
+            ctx.arc(sb.x, sb.y, 3.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+
+        drawDistanceLabel(a, b);
+    }
+
+    // Hover marker (snapped point)
+    if (hover && typeof hover.x === 'number' && typeof hover.y === 'number') {
+        const p = worldToScreen(hover.x, hover.y);
+        ctx.save();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = stroke;
+        ctx.globalAlpha = hover.snapped ? 0.9 : 0.5;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, hover.snapped ? 5 : 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Draw completed records first.
+    for (const r of records) {
+        if (!r || !r.a || !r.b) continue;
+        if (typeof r.a.x !== 'number' || typeof r.a.y !== 'number') continue;
+        if (typeof r.b.x !== 'number' || typeof r.b.y !== 'number') continue;
+        drawSegment(r.a, r.b, true);
+    }
+
+    // Draw current in-progress record (start + hover).
+    if (!pts || pts.length === 0) return;
+    if (!pts[0] || typeof pts[0].x !== 'number' || typeof pts[0].y !== 'number') return;
+
+    const p1w = (hover && typeof hover.x === 'number' && typeof hover.y === 'number')
+        ? { x: hover.x, y: hover.y }
+        : null;
+    if (!p1w) return;
+    drawSegment(pts[0], p1w, false);
+}
+
 export function draw() {
     if (state.currentEngine !== 'canvas') return;
 
@@ -429,6 +540,9 @@ export function drawLabels() {
             ctx.fillText(port.name, screenX, screenY - 5);
         }
     }
+
+    // Tool overlays (measure, etc.) on top of labels/ports
+    drawMeasurementOverlay(ctx);
 }
 
 export function drawHighlights(targetCtx) {

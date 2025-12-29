@@ -215,8 +215,12 @@ fn main() -> Result<()> {
     let search_engine_clone = search_engine.clone();
     let library_clone = library.clone();
 
+    // Keep instances available for viewport polygon streaming (snapping).
+    let instances_map_for_snap = instances_map;
+    let instances_map_for_search = instances_map_for_snap.clone();
+
     thread::spawn(move || {
-        let engine = SearchEngine::new(library_clone, instances_map);
+        let engine = SearchEngine::new(library_clone, instances_map_for_search);
         *search_engine_clone.lock().unwrap() = Some(engine);
     });
 
@@ -314,33 +318,59 @@ fn main() -> Result<()> {
                     "message": "Search stopped"
                 }));
             } else if cmd["command"] == "viewport" {
-                if let Some(rt) = viewport_runtime.as_mut() {
-                    let req_id = cmd["requestId"].as_u64().unwrap_or(0) as u32;
-                    let bbox = &cmd["bbox"];
-                    let vminx = bbox["minX"].as_f64().unwrap_or(0.0);
-                    let vmaxx = bbox["maxX"].as_f64().unwrap_or(0.0);
-                    let vminy = bbox["minY"].as_f64().unwrap_or(0.0);
-                    let vmaxy = bbox["maxY"].as_f64().unwrap_or(0.0);
+                let req_id = cmd["requestId"].as_u64().unwrap_or(0) as u32;
+                let bbox = &cmd["bbox"];
+                let vminx = bbox["minX"].as_f64().unwrap_or(0.0);
+                let vmaxx = bbox["maxX"].as_f64().unwrap_or(0.0);
+                let vminy = bbox["minY"].as_f64().unwrap_or(0.0);
+                let vmaxy = bbox["maxY"].as_f64().unwrap_or(0.0);
 
-                    let layers_val = cmd["layers"].as_array();
-                    let mut active_layers: HashSet<(i16, i16)> = HashSet::new();
-                    if let Some(layers) = layers_val {
-                        for l in layers {
-                            if let Some(s) = l.as_str() {
-                                let parts: Vec<&str> = s.split('_').collect();
-                                if parts.len() == 2 {
-                                    if let (Ok(la), Ok(dt)) = (parts[0].parse::<i16>(), parts[1].parse::<i16>()) {
-                                        active_layers.insert((la, dt));
-                                    }
+                let snap_token = cmd["snapToken"].as_str();
+
+                let layers_val = cmd["layers"].as_array();
+                let mut active_layers: HashSet<(i16, i16)> = HashSet::new();
+                if let Some(layers) = layers_val {
+                    for l in layers {
+                        if let Some(s) = l.as_str() {
+                            let parts: Vec<&str> = s.split('_').collect();
+                            if parts.len() == 2 {
+                                if let (Ok(la), Ok(dt)) = (parts[0].parse::<i16>(), parts[1].parse::<i16>()) {
+                                    active_layers.insert((la, dt));
                                 }
                             }
                         }
                     }
+                }
 
-                    let tcp_ref = tcp_stream.as_mut().ok_or_else(|| anyhow::anyhow!("tcp required"))?;
+                // TCP/WebSocket transport is required for viewport responses.
+                if let Some(tcp_ref) = tcp_stream.as_mut() {
                     // Keep stdin free for JSON commands; avoid consuming them in transport flow control.
                     let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
-                    stream_viewport_geometry(&library, rt, &args, &mut transport, req_id, (vminx, vmaxx, vminy, vmaxy), &active_layers)?;
+
+                    // Rendering viewport streaming (triangles/instances)
+                    if let Some(rt) = viewport_runtime.as_mut() {
+                        stream_viewport_geometry(&library, rt, &args, &mut transport, req_id, (vminx, vmaxx, vminy, vmaxy), &active_layers)?;
+                    }
+
+                    // Snapping polygons (kind=4), requested by the webview.
+                    let want_snap_polys = cmd["snapPolygons"].as_bool().unwrap_or(false);
+                    if want_snap_polys {
+                        let token_owned = snap_token
+                            .filter(|s| !s.trim().is_empty())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("__snap__:{}", req_id));
+
+                        stream_viewport_snap_polygons(
+                            &library,
+                            &instances_map_for_snap,
+                            &args,
+                            &mut transport,
+                            req_id,
+                            token_owned.as_str(),
+                            (vminx, vmaxx, vminy, vmaxy),
+                            &active_layers,
+                        )?;
+                    }
                 }
             }
         }
@@ -694,6 +724,71 @@ fn send_control(transport: &mut dyn ChunkTransport, opcode: u8, request_id: u32)
     payload.push(opcode);
     payload.extend_from_slice(&request_id.to_le_bytes());
     transport.send(WsChunkKind::Control, "", None, 0, 0, &payload)
+}
+
+fn send_control_snap(transport: &mut dyn ChunkTransport, opcode: u8, request_id: u32, snap_token: &str) -> Result<()> {
+    let mut payload = Vec::with_capacity(1 + 4);
+    payload.push(opcode);
+    payload.extend_from_slice(&request_id.to_le_bytes());
+    // Use a reserved layer_key so the webview can distinguish this from render viewport snapshots.
+    // Encode token in cell_name so the webview can drop stale polygon chunks.
+    transport.send(WsChunkKind::Control, "__snap__", Some(snap_token), 0, 0, &payload)
+}
+
+fn polygon_bbox(poly: &Polygon) -> (f64, f64, f64, f64) {
+    let mut bbox = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for p in &poly.points {
+        if p.x < bbox.0 { bbox.0 = p.x; }
+        if p.x > bbox.1 { bbox.1 = p.x; }
+        if p.y < bbox.2 { bbox.2 = p.y; }
+        if p.y > bbox.3 { bbox.3 = p.y; }
+    }
+    if bbox.0 == f64::MAX { (0.0, 0.0, 0.0, 0.0) } else { bbox }
+}
+
+fn stream_viewport_snap_polygons(
+    lib: &Library,
+    instances_map: &HashMap<usize, Vec<Matrix3x3>>,
+    args: &Args,
+    transport: &mut dyn ChunkTransport,
+    request_id: u32,
+    snap_token: &str,
+    view: (f64, f64, f64, f64),
+    active_layers: &HashSet<(i16, i16)>,
+) -> Result<()> {
+    // Begin snapping snapshot (does not affect WebGL render buffers).
+    send_control_snap(transport, 1, request_id, snap_token)?;
+
+    let mut builders: HashMap<String, PolyChunkBuilder> = HashMap::new();
+
+    for (cell_idx, transforms) in instances_map {
+        let cell = match lib.cells.get(*cell_idx) {
+            Some(c) => c,
+            None => continue,
+        };
+        if cell.polygons.is_empty() { continue; }
+
+        for t in transforms {
+            for poly in &cell.polygons {
+                if !active_layers.contains(&(poly.layer, poly.datatype)) {
+                    continue;
+                }
+
+                let bb = transform_bbox(t, polygon_bbox(poly));
+                if !bbox_intersects(bb, view) {
+                    continue;
+                }
+
+                let key = format!("{}_{}", poly.layer, poly.datatype);
+                // Tag snap-only polygons with the token in cell_name.
+                push_polygon_transformed(&key, poly, t, &mut builders, args, transport, WsChunkKind::FlatPolygons, Some(snap_token))?;
+            }
+        }
+    }
+
+    flush_all_polygon_builders(&mut builders, args, transport, WsChunkKind::FlatPolygons, Some(snap_token))?;
+    send_control_snap(transport, 2, request_id, snap_token)?;
+    Ok(())
 }
 
 fn process_instanced_viewport_preamble(

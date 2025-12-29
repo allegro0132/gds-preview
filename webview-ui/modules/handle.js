@@ -3,6 +3,60 @@ import { updateStatus, checkCompletion } from './utils.js';
 import { draw, drawWebGL, drawLabels, setupCanvasMode, setupSvgMode, setupWebGLMode } from './renderer.js';
 import { updateTransform, resizeCanvas, fitView, screenToWorld } from './transform.js';
 
+function ensureSnapLayer(layerKey) {
+    if (!state.snapGeometry) state.snapGeometry = {};
+    if (!state.snapGeometry[layerKey]) state.snapGeometry[layerKey] = [];
+    return state.snapGeometry[layerKey];
+}
+
+function pushSnapPolys(layerKey, polys) {
+    if (!polys || polys.length === 0) return;
+    const target = ensureSnapLayer(layerKey);
+
+    // Keep this cache bounded. For viewport streaming, we clear per snapshot anyway.
+    // For non-streaming flows, cap to prevent unbounded memory growth.
+    const MAX_PER_LAYER = 20000;
+
+    for (const poly of polys) {
+        // Convert nested [x,y] arrays to Float32Array for compactness
+        if (poly instanceof Float32Array) {
+            // bbox may already be set by producers
+            if (!poly.bbox) {
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                for (let i = 0; i < poly.length; i += 2) {
+                    const x = poly[i];
+                    const y = poly[i + 1];
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+                poly.bbox = { minX, minY, maxX, maxY };
+            }
+            target.push(poly);
+        } else if (Array.isArray(poly) && poly.length > 0) {
+            const flat = new Float32Array(poly.length * 2);
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (let i = 0; i < poly.length; i++) {
+                const x = poly[i][0];
+                const y = poly[i][1];
+                flat[i * 2] = x;
+                flat[i * 2 + 1] = y;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+            flat.bbox = { minX, minY, maxX, maxY };
+            target.push(flat);
+        }
+
+        if (target.length > MAX_PER_LAYER) {
+            target.splice(0, target.length - MAX_PER_LAYER);
+        }
+    }
+}
+
 let geometryWs = null;
 let geometryWsConnected = false;
 let geometryWsInfo = null;
@@ -76,6 +130,10 @@ function beginViewportSnapshot(requestId) {
     state.viewportStagingLayerBuffers = {};
     state.viewportStagingInstanceBuffers = {};
     state.viewportStagingInstanceTransforms = {};
+
+    // Keep snapping cache lightweight and in-sync with the currently visible snapshot.
+    // We'll refill this as polygon chunks arrive.
+    state.snapGeometry = {};
 }
 
 function commitViewportSnapshot(requestId) {
@@ -207,7 +265,7 @@ function handleGeometryWsBinary(buffer) {
     let off = 0;
     const version = dv.getUint8(off); off += 1;
     const kind = dv.getUint8(off); off += 1;
-    off += 2; // flags
+    off += 2; // flags (unused)
     const chunkIndex = dv.getUint32(off, true); off += 4;
     const totalChunks = dv.getUint32(off, true); off += 4;
     const layerLen = dv.getUint16(off, true); off += 2;
@@ -218,6 +276,19 @@ function handleGeometryWsBinary(buffer) {
     const cellNameStr = wsTextDecoder.decode(new Uint8Array(buffer, off, cellLen));
     off += cellLen;
     const cellName = cellNameStr || null;
+
+    // Fast-path drop: snap viewport polygon streams are tagged with a token in cellName.
+    // If the viewport has changed and a new token was issued, ignore old chunks without parsing payload.
+    if (
+        kind === 4 &&
+        state.currentEngine === 'webgl' &&
+        cellNameStr &&
+        cellNameStr.startsWith('__snap__:') &&
+        state.snapViewportTokenCurrent &&
+        cellNameStr !== state.snapViewportTokenCurrent
+    ) {
+        return;
+    }
 
     // Payload starts at off
     if (version !== 1) {
@@ -234,6 +305,21 @@ function handleGeometryWsBinary(buffer) {
     if (kind === 5) {
         const opcode = dv.getUint8(off); off += 1;
         const requestId = dv.getUint32(off, true); off += 4;
+
+        // Snapping-only viewport markers: do NOT touch render snapshot staging.
+        // We use layerKey='__snap__' to distinguish from render viewport streaming.
+        if (layerKey === '__snap__') {
+            // Drop stale control frames from an older snap token.
+            if (cellNameStr && state.snapViewportTokenCurrent && cellNameStr !== state.snapViewportTokenCurrent) {
+                return;
+            }
+            if (opcode === 1) {
+                // cellName carries the snap token so we can drop stale polygon chunks.
+                state.snapViewportTokenCurrent = cellNameStr || null;
+                state.snapGeometry = {};
+            }
+            return;
+        }
 
         // opcode:
         // 1 BeginViewport (clear per-viewport buffers)
@@ -312,6 +398,23 @@ function handleGeometryWsBinary(buffer) {
                 state.geometry[layerKey].push(...polys);
                 requestAnimationFrame(draw);
             }
+        }
+
+        // WebGL: keep a lightweight polygon cache for snapping.
+        if (state.currentEngine === 'webgl') {
+            // If this is a measure-snap viewport stream, cellName is a token like '__snap__:N'.
+            // Drop stale chunks when a newer viewport request superseded this one.
+            if (cellNameStr && cellNameStr.startsWith('__snap__:')) {
+                if (state.snapViewportTokenCurrent !== cellNameStr) {
+                    // Stale snapshot; ignore.
+                    return;
+                }
+                pushSnapPolys(layerKey, polys);
+                // Avoid spamming status for snap-only background streams.
+                return;
+            }
+
+            pushSnapPolys(layerKey, polys);
         }
 
         updateStatus(`Loading ${layerKey || 'Unknown'}${cellName ? ' ' + cellName : ''} ${formatChunkProgress(chunkIndex, totalChunks)}`);
@@ -616,6 +719,11 @@ export function handleAddLayerChunk(layerKey, data) {
         }
     }
 
+    // WebGL: keep a lightweight polygon cache for snapping.
+    if (state.currentEngine === 'webgl') {
+        pushSnapPolys(layerKey, polys);
+    }
+
     if (data.labels && data.labels.length > 0) {
         if (!state.labels[layerKey]) state.labels[layerKey] = [];
         state.labels[layerKey].push(...data.labels);
@@ -653,6 +761,9 @@ export function handleInitialize(data) {
     updateStatus("Initializing...");
 
     state.geometry = {};
+    state.snapGeometry = {};
+    state.snapViewportSeq = 0;
+    state.snapViewportTokenCurrent = null;
     state.labels = {};
     state.highlightedPolygons = [];
     state.bbox = data.bbox;
