@@ -20,6 +20,12 @@ A high-performance GDSII/OASIS file viewer (offer Visual Studio Code extension +
   - **Transformations**: Flip (Horizontal/Vertical) and Rotate (CW/CCW) the layout.
   - **Pan & Zoom**: Smooth navigation with mouse and scroll wheel.
   - **Fit View**: Quickly center and fit the layout to the screen.
+  - **Measure Tool**:
+    - Toggle with the toolbar `M` button or the `M` key.
+    - Click to create measurements; each pair of clicks adds a new measurement record.
+    - Snaps to nearby polygon vertices/edges (vertex snap has higher priority).
+    - Hold `Shift` while placing the 2nd point to constrain to horizontal/vertical.
+    - Press `Esc` to clear the current in-progress measurement.
 - **Configuration Panel**: Quick access to rendering settings and parameters directly within the viewer.
 - **Performance Optimizations**:
   - **Parallel Triangulation**: Uses Rust backend to parse and process geometry off the frontend thread.
@@ -29,6 +35,7 @@ A high-performance GDSII/OASIS file viewer (offer Visual Studio Code extension +
   - **Incremental Rendering**: Streams data for all modes (WebGL, Canvas) to provide immediate visual feedback.
   - **Viewport Culling**: Only renders what is visible on screen.
   - **Viewport Streaming (WebGL + Rust)**: Requests geometry on-demand for the current camera viewport (with a small neighborhood padding) to keep huge layouts responsive and avoid client-side memory blowups.
+  - **Viewport Polygon Streaming (Measure Snapping, WebGL + Rust)**: When the Measure tool is enabled, the viewer can request viewport-bounded polygons for snapping even when render viewport streaming is disabled.
   - **Dynamic Level of Detail (LOD)**: Automatically reduces detail during fast interactions to maintain high frame rates.
   - **Instanced Rendering**: Uses hardware instancing (`ANGLE_instanced_arrays`) to efficiently render hierarchical designs with thousands of repeated cells.
   - **Backend Triangulation (Rust/WebGL)**: WebGL triangles can be generated in the Rust backend and streamed directly to the webview.

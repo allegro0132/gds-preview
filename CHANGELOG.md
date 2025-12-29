@@ -4,6 +4,18 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.3.14] - 2025-12-29
+
+### Added
+- **Measure Tool**: Distance measurement overlay with snapping to polygon vertices/edges.
+- **Multi-measure history**: Measurements persist while Measure mode is enabled (each pair of clicks creates a new record).
+- **Shift axis lock**: While placing the 2nd point, hold `Shift` to constrain to horizontal/vertical from the start point.
+
+### Changed
+- **Snapping priority**: Vertex snapping has higher priority than edge snapping.
+- **WebGL snapping data path (Rust)**: Measure mode can request viewport-bounded polygons for snapping (independent of render viewport streaming / instancing).
+- **Stale snap stream drop**: When the viewport changes in Measure mode, older in-flight snap polygon chunks are dropped in favor of the newest request.
+
 ## [0.3.10] - 2025-12-27
 
 ### Added

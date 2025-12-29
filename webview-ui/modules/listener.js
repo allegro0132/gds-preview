@@ -171,7 +171,7 @@ function setMeasureEnabled(enabled) {
     if (state.measureEnabled) {
         // Warn if current engine likely has no polygon geometry.
         if (state.currentEngine === 'webgl' && (!state.snapGeometry || Object.keys(state.snapGeometry).length === 0)) {
-            updateStatus('Measure enabled. Snapping needs polygon geometry; switch to Canvas/SVG for snapping.');
+            updateStatus('Measure enabled. Snapping needs polygon geometry.');
         } else {
             updateStatus('Measure enabled: click to add measurements (snaps to vertex/edge). Esc clears current.');
         }
