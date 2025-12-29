@@ -30,9 +30,20 @@ function applyAxisLock(startPoint, candidatePoint, shiftKey) {
 
     // Choose the axis that keeps the point closer to the cursor/candidate.
     if (Math.abs(dx) >= Math.abs(dy)) {
-        return { ...candidatePoint, y: startPoint.y, snapped: false, kind: 'axis' };
+        return {
+            ...candidatePoint,
+            y: startPoint.y,
+            // Preserve snapping state so UI cues (e.g. hollow ring cursor/marker) still reflect snapping.
+            snapped: !!candidatePoint.snapped,
+            kind: candidatePoint.snapped ? candidatePoint.kind : 'axis',
+        };
     }
-    return { ...candidatePoint, x: startPoint.x, snapped: false, kind: 'axis' };
+    return {
+        ...candidatePoint,
+        x: startPoint.x,
+        snapped: !!candidatePoint.snapped,
+        kind: candidatePoint.snapped ? candidatePoint.kind : 'axis',
+    };
 }
 
 function computeViewportWorldBoundsFast() {
