@@ -366,7 +366,17 @@ export function setupListeners() {
 
     const viewContainer = elements.viewContainer;
 
+    const isUiOverlayTarget = (t) => {
+        if (!t) return false;
+        if (elements.toolbar && elements.toolbar.contains(t)) return true;
+        if (elements.configPanel && elements.configPanel.contains(t)) return true;
+        if (elements.toggleControlsBtn && (elements.toggleControlsBtn === t || elements.toggleControlsBtn.contains(t))) return true;
+        if (elements.toggleConfigBtn && (elements.toggleConfigBtn === t || elements.toggleConfigBtn.contains(t))) return true;
+        return false;
+    };
+
     viewContainer.addEventListener('dblclick', e => {
+        if (isUiOverlayTarget(e.target)) return;
         if (state.currentEngine !== 'canvas' && state.currentEngine !== 'webgl' && state.currentEngine !== 'svg') {
             updateStatus("Highlighting not supported in this mode");
             return;
@@ -383,6 +393,9 @@ export function setupListeners() {
 
     viewContainer.addEventListener('mousedown', e => {
         if (state.currentEngine !== 'canvas' && state.currentEngine !== 'webgl') return;
+
+        // Do not treat toolbar/config interactions as view interactions.
+        if (isUiOverlayTarget(e.target)) return;
 
         // In measure mode, a left click places a point (snapped if possible) and should not start a pan-drag.
         if (state.measureEnabled && e.button === 0) {
