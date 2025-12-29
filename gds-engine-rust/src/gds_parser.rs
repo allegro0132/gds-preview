@@ -1,6 +1,6 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use byteorder::{BigEndian, ReadBytesExt};
-use std::io::{Read, Cursor};
+use std::io::{Cursor, Read};
 
 #[derive(Debug, Clone)]
 pub enum GdsData {
@@ -13,6 +13,7 @@ pub enum GdsData {
     Str(String),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GdsRecord {
     pub rectype: u8,
@@ -21,7 +22,9 @@ pub struct GdsRecord {
 }
 
 pub fn gds_real_to_f64(bytes: &[u8]) -> f64 {
-    if bytes.len() < 8 { return 0.0; }
+    if bytes.len() < 8 {
+        return 0.0;
+    }
     let sign = (bytes[0] & 0x80) != 0;
     let exponent = (bytes[0] & 0x7F) as i32 - 64;
     let mut mantissa: u64 = 0;
@@ -31,7 +34,11 @@ pub fn gds_real_to_f64(bytes: &[u8]) -> f64 {
 
     let value = (mantissa as f64) / (2.0f64.powi(56));
     let result = value * 16.0f64.powi(exponent);
-    if sign { -result } else { result }
+    if sign {
+        -result
+    } else {
+        result
+    }
 }
 
 pub struct GdsReader<R: Read> {
@@ -83,17 +90,23 @@ impl<R: Read> GdsReader<R> {
             5 => {
                 let mut v = Vec::new();
                 for i in (0..buffer.len()).step_by(8) {
-                    v.push(gds_real_to_f64(&buffer[i..i+8]));
+                    v.push(gds_real_to_f64(&buffer[i..i + 8]));
                 }
                 GdsData::Real8(v)
             }
             6 => {
-                let s = String::from_utf8_lossy(&buffer).trim_end_matches('\0').to_string();
+                let s = String::from_utf8_lossy(&buffer)
+                    .trim_end_matches('\0')
+                    .to_string();
                 GdsData::Str(s)
             }
             _ => GdsData::None, // Should handle other types if needed
         };
 
-        Ok(Some(GdsRecord { rectype, datatype, data }))
+        Ok(Some(GdsRecord {
+            rectype,
+            datatype,
+            data,
+        }))
     }
 }

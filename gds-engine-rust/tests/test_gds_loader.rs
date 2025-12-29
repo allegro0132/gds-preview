@@ -30,7 +30,11 @@ fn singular_1_path_is_polygonized_with_width() {
     assert_eq!(cell.polygons.len(), 1, "expected one rendered polygon");
 
     let poly = &cell.polygons[0];
-    assert!(poly.points.len() >= 6, "PATH should be polygonized (got {} pts)", poly.points.len());
+    assert!(
+        poly.points.len() >= 6,
+        "PATH should be polygonized (got {} pts)",
+        poly.points.len()
+    );
 
     let (min_x, max_x, min_y, max_y) = bbox(&poly.points);
     let x_span = max_x - min_x;
@@ -41,7 +45,10 @@ fn singular_1_path_is_polygonized_with_width() {
     assert!(y_span > 8.0, "expected y-span > 8um, got {y_span}");
 
     // The file uses pathtype=0 (flush), so the first x should remain unchanged.
-    assert!((min_x - (-11214.471)).abs() < 1e-6, "unexpected min_x {min_x}");
+    assert!(
+        (min_x - (-11214.471)).abs() < 1e-6,
+        "unexpected min_x {min_x}"
+    );
     // Width=10um => half-width=5um; first segment is horizontal so top cap should reach y+5.
     assert!((max_y - 12623.087).abs() < 1e-6, "unexpected max_y {max_y}");
 

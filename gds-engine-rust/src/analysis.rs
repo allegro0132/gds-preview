@@ -1,7 +1,10 @@
-use crate::geometry::{Library, Cell, Matrix3x3, Point, Polygon};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use crate::geometry::{Library, Matrix3x3, Point, Polygon};
 use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct BBox {
@@ -30,32 +33,60 @@ impl BBox {
     }
 
     pub fn add_point(&mut self, p: &Point) {
-        if p.x < self.min_x { self.min_x = p.x; }
-        if p.x > self.max_x { self.max_x = p.x; }
-        if p.y < self.min_y { self.min_y = p.y; }
-        if p.y > self.max_y { self.max_y = p.y; }
+        if p.x < self.min_x {
+            self.min_x = p.x;
+        }
+        if p.x > self.max_x {
+            self.max_x = p.x;
+        }
+        if p.y < self.min_y {
+            self.min_y = p.y;
+        }
+        if p.y > self.max_y {
+            self.max_y = p.y;
+        }
     }
 
     pub fn merge(&mut self, other: &BBox) {
-        if other.min_x < self.min_x { self.min_x = other.min_x; }
-        if other.max_x > self.max_x { self.max_x = other.max_x; }
-        if other.min_y < self.min_y { self.min_y = other.min_y; }
-        if other.max_y > self.max_y { self.max_y = other.max_y; }
+        if other.min_x < self.min_x {
+            self.min_x = other.min_x;
+        }
+        if other.max_x > self.max_x {
+            self.max_x = other.max_x;
+        }
+        if other.min_y < self.min_y {
+            self.min_y = other.min_y;
+        }
+        if other.max_y > self.max_y {
+            self.max_y = other.max_y;
+        }
     }
 
     pub fn intersects(&self, other: &BBox) -> bool {
-        self.min_x <= other.max_x &&
-        self.max_x >= other.min_x &&
-        self.min_y <= other.max_y &&
-        self.max_y >= other.min_y
+        self.min_x <= other.max_x
+            && self.max_x >= other.min_x
+            && self.min_y <= other.max_y
+            && self.max_y >= other.min_y
     }
 
     pub fn transform(&self, m: &Matrix3x3) -> BBox {
         let corners = [
-            Point { x: self.min_x, y: self.min_y },
-            Point { x: self.max_x, y: self.min_y },
-            Point { x: self.max_x, y: self.max_y },
-            Point { x: self.min_x, y: self.max_y },
+            Point {
+                x: self.min_x,
+                y: self.min_y,
+            },
+            Point {
+                x: self.max_x,
+                y: self.min_y,
+            },
+            Point {
+                x: self.max_x,
+                y: self.max_y,
+            },
+            Point {
+                x: self.min_x,
+                y: self.max_y,
+            },
         ];
         let mut new_bbox = Self::empty();
         for p in &corners {
@@ -68,7 +99,9 @@ impl BBox {
 pub fn point_in_polygon(x: f64, y: f64, poly: &Polygon) -> bool {
     let mut inside = false;
     let len = poly.points.len();
-    if len < 3 { return false; }
+    if len < 3 {
+        return false;
+    }
 
     let mut j = len - 1;
     for i in 0..len {
@@ -77,8 +110,7 @@ pub fn point_in_polygon(x: f64, y: f64, poly: &Polygon) -> bool {
         let xj = poly.points[j].x;
         let yj = poly.points[j].y;
 
-        let intersect = ((yi > y) != (yj > y)) &&
-            (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+        let intersect = ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
 
         if intersect {
             inside = !inside;
@@ -150,6 +182,7 @@ pub struct Instance {
     pub bbox: BBox,
 }
 
+#[allow(dead_code)]
 pub struct SearchEngine {
     library: Arc<Library>,
     instances: Vec<Instance>,
@@ -176,7 +209,9 @@ impl SearchEngine {
         let mut instances = Vec::new();
 
         for (cell_idx, transforms) in instances_map {
-            if cell_idx >= cell_bboxes.len() { continue; }
+            if cell_idx >= cell_bboxes.len() {
+                continue;
+            }
             let base_bbox = &cell_bboxes[cell_idx];
 
             for t in transforms {
@@ -189,27 +224,49 @@ impl SearchEngine {
             }
         }
 
-        Self { library, instances, cell_bboxes, cell_map }
+        Self {
+            library,
+            instances,
+            cell_bboxes,
+            cell_map,
+        }
     }
 
-    pub fn find(&self, x: f64, y: f64, active_layers: &HashSet<(i16, i16)>, max_steps: usize, cancel_flag: Option<Arc<AtomicBool>>) -> (Vec<Polygon>, bool) {
+    pub fn find(
+        &self,
+        x: f64,
+        y: f64,
+        active_layers: &HashSet<(i16, i16)>,
+        max_steps: usize,
+        cancel_flag: Option<Arc<AtomicBool>>,
+    ) -> (Vec<Polygon>, bool) {
         let mut start_poly: Option<Polygon> = None;
         let mut start_instance_idx: Option<usize> = None;
 
         // 1. Find start polygon
         for (i, inst) in self.instances.iter().enumerate() {
-            if x < inst.bbox.min_x || x > inst.bbox.max_x || y < inst.bbox.min_y || y > inst.bbox.max_y {
+            if x < inst.bbox.min_x
+                || x > inst.bbox.max_x
+                || y < inst.bbox.min_y
+                || y > inst.bbox.max_y
+            {
                 continue;
             }
 
             let cell = &self.library.cells[inst.cell_idx];
 
             let m = &inst.matrix.m;
-            let m11 = m[0][0]; let m12 = m[0][1]; let tx = m[0][2];
-            let m21 = m[1][0]; let m22 = m[1][1]; let ty = m[1][2];
+            let m11 = m[0][0];
+            let m12 = m[0][1];
+            let tx = m[0][2];
+            let m21 = m[1][0];
+            let m22 = m[1][1];
+            let ty = m[1][2];
 
             let det = m11 * m22 - m12 * m21;
-            if det.abs() < 1e-6 { continue; }
+            if det.abs() < 1e-6 {
+                continue;
+            }
 
             let inv_det = 1.0 / det;
             let dx = x - tx;
@@ -218,7 +275,9 @@ impl SearchEngine {
             let local_y = (m11 * dy - m21 * dx) * inv_det;
 
             for poly in &cell.polygons {
-                if !active_layers.contains(&(poly.layer, poly.datatype)) { continue; }
+                if !active_layers.contains(&(poly.layer, poly.datatype)) {
+                    continue;
+                }
 
                 if point_in_polygon(local_x, local_y, poly) {
                     start_poly = Some(transform_polygon(poly, &inst.matrix));
@@ -226,30 +285,36 @@ impl SearchEngine {
                     break;
                 }
             }
-            if start_poly.is_some() { break; }
+            if start_poly.is_some() {
+                break;
+            }
         }
 
         if start_poly.is_none() {
             return (Vec::new(), false);
         }
 
-        let start_poly = start_poly.unwrap();
         let mut candidates: Vec<Polygon> = Vec::new();
         let mut candidates_indices: Vec<(usize, usize)> = Vec::new();
 
         if let Some(idx) = start_instance_idx {
-             self.add_instance_to_candidates(idx, active_layers, &mut candidates, &mut candidates_indices);
+            self.add_instance_to_candidates(
+                idx,
+                active_layers,
+                &mut candidates,
+                &mut candidates_indices,
+            );
         }
 
         let mut visited = HashSet::new();
         let mut current_frontier = Vec::new();
 
         for (i, poly) in candidates.iter().enumerate() {
-             if point_in_polygon(x, y, poly) {
-                 visited.insert(i);
-                 current_frontier.push(i);
-                 break;
-             }
+            if point_in_polygon(x, y, poly) {
+                visited.insert(i);
+                current_frontier.push(i);
+                break;
+            }
         }
 
         let mut remaining_instances: Vec<usize> = (0..self.instances.len()).collect();
@@ -276,19 +341,24 @@ impl SearchEngine {
 
             // 1. Expand Instances (Parallel)
             // Collect BBoxes of current frontier
-            let frontier_bboxes: Vec<BBox> = current_frontier.par_iter()
+            let frontier_bboxes: Vec<BBox> = current_frontier
+                .par_iter()
                 .map(|&idx| BBox::from_points(&candidates[idx].points))
                 .collect();
 
             // Compute union BBox for quick rejection
             let mut union_bbox = BBox::empty();
-            for b in &frontier_bboxes { union_bbox.merge(b); }
+            for b in &frontier_bboxes {
+                union_bbox.merge(b);
+            }
 
             // Find intersecting instances
-            let (intersecting_instances, kept_instances): (Vec<_>, Vec<_>) = remaining_instances.par_iter()
-                .partition(|&&inst_idx| {
+            let (intersecting_instances, kept_instances): (Vec<_>, Vec<_>) =
+                remaining_instances.par_iter().partition(|&&inst_idx| {
                     let inst = &self.instances[inst_idx];
-                    if !union_bbox.intersects(&inst.bbox) { return false; }
+                    if !union_bbox.intersects(&inst.bbox) {
+                        return false;
+                    }
 
                     frontier_bboxes.iter().any(|fb| fb.intersects(&inst.bbox))
                 });
@@ -297,7 +367,12 @@ impl SearchEngine {
 
             // Add new candidates (Sequential, but fast)
             for &inst_idx in &intersecting_instances {
-                self.add_instance_to_candidates(inst_idx, active_layers, &mut candidates, &mut candidates_indices);
+                self.add_instance_to_candidates(
+                    inst_idx,
+                    active_layers,
+                    &mut candidates,
+                    &mut candidates_indices,
+                );
             }
 
             // 2. Find Intersections (Parallel)
@@ -312,14 +387,18 @@ impl SearchEngine {
             let visited_ref = &visited;
             let candidates_ref = &candidates;
 
-            let next_frontier_indices: HashSet<usize> = current_frontier.par_iter().zip(frontier_bboxes.par_iter())
+            let next_frontier_indices: HashSet<usize> = current_frontier
+                .par_iter()
+                .zip(frontier_bboxes.par_iter())
                 .map(|(&curr_idx, curr_bbox)| {
                     let mut local_next = Vec::new();
                     // Check against all candidates
                     // Note: This is O(Frontier * Candidates).
                     // If Candidates is large, we might want to optimize this loop.
                     for i in 0..candidates_len {
-                        if visited_ref.contains(&i) { continue; }
+                        if visited_ref.contains(&i) {
+                            continue;
+                        }
 
                         let other = &candidates_ref[i];
                         // Quick BBox check
@@ -327,7 +406,9 @@ impl SearchEngine {
                         // Optimization: Store BBoxes alongside candidates?
                         let other_bbox = BBox::from_points(&other.points);
 
-                        if !curr_bbox.intersects(&other_bbox) { continue; }
+                        if !curr_bbox.intersects(&other_bbox) {
+                            continue;
+                        }
 
                         if polygons_intersect(&candidates_ref[curr_idx], other) {
                             local_next.push(i);
@@ -348,7 +429,13 @@ impl SearchEngine {
         (res_polys, false)
     }
 
-    fn add_instance_to_candidates(&self, inst_idx: usize, active_layers: &HashSet<(i16, i16)>, candidates: &mut Vec<Polygon>, indices: &mut Vec<(usize, usize)>) {
+    fn add_instance_to_candidates(
+        &self,
+        inst_idx: usize,
+        active_layers: &HashSet<(i16, i16)>,
+        candidates: &mut Vec<Polygon>,
+        indices: &mut Vec<(usize, usize)>,
+    ) {
         let inst = &self.instances[inst_idx];
         let cell = &self.library.cells[inst.cell_idx];
         for (poly_idx, poly) in cell.polygons.iter().enumerate() {

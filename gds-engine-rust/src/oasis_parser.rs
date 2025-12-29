@@ -104,6 +104,7 @@ impl From<u8> for OasisRecord {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 enum OasisDataType {
     RealPositiveInteger = 0,
@@ -124,7 +125,6 @@ enum OasisDataType {
     ReferenceN = 15,
 }
 
-
 #[derive(Debug, Default, Clone, Copy)]
 struct RectRepetition {
     columns: u64,
@@ -137,7 +137,12 @@ struct RectRepetition {
 enum Repetition {
     Rect(RectRepetition),
     Offsets(Vec<Point>),
-    Regular { columns: u64, rows: u64, v1: Point, v2: Point },
+    Regular {
+        columns: u64,
+        rows: u64,
+        v1: Point,
+        v2: Point,
+    },
 }
 
 #[derive(Debug)]
@@ -239,9 +244,14 @@ impl<R: Read + Seek> OasisStream<R> {
 
     fn read_integer(&mut self) -> Result<i64> {
         let (v, bits) = self.read_var_int(1)?;
-        if bits & 1 == 1 { Ok(-v) } else { Ok(v) }
+        if bits & 1 == 1 {
+            Ok(-v)
+        } else {
+            Ok(v)
+        }
     }
 
+    #[allow(dead_code)]
     fn read_1delta(&mut self) -> Result<i64> {
         // 1-delta encoding: sign in LSB of first byte, magnitude packed in remaining bits.
         self.read_integer()
@@ -252,10 +262,10 @@ impl<R: Read + Seek> OasisStream<R> {
         let (value, dir_bits) = self.read_var_int(2)?;
         let val = value as i64;
         match dir_bits & 0x03 {
-            0 => Ok((val, 0)),   // E
-            1 => Ok((0, val)),   // N
-            2 => Ok((-val, 0)),  // W
-            _ => Ok((0, -val)),  // S
+            0 => Ok((val, 0)),  // E
+            1 => Ok((0, val)),  // N
+            2 => Ok((-val, 0)), // W
+            _ => Ok((0, -val)), // S
         }
     }
 
@@ -264,14 +274,14 @@ impl<R: Read + Seek> OasisStream<R> {
         let (value, dir_bits) = self.read_var_int(3)?;
         let val = value as i64;
         match dir_bits & 0x07 {
-            0 => Ok((val, 0)),    // E
-            1 => Ok((0, val)),    // N
-            2 => Ok((-val, 0)),   // W
-            3 => Ok((0, -val)),   // S
-            4 => Ok((val, val)),  // NE
-            5 => Ok((-val, val)), // NW
-            6 => Ok((-val, -val)),// SW
-            _ => Ok((val, -val)), // SE
+            0 => Ok((val, 0)),     // E
+            1 => Ok((0, val)),     // N
+            2 => Ok((-val, 0)),    // W
+            3 => Ok((0, -val)),    // S
+            4 => Ok((val, val)),   // NE
+            5 => Ok((-val, val)),  // NW
+            6 => Ok((-val, -val)), // SW
+            _ => Ok((val, -val)),  // SE
         }
     }
 
@@ -281,7 +291,11 @@ impl<R: Read + Seek> OasisStream<R> {
         let first = self.read_u8()?;
 
         // Helper to finish a varint when we've already consumed the first byte
-        fn finish_var_int<R: Read + Seek>(stream: &mut OasisStream<R>, skip_bits: u8, first: u8) -> Result<(i64, u8)> {
+        fn finish_var_int<R: Read + Seek>(
+            stream: &mut OasisStream<R>,
+            skip_bits: u8,
+            first: u8,
+        ) -> Result<(i64, u8)> {
             let mut value: i64 = ((first & 0x7F) >> skip_bits) as i64;
             let bits = first & ((1 << skip_bits) - 1);
             let mut shift = 7 - skip_bits;
@@ -289,7 +303,9 @@ impl<R: Read + Seek> OasisStream<R> {
                 loop {
                     let byte = stream.read_u8()?;
                     value |= ((byte & 0x7F) as i64) << shift;
-                    if byte & 0x80 == 0 { break; }
+                    if byte & 0x80 == 0 {
+                        break;
+                    }
                     shift += 7;
                 }
             }
@@ -302,21 +318,25 @@ impl<R: Read + Seek> OasisStream<R> {
             let value = value as i64;
             let dir = (bits >> 1) & 0x07;
             match dir {
-                0 => Ok((value, 0)),      // E
-                1 => Ok((0, value)),      // N
-                2 => Ok((-value, 0)),     // W
-                3 => Ok((0, -value)),     // S
-                4 => Ok((value, value)),  // NE
-                5 => Ok((-value, value)), // NW
-                6 => Ok((-value, -value)),// SW
-                _ => Ok((value, -value)), // SE
+                0 => Ok((value, 0)),       // E
+                1 => Ok((0, value)),       // N
+                2 => Ok((-value, 0)),      // W
+                3 => Ok((0, -value)),      // S
+                4 => Ok((value, value)),   // NE
+                5 => Ok((-value, value)),  // NW
+                6 => Ok((-value, -value)), // SW
+                _ => Ok((value, -value)),  // SE
             }
         } else {
             // Two signed magnitudes (x then y), each encoded with sign bit in LSB of first byte
             let (mut x, sign_x) = finish_var_int(self, 2, first)?;
-            if sign_x & 0x02 != 0 { x = -x; }
+            if sign_x & 0x02 != 0 {
+                x = -x;
+            }
             let (mut y, sign_y) = self.read_var_int(1)?;
-            if sign_y & 0x01 != 0 { y = -y; }
+            if sign_y & 0x01 != 0 {
+                y = -y;
+            }
             Ok((x as i64, y as i64))
         }
     }
@@ -379,7 +399,12 @@ impl<R: Read + Seek> OasisStream<R> {
         Ok(buf)
     }
 
-    fn read_point_list(&mut self, scale: f64, closed: bool, current: &mut Vec<Point>) -> Result<u8> {
+    fn read_point_list(
+        &mut self,
+        scale: f64,
+        closed: bool,
+        current: &mut Vec<Point>,
+    ) -> Result<u8> {
         let list_type = self.read_u8()?;
         let count = self.read_var_uint()? as usize;
         let start_pos = self.pos;
@@ -414,15 +439,12 @@ impl<R: Read + Seek> OasisStream<R> {
         const DEBUG_LIMIT: usize = 5;
         static PL_DEBUG_COUNT: AtomicUsize = AtomicUsize::new(0);
         let pl_idx = PL_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed);
-        let do_debug = std::env::var("OASIS_TRACE").ok().as_deref() == Some("1") && pl_idx < DEBUG_LIMIT;
+        let do_debug =
+            std::env::var("OASIS_TRACE").ok().as_deref() == Some("1") && pl_idx < DEBUG_LIMIT;
         if do_debug {
             eprintln!(
                 "[oasis] point_list type=0x{:02x} base={} start={} grid={} count={}",
-                list_type,
-                base_type,
-                explicit_start,
-                grid,
-                count
+                list_type, base_type, explicit_start, grid, count
             );
         }
 
@@ -443,9 +465,15 @@ impl<R: Read + Seek> OasisStream<R> {
                 }
                 if closed {
                     if horizontal {
-                        pts.push(Point { x: pts.first().unwrap().x, y: last.y });
+                        pts.push(Point {
+                            x: pts.first().unwrap().x,
+                            y: last.y,
+                        });
                     } else {
-                        pts.push(Point { x: last.x, y: pts.first().unwrap().y });
+                        pts.push(Point {
+                            x: last.x,
+                            y: pts.first().unwrap().y,
+                        });
                     }
                 }
             }
@@ -462,7 +490,11 @@ impl<R: Read + Seek> OasisStream<R> {
             3 => {
                 // Octangular (3-delta)
                 let mut last = pts.last().cloned().unwrap_or(Point { x: 0.0, y: 0.0 });
-                let num_pairs = if explicit_start && count > 0 { count - 1 } else { count };
+                let num_pairs = if explicit_start && count > 0 {
+                    count - 1
+                } else {
+                    count
+                };
                 for _ in 0..num_pairs {
                     let (dx, dy) = self.read_3delta()?;
                     last.x += dx as f64 * scale * grid;
@@ -481,7 +513,10 @@ impl<R: Read + Seek> OasisStream<R> {
                     if base_type == 5 {
                         delta.x += dx;
                         delta.y += dy;
-                        pts.push(Point { x: last.x + delta.x, y: last.y + delta.y });
+                        pts.push(Point {
+                            x: last.x + delta.x,
+                            y: last.y + delta.y,
+                        });
                     } else {
                         last.x += dx;
                         last.y += dy;
@@ -618,9 +653,20 @@ impl<R: Read + Seek> OasisStream<R> {
                 // Regular with perpendicular vector
                 let cols = 2 + self.read_var_uint()?;
                 let (dx1, dy1) = self.read_gdelta()?;
-                let v1 = Point { x: dx1 as f64 * scale, y: dy1 as f64 * scale };
+                let v1 = Point {
+                    x: dx1 as f64 * scale,
+                    y: dy1 as f64 * scale,
+                };
                 let v2 = Point { x: -v1.y, y: v1.x };
-                Ok((Some(Repetition::Regular { columns: cols, rows: 1, v1, v2 }), true))
+                Ok((
+                    Some(Repetition::Regular {
+                        columns: cols,
+                        rows: 1,
+                        v1,
+                        v2,
+                    }),
+                    true,
+                ))
             }
             10 | 11 => {
                 // Explicit offset list
@@ -703,7 +749,12 @@ impl<R: Read + Seek> OasisStream<R> {
 
         // Heuristic sanity check: first non-PAD byte in a record stream should be a valid
         // record id (0..=34). If not, try zlib as an alternative.
-        if output.iter().copied().find(|b| *b != 0).is_some_and(|b| b > 34) {
+        if output
+            .iter()
+            .copied()
+            .find(|b| *b != 0)
+            .is_some_and(|b| b > 34)
+        {
             output = decode(true)?;
         }
 
@@ -721,7 +772,11 @@ fn push_polygon_with_repetition(
     repetition: Option<Repetition>,
 ) {
     // Always push the base geometry
-    polys.push(Polygon { layer, datatype, points: base_points.to_vec() });
+    polys.push(Polygon {
+        layer,
+        datatype,
+        points: base_points.to_vec(),
+    });
 
     match repetition {
         Some(Repetition::Rect(rep)) => {
@@ -734,13 +789,25 @@ fn push_polygon_with_repetition(
                     let dy = row as f64 * rep.spacing_y;
                     let mut pts = Vec::with_capacity(base_points.len());
                     for p in base_points {
-                        pts.push(Point { x: p.x + dx, y: p.y + dy });
+                        pts.push(Point {
+                            x: p.x + dx,
+                            y: p.y + dy,
+                        });
                     }
-                    polys.push(Polygon { layer, datatype, points: pts });
+                    polys.push(Polygon {
+                        layer,
+                        datatype,
+                        points: pts,
+                    });
                 }
             }
         }
-        Some(Repetition::Regular { columns, rows, v1, v2 }) => {
+        Some(Repetition::Regular {
+            columns,
+            rows,
+            v1,
+            v2,
+        }) => {
             for row in 0..rows {
                 for col in 0..columns {
                     if row == 0 && col == 0 {
@@ -750,9 +817,16 @@ fn push_polygon_with_repetition(
                     let dy = v1.y * col as f64 + v2.y * row as f64;
                     let mut pts = Vec::with_capacity(base_points.len());
                     for p in base_points {
-                        pts.push(Point { x: p.x + dx, y: p.y + dy });
+                        pts.push(Point {
+                            x: p.x + dx,
+                            y: p.y + dy,
+                        });
                     }
-                    polys.push(Polygon { layer, datatype, points: pts });
+                    polys.push(Polygon {
+                        layer,
+                        datatype,
+                        points: pts,
+                    });
                 }
             }
         }
@@ -760,9 +834,16 @@ fn push_polygon_with_repetition(
             for off in offsets {
                 let mut pts = Vec::with_capacity(base_points.len());
                 for p in base_points {
-                    pts.push(Point { x: p.x + off.x, y: p.y + off.y });
+                    pts.push(Point {
+                        x: p.x + off.x,
+                        y: p.y + off.y,
+                    });
                 }
-                polys.push(Polygon { layer, datatype, points: pts });
+                polys.push(Polygon {
+                    layer,
+                    datatype,
+                    points: pts,
+                });
             }
         }
         None => {}
@@ -795,7 +876,12 @@ fn push_label_with_repetition(
                 }
             }
         }
-        Some(Repetition::Regular { columns, rows, v1, v2 }) => {
+        Some(Repetition::Regular {
+            columns,
+            rows,
+            v1,
+            v2,
+        }) => {
             for row in 0..rows {
                 for col in 0..columns {
                     if row == 0 && col == 0 {
@@ -934,13 +1020,28 @@ fn stroke_path_to_polygon(
     }
 }
 
-fn trapezoid_points(kind: OasisRecord, pos: Point, dim: Point, delta_a: f64, delta_b: f64) -> Vec<Point> {
+fn trapezoid_points(
+    kind: OasisRecord,
+    pos: Point,
+    dim: Point,
+    delta_a: f64,
+    delta_b: f64,
+) -> Vec<Point> {
     // Very small helper to approximate trapezoids; this follows the gdstk rectangle orientation.
     let mut pts = vec![
         Point { x: pos.x, y: pos.y },
-        Point { x: pos.x + dim.x, y: pos.y },
-        Point { x: pos.x + dim.x, y: pos.y + dim.y },
-        Point { x: pos.x, y: pos.y + dim.y },
+        Point {
+            x: pos.x + dim.x,
+            y: pos.y,
+        },
+        Point {
+            x: pos.x + dim.x,
+            y: pos.y + dim.y,
+        },
+        Point {
+            x: pos.x,
+            y: pos.y + dim.y,
+        },
     ];
     match kind {
         OasisRecord::TrapezoidAb => {
@@ -974,9 +1075,18 @@ fn ctrapezoid_points(ct_type: u8, pos: Point, dim: &mut Point) -> Vec<Point> {
         // 4-point rectangle initialized from pos + dim.
         v = vec![
             Point { x: pos.x, y: pos.y },
-            Point { x: pos.x + dim.x, y: pos.y },
-            Point { x: pos.x + dim.x, y: pos.y + dim.y },
-            Point { x: pos.x, y: pos.y + dim.y },
+            Point {
+                x: pos.x + dim.x,
+                y: pos.y,
+            },
+            Point {
+                x: pos.x + dim.x,
+                y: pos.y + dim.y,
+            },
+            Point {
+                x: pos.x,
+                y: pos.y + dim.y,
+            },
         ];
     }
 
@@ -1261,7 +1371,9 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
             }
             OasisRecord::CellNameImplicit => {
                 let name = stream.read_string(true)?;
-                cell_name_table.push(String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]).to_string());
+                cell_name_table.push(
+                    String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]).to_string(),
+                );
             }
             OasisRecord::CellName => {
                 let name = stream.read_string(true)?;
@@ -1269,11 +1381,13 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 if cell_name_table.len() <= idx {
                     cell_name_table.resize(idx + 1, String::new());
                 }
-                cell_name_table[idx] = String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]).to_string();
+                cell_name_table[idx] =
+                    String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]).to_string();
             }
             OasisRecord::TextStringImplicit => {
                 let txt = stream.read_string(true)?;
-                label_text_table.push(String::from_utf8_lossy(&txt[..txt.len().saturating_sub(1)]).to_string());
+                label_text_table
+                    .push(String::from_utf8_lossy(&txt[..txt.len().saturating_sub(1)]).to_string());
             }
             OasisRecord::TextString => {
                 let txt = stream.read_string(true)?;
@@ -1281,7 +1395,8 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 if label_text_table.len() <= idx {
                     label_text_table.resize(idx + 1, String::new());
                 }
-                label_text_table[idx] = String::from_utf8_lossy(&txt[..txt.len().saturating_sub(1)]).to_string();
+                label_text_table[idx] =
+                    String::from_utf8_lossy(&txt[..txt.len().saturating_sub(1)]).to_string();
             }
             OasisRecord::LayerNameData | OasisRecord::LayerNameText => {
                 // Layer name tables are not used by the viewer; consume and discard payload.
@@ -1293,7 +1408,8 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
             }
             OasisRecord::PropNameImplicit => {
                 let v = stream.read_string(true)?;
-                property_name_table.push(String::from_utf8_lossy(&v[..v.len().saturating_sub(1)]).to_string());
+                property_name_table
+                    .push(String::from_utf8_lossy(&v[..v.len().saturating_sub(1)]).to_string());
             }
             OasisRecord::PropName => {
                 let v = stream.read_string(true)?;
@@ -1301,7 +1417,8 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 if property_name_table.len() <= idx {
                     property_name_table.resize(idx + 1, String::new());
                 }
-                property_name_table[idx] = String::from_utf8_lossy(&v[..v.len().saturating_sub(1)]).to_string();
+                property_name_table[idx] =
+                    String::from_utf8_lossy(&v[..v.len().saturating_sub(1)]).to_string();
             }
             OasisRecord::PropStringImplicit => {
                 let v = stream.read_string(false)?;
@@ -1319,7 +1436,11 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 // Flush properties collected for previous cell (if any).
                 if let Some(prev_idx) = current_cell {
                     let units = library.units;
-                    process_properties(&mut current_properties, &mut library.cells[prev_idx], units);
+                    process_properties(
+                        &mut current_properties,
+                        &mut library.cells[prev_idx],
+                        units,
+                    );
                 } else {
                     current_properties.clear();
                 }
@@ -1334,7 +1455,8 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
 
                 if record == OasisRecord::Cell {
                     let name = stream.read_string(true)?;
-                    cell.name = String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]).to_string();
+                    cell.name =
+                        String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]).to_string();
                 } else {
                     let idx = stream.read_var_uint()? as usize;
                     pending_cell_names.insert(library.cells.len(), idx as u64);
@@ -1382,7 +1504,8 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                         (None, Some(idx))
                     } else {
                         let name = stream.read_string(true)?;
-                        let s = String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]).to_string();
+                        let s = String::from_utf8_lossy(&name[..name.len().saturating_sub(1)])
+                            .to_string();
                         modal_placement_cell = Some((Some(s.clone()), None));
                         (Some(s), None)
                     }
@@ -1433,8 +1556,16 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 let mut reference = Reference {
                     cell_name: String::new(),
                     origin: modal_geom_pos.clone(),
-                    rotation: if rotation == 0.0 { None } else { Some(rotation) },
-                    magnification: if magnification == 1.0 { None } else { Some(magnification) },
+                    rotation: if rotation == 0.0 {
+                        None
+                    } else {
+                        Some(rotation)
+                    },
+                    magnification: if magnification == 1.0 {
+                        None
+                    } else {
+                        Some(magnification)
+                    },
                     x_reflection,
                     columns: 1,
                     rows: 1,
@@ -1459,17 +1590,32 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     Some(Repetition::Rect(rep)) => {
                         reference.columns = rep.columns.clamp(1, u16::MAX as u64) as u16;
                         reference.rows = rep.rows.clamp(1, u16::MAX as u64) as u16;
-                        reference.col_spacing = Point { x: rep.spacing_x, y: 0.0 };
-                        reference.row_spacing = Point { x: 0.0, y: rep.spacing_y };
+                        reference.col_spacing = Point {
+                            x: rep.spacing_x,
+                            y: 0.0,
+                        };
+                        reference.row_spacing = Point {
+                            x: 0.0,
+                            y: rep.spacing_y,
+                        };
 
                         if let Some(name) = target.0 {
                             reference.cell_name = name;
                         } else if let Some(idx) = target.1 {
-                            pending_ref_ids.push((cell_idx, library.cells[cell_idx].references.len(), idx as u64));
+                            pending_ref_ids.push((
+                                cell_idx,
+                                library.cells[cell_idx].references.len(),
+                                idx as u64,
+                            ));
                         }
                         library.cells[cell_idx].references.push(reference);
                     }
-                    Some(Repetition::Regular { columns, rows, v1, v2 }) => {
+                    Some(Repetition::Regular {
+                        columns,
+                        rows,
+                        v1,
+                        v2,
+                    }) => {
                         reference.columns = columns.clamp(1, u16::MAX as u64) as u16;
                         reference.rows = rows.clamp(1, u16::MAX as u64) as u16;
                         reference.col_spacing = v1;
@@ -1478,7 +1624,11 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                         if let Some(name) = target.0 {
                             reference.cell_name = name;
                         } else if let Some(idx) = target.1 {
-                            pending_ref_ids.push((cell_idx, library.cells[cell_idx].references.len(), idx as u64));
+                            pending_ref_ids.push((
+                                cell_idx,
+                                library.cells[cell_idx].references.len(),
+                                idx as u64,
+                            ));
                         }
                         library.cells[cell_idx].references.push(reference);
                     }
@@ -1486,14 +1636,19 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                         // Base instance at modal origin
                         let base_origin = reference.origin.clone();
 
-                        let mut push_single = |mut r: Reference, name: &Option<String>, idx: &Option<u64>| {
-                            if let Some(n) = name.clone() {
-                                r.cell_name = n;
-                            } else if let Some(i) = idx {
-                                pending_ref_ids.push((cell_idx, library.cells[cell_idx].references.len(), *i));
-                            }
-                            library.cells[cell_idx].references.push(r);
-                        };
+                        let mut push_single =
+                            |mut r: Reference, name: &Option<String>, idx: &Option<u64>| {
+                                if let Some(n) = name.clone() {
+                                    r.cell_name = n;
+                                } else if let Some(i) = idx {
+                                    pending_ref_ids.push((
+                                        cell_idx,
+                                        library.cells[cell_idx].references.len(),
+                                        *i,
+                                    ));
+                                }
+                                library.cells[cell_idx].references.push(r);
+                            };
 
                         let (name_opt, idx_opt) = (target.0.clone(), target.1.map(|v| v as u64));
                         reference.columns = 1;
@@ -1510,7 +1665,10 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                                 continue;
                             }
                             let mut r = reference.clone();
-                            r.origin = Point { x: base_origin.x + off.x, y: base_origin.y + off.y };
+                            r.origin = Point {
+                                x: base_origin.x + off.x,
+                                y: base_origin.y + off.y,
+                            };
                             push_single(r, &name_opt, &idx_opt);
                         }
                     }
@@ -1518,7 +1676,11 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                         if let Some(name) = target.0 {
                             reference.cell_name = name;
                         } else if let Some(idx) = target.1 {
-                            pending_ref_ids.push((cell_idx, library.cells[cell_idx].references.len(), idx as u64));
+                            pending_ref_ids.push((
+                                cell_idx,
+                                library.cells[cell_idx].references.len(),
+                                idx as u64,
+                            ));
                         }
                         library.cells[cell_idx].references.push(reference);
                     }
@@ -1553,7 +1715,8 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                         modal_text_string = Some((None, Some(idx as u64)));
                     } else {
                         let s = stream.read_string(true)?;
-                        let txt = String::from_utf8_lossy(&s[..s.len().saturating_sub(1)]).to_string();
+                        let txt =
+                            String::from_utf8_lossy(&s[..s.len().saturating_sub(1)]).to_string();
                         label.text = txt.clone();
                         modal_text_string = Some((Some(txt), None));
                     }
@@ -1581,11 +1744,19 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
 
                 if info & 0x10 != 0 {
                     let x = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.x = x; } else { modal_geom_pos.x += x; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.x = x;
+                    } else {
+                        modal_geom_pos.x += x;
+                    }
                 }
                 if info & 0x08 != 0 {
                     let y = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.y = y; } else { modal_geom_pos.y += y; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.y = y;
+                    } else {
+                        modal_geom_pos.y += y;
+                    }
                 }
                 label.x = modal_geom_pos.x;
                 label.y = modal_geom_pos.y;
@@ -1621,9 +1792,15 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 let cell_idx = current_cell.unwrap();
                 let info = stream.read_u8()?;
 
-                if info & 0x01 != 0 { modal_layer = stream.read_var_uint()? as i16; }
-                if info & 0x02 != 0 { modal_datatype = stream.read_var_uint()? as i16; }
-                if info & 0x40 != 0 { modal_geom_dim.x = stream.read_var_uint()? as f64 * scale; }
+                if info & 0x01 != 0 {
+                    modal_layer = stream.read_var_uint()? as i16;
+                }
+                if info & 0x02 != 0 {
+                    modal_datatype = stream.read_var_uint()? as i16;
+                }
+                if info & 0x40 != 0 {
+                    modal_geom_dim.x = stream.read_var_uint()? as f64 * scale;
+                }
                 if info & 0x20 != 0 {
                     modal_geom_dim.y = stream.read_var_uint()? as f64 * scale;
                 } else if info & 0x80 != 0 {
@@ -1631,18 +1808,38 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
                 if info & 0x10 != 0 {
                     let x = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.x = x; } else { modal_geom_pos.x += x; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.x = x;
+                    } else {
+                        modal_geom_pos.x += x;
+                    }
                 }
                 if info & 0x08 != 0 {
                     let y = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.y = y; } else { modal_geom_pos.y += y; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.y = y;
+                    } else {
+                        modal_geom_pos.y += y;
+                    }
                 }
 
                 let pts = vec![
-                    Point { x: modal_geom_pos.x, y: modal_geom_pos.y },
-                    Point { x: modal_geom_pos.x + modal_geom_dim.x, y: modal_geom_pos.y },
-                    Point { x: modal_geom_pos.x + modal_geom_dim.x, y: modal_geom_pos.y + modal_geom_dim.y },
-                    Point { x: modal_geom_pos.x, y: modal_geom_pos.y + modal_geom_dim.y },
+                    Point {
+                        x: modal_geom_pos.x,
+                        y: modal_geom_pos.y,
+                    },
+                    Point {
+                        x: modal_geom_pos.x + modal_geom_dim.x,
+                        y: modal_geom_pos.y,
+                    },
+                    Point {
+                        x: modal_geom_pos.x + modal_geom_dim.x,
+                        y: modal_geom_pos.y + modal_geom_dim.y,
+                    },
+                    Point {
+                        x: modal_geom_pos.x,
+                        y: modal_geom_pos.y + modal_geom_dim.y,
+                    },
                 ];
                 let repetition = if info & 0x04 != 0 {
                     let (rep, consumed) = stream.read_repetition(scale, &modal_geom_repetition)?;
@@ -1677,8 +1874,12 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     eprintln!("[oasis] polygon info=0x{:02x} pos={}", info, stream.pos - 1);
                 }
 
-                if info & 0x01 != 0 { modal_layer = stream.read_var_uint()? as i16; }
-                if info & 0x02 != 0 { modal_datatype = stream.read_var_uint()? as i16; }
+                if info & 0x01 != 0 {
+                    modal_layer = stream.read_var_uint()? as i16;
+                }
+                if info & 0x02 != 0 {
+                    modal_datatype = stream.read_var_uint()? as i16;
+                }
                 if info & 0x20 != 0 {
                     modal_polygon_points.clear();
                     modal_polygon_points.push(Point { x: 0.0, y: 0.0 });
@@ -1686,16 +1887,27 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
                 if info & 0x10 != 0 {
                     let x = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.x = x; } else { modal_geom_pos.x += x; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.x = x;
+                    } else {
+                        modal_geom_pos.x += x;
+                    }
                 }
                 if info & 0x08 != 0 {
                     let y = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.y = y; } else { modal_geom_pos.y += y; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.y = y;
+                    } else {
+                        modal_geom_pos.y += y;
+                    }
                 }
 
                 let points: Vec<Point> = modal_polygon_points
                     .iter()
-                    .map(|p| Point { x: p.x + modal_geom_pos.x, y: p.y + modal_geom_pos.y })
+                    .map(|p| Point {
+                        x: p.x + modal_geom_pos.x,
+                        y: p.y + modal_geom_pos.y,
+                    })
                     .collect();
                 let repetition = if info & 0x04 != 0 {
                     let (rep, consumed) = stream.read_repetition(scale, &modal_geom_repetition)?;
@@ -1727,9 +1939,15 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 let cell_idx = current_cell.unwrap();
                 let info = stream.read_u8()?;
 
-                if info & 0x01 != 0 { modal_layer = stream.read_var_uint()? as i16; }
-                if info & 0x02 != 0 { modal_datatype = stream.read_var_uint()? as i16; }
-                if info & 0x40 != 0 { modal_path_halfwidth = stream.read_var_uint()? as f64 * scale; }
+                if info & 0x01 != 0 {
+                    modal_layer = stream.read_var_uint()? as i16;
+                }
+                if info & 0x02 != 0 {
+                    modal_datatype = stream.read_var_uint()? as i16;
+                }
+                if info & 0x40 != 0 {
+                    modal_path_halfwidth = stream.read_var_uint()? as f64 * scale;
+                }
                 if info & 0x80 != 0 {
                     let extension_scheme = stream.read_u8()?;
                     match extension_scheme & 0x0c {
@@ -1752,11 +1970,19 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
                 if info & 0x10 != 0 {
                     let x = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.x = x; } else { modal_geom_pos.x += x; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.x = x;
+                    } else {
+                        modal_geom_pos.x += x;
+                    }
                 }
                 if info & 0x08 != 0 {
                     let y = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.y = y; } else { modal_geom_pos.y += y; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.y = y;
+                    } else {
+                        modal_geom_pos.y += y;
+                    }
                 }
 
                 // Polygonize PATH centerline using halfwidth + end extensions (match gdstk semantics).
@@ -1801,22 +2027,50 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
             }
             OasisRecord::TrapezoidAb | OasisRecord::TrapezoidA | OasisRecord::TrapezoidB => {
-                if current_cell.is_none() { return Err(anyhow!("TRAPEZOID outside of CELL")); }
+                if current_cell.is_none() {
+                    return Err(anyhow!("TRAPEZOID outside of CELL"));
+                }
                 let cell_idx = current_cell.unwrap();
                 let info = stream.read_u8()?;
-                if info & 0x01 != 0 { modal_layer = stream.read_var_uint()? as i16; }
-                if info & 0x02 != 0 { modal_datatype = stream.read_var_uint()? as i16; }
-                if info & 0x40 != 0 { modal_geom_dim.x = stream.read_var_uint()? as f64 * scale; }
-                if info & 0x20 != 0 { modal_geom_dim.y = stream.read_var_uint()? as f64 * scale; }
-                let delta_a = if record == OasisRecord::TrapezoidAb || record == OasisRecord::TrapezoidA { stream.read_integer()? as f64 * scale } else { 0.0 };
-                let delta_b = if record == OasisRecord::TrapezoidAb || record == OasisRecord::TrapezoidB { stream.read_integer()? as f64 * scale } else { 0.0 };
+                if info & 0x01 != 0 {
+                    modal_layer = stream.read_var_uint()? as i16;
+                }
+                if info & 0x02 != 0 {
+                    modal_datatype = stream.read_var_uint()? as i16;
+                }
+                if info & 0x40 != 0 {
+                    modal_geom_dim.x = stream.read_var_uint()? as f64 * scale;
+                }
+                if info & 0x20 != 0 {
+                    modal_geom_dim.y = stream.read_var_uint()? as f64 * scale;
+                }
+                let delta_a =
+                    if record == OasisRecord::TrapezoidAb || record == OasisRecord::TrapezoidA {
+                        stream.read_integer()? as f64 * scale
+                    } else {
+                        0.0
+                    };
+                let delta_b =
+                    if record == OasisRecord::TrapezoidAb || record == OasisRecord::TrapezoidB {
+                        stream.read_integer()? as f64 * scale
+                    } else {
+                        0.0
+                    };
                 if info & 0x10 != 0 {
                     let x = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.x = x; } else { modal_geom_pos.x += x; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.x = x;
+                    } else {
+                        modal_geom_pos.x += x;
+                    }
                 }
                 if info & 0x08 != 0 {
                     let y = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.y = y; } else { modal_geom_pos.y += y; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.y = y;
+                    } else {
+                        modal_geom_pos.y += y;
+                    }
                 }
                 let pts = trapezoid_points(
                     record,
@@ -1849,23 +2103,47 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
             }
             OasisRecord::CTrapezoid => {
-                if current_cell.is_none() { return Err(anyhow!("CTRAPEZOID outside of CELL")); }
+                if current_cell.is_none() {
+                    return Err(anyhow!("CTRAPEZOID outside of CELL"));
+                }
                 let cell_idx = current_cell.unwrap();
                 let info = stream.read_u8()?;
-                if info & 0x01 != 0 { modal_layer = stream.read_var_uint()? as i16; }
-                if info & 0x02 != 0 { modal_datatype = stream.read_var_uint()? as i16; }
-                if info & 0x80 != 0 { modal_ctrapezoid_type = stream.read_u8()?; }
-                if info & 0x40 != 0 { modal_geom_dim.x = stream.read_var_uint()? as f64 * scale; }
-                if info & 0x20 != 0 { modal_geom_dim.y = stream.read_var_uint()? as f64 * scale; }
+                if info & 0x01 != 0 {
+                    modal_layer = stream.read_var_uint()? as i16;
+                }
+                if info & 0x02 != 0 {
+                    modal_datatype = stream.read_var_uint()? as i16;
+                }
+                if info & 0x80 != 0 {
+                    modal_ctrapezoid_type = stream.read_u8()?;
+                }
+                if info & 0x40 != 0 {
+                    modal_geom_dim.x = stream.read_var_uint()? as f64 * scale;
+                }
+                if info & 0x20 != 0 {
+                    modal_geom_dim.y = stream.read_var_uint()? as f64 * scale;
+                }
                 if info & 0x10 != 0 {
                     let x = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.x = x; } else { modal_geom_pos.x += x; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.x = x;
+                    } else {
+                        modal_geom_pos.x += x;
+                    }
                 }
                 if info & 0x08 != 0 {
                     let y = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.y = y; } else { modal_geom_pos.y += y; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.y = y;
+                    } else {
+                        modal_geom_pos.y += y;
+                    }
                 }
-                let pts = ctrapezoid_points(modal_ctrapezoid_type, modal_geom_pos.clone(), &mut modal_geom_dim);
+                let pts = ctrapezoid_points(
+                    modal_ctrapezoid_type,
+                    modal_geom_pos.clone(),
+                    &mut modal_geom_dim,
+                );
                 let repetition = if info & 0x04 != 0 {
                     let (rep, consumed) = stream.read_repetition(scale, &modal_geom_repetition)?;
                     if consumed {
@@ -1890,19 +2168,35 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
             }
             OasisRecord::Circle => {
-                if current_cell.is_none() { return Err(anyhow!("CIRCLE outside of CELL")); }
+                if current_cell.is_none() {
+                    return Err(anyhow!("CIRCLE outside of CELL"));
+                }
                 let cell_idx = current_cell.unwrap();
                 let info = stream.read_u8()?;
-                if info & 0x01 != 0 { modal_layer = stream.read_var_uint()? as i16; }
-                if info & 0x02 != 0 { modal_datatype = stream.read_var_uint()? as i16; }
-                if info & 0x20 != 0 { modal_circle_radius = stream.read_var_uint()? as f64 * scale; }
+                if info & 0x01 != 0 {
+                    modal_layer = stream.read_var_uint()? as i16;
+                }
+                if info & 0x02 != 0 {
+                    modal_datatype = stream.read_var_uint()? as i16;
+                }
+                if info & 0x20 != 0 {
+                    modal_circle_radius = stream.read_var_uint()? as f64 * scale;
+                }
                 if info & 0x10 != 0 {
                     let x = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.x = x; } else { modal_geom_pos.x += x; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.x = x;
+                    } else {
+                        modal_geom_pos.x += x;
+                    }
                 }
                 if info & 0x08 != 0 {
                     let y = stream.read_integer()? as f64 * scale;
-                    if modal_absolute_pos { modal_geom_pos.y = y; } else { modal_geom_pos.y += y; }
+                    if modal_absolute_pos {
+                        modal_geom_pos.y = y;
+                    } else {
+                        modal_geom_pos.y += y;
+                    }
                 }
                 let pts = circle_points(modal_geom_pos.clone(), modal_circle_radius, 48);
                 let repetition = if info & 0x04 != 0 {
@@ -1928,7 +2222,11 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 }
             }
             OasisRecord::Property | OasisRecord::LastProperty => {
-                let info = if record == OasisRecord::LastProperty { 0x08 } else { stream.read_u8()? };
+                let info = if record == OasisRecord::LastProperty {
+                    0x08
+                } else {
+                    stream.read_u8()?
+                };
 
                 // Property name
                 if info & 0x04 != 0 {
@@ -1940,7 +2238,10 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                         }
                     } else {
                         let bytes = stream.read_string(true)?;
-                        _modal_property_name = Some(String::from_utf8_lossy(&bytes[..bytes.len().saturating_sub(1)]).to_string());
+                        _modal_property_name = Some(
+                            String::from_utf8_lossy(&bytes[..bytes.len().saturating_sub(1)])
+                                .to_string(),
+                        );
                     }
                 }
 
@@ -1982,7 +2283,12 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                                     String::new()
                                 }
                             }
-                            _ => return Err(anyhow!("Unsupported OASIS PROPERTY value data type {}", dtype)),
+                            _ => {
+                                return Err(anyhow!(
+                                    "Unsupported OASIS PROPERTY value data type {}",
+                                    dtype
+                                ))
+                            }
                         };
                         if !val.is_empty() {
                             values.push(val);
@@ -2002,7 +2308,10 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                     }
                 }
             }
-            OasisRecord::XNameImplicit | OasisRecord::XName | OasisRecord::XElement | OasisRecord::XGeometry => {
+            OasisRecord::XNameImplicit
+            | OasisRecord::XName
+            | OasisRecord::XElement
+            | OasisRecord::XGeometry => {
                 // Unsupported extension records; consume minimal payload
                 // Following spec, these have variable fields. We best-effort consume known pieces.
                 // For now, skip by reading a string (ignored) and optional ints when flags are set.
@@ -2024,20 +2333,40 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
             let rec = OasisRecord::from(id as u8);
             let polys = geom_poly_counts.get(id).copied().unwrap_or(0);
             if polys > 0 {
-                eprintln!("  id={:02} {:?}: {} records, {} polygons", id, rec, count, polys);
+                eprintln!(
+                    "  id={:02} {:?}: {} records, {} polygons",
+                    id, rec, count, polys
+                );
             } else {
                 eprintln!("  id={:02} {:?}: {} records", id, rec, count);
             }
         }
 
         eprintln!("[oasis] repetition summary (per base element):");
-        eprintln!("  none   : {} elements, {} extra copies", rep_kind_counts[0], rep_kind_extra[0]);
-        eprintln!("  rect   : {} elements, {} extra copies", rep_kind_counts[1], rep_kind_extra[1]);
-        eprintln!("  regular: {} elements, {} extra copies", rep_kind_counts[2], rep_kind_extra[2]);
-        eprintln!("  offsets: {} elements, {} extra copies", rep_kind_counts[3], rep_kind_extra[3]);
+        eprintln!(
+            "  none   : {} elements, {} extra copies",
+            rep_kind_counts[0], rep_kind_extra[0]
+        );
+        eprintln!(
+            "  rect   : {} elements, {} extra copies",
+            rep_kind_counts[1], rep_kind_extra[1]
+        );
+        eprintln!(
+            "  regular: {} elements, {} extra copies",
+            rep_kind_counts[2], rep_kind_extra[2]
+        );
+        eprintln!(
+            "  offsets: {} elements, {} extra copies",
+            rep_kind_counts[3], rep_kind_extra[3]
+        );
         let base = rep_kind_counts.iter().sum::<u64>();
         let extra = rep_kind_extra.iter().sum::<u64>();
-        eprintln!("  total  : {} base, {} extra, {} expanded", base, extra, base + extra);
+        eprintln!(
+            "  total  : {} base, {} extra, {} expanded",
+            base,
+            extra,
+            base + extra
+        );
     }
 
     // Resolve pending names
@@ -2048,14 +2377,22 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
     }
     for (cell_idx, ref_idx, name_idx) in pending_ref_ids {
         if let Some(name) = cell_name_table.get(name_idx as usize) {
-            if let Some(r) = library.cells.get_mut(cell_idx).and_then(|c| c.references.get_mut(ref_idx)) {
+            if let Some(r) = library
+                .cells
+                .get_mut(cell_idx)
+                .and_then(|c| c.references.get_mut(ref_idx))
+            {
                 r.cell_name = name.clone();
             }
         }
     }
     for (cell_idx, label_idx, text_idx) in pending_label_ids {
         if let Some(text) = label_text_table.get(text_idx as usize) {
-            if let Some(l) = library.cells.get_mut(cell_idx).and_then(|c| c.labels.get_mut(label_idx)) {
+            if let Some(l) = library
+                .cells
+                .get_mut(cell_idx)
+                .and_then(|c| c.labels.get_mut(label_idx))
+            {
                 l.text = text.clone();
             }
         }

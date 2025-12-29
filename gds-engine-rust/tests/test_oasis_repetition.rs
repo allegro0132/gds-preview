@@ -2,8 +2,14 @@ use std::fs::File;
 
 use gds_engine_rust::oasis_loader::load_oasis;
 
-fn find_cell<'a>(lib: &'a gds_engine_rust::geometry::Library, name: &str) -> &'a gds_engine_rust::geometry::Cell {
-    lib.cells.iter().find(|c| c.name == name).expect("cell present")
+fn find_cell<'a>(
+    lib: &'a gds_engine_rust::geometry::Library,
+    name: &str,
+) -> &'a gds_engine_rust::geometry::Cell {
+    lib.cells
+        .iter()
+        .find(|c| c.name == name)
+        .expect("cell present")
 }
 
 #[test]
@@ -12,7 +18,11 @@ fn placement_repetition_rectangular_expands_to_reference_array() {
     let lib = load_oasis(file).expect("load oas");
     let top = find_cell(&lib, "TOP");
 
-    assert_eq!(top.references.len(), 1, "expected one reference with repetition");
+    assert_eq!(
+        top.references.len(),
+        1,
+        "expected one reference with repetition"
+    );
     let r = &top.references[0];
     assert_eq!(r.cell_name, "CHILD");
     assert_eq!(r.columns, 3);
@@ -27,7 +37,11 @@ fn placement_repetition_regular_vectors_expands_to_reference_array() {
     let lib = load_oasis(file).expect("load oas");
     let top = find_cell(&lib, "TOP");
 
-    assert_eq!(top.references.len(), 1, "expected one reference with repetition");
+    assert_eq!(
+        top.references.len(),
+        1,
+        "expected one reference with repetition"
+    );
     let r = &top.references[0];
     assert_eq!(r.cell_name, "CHILD");
     assert_eq!(r.columns, 3);
@@ -58,7 +72,12 @@ fn placement_repetition_explicit_offsets_expands_to_multiple_references() {
     let mut origins: Vec<(i64, i64)> = top
         .references
         .iter()
-        .map(|r| ((r.origin.x * 1000.0).round() as i64, (r.origin.y * 1000.0).round() as i64))
+        .map(|r| {
+            (
+                (r.origin.x * 1000.0).round() as i64,
+                (r.origin.y * 1000.0).round() as i64,
+            )
+        })
         .collect();
     origins.sort_unstable();
 
@@ -84,7 +103,12 @@ fn placement_repetition_x_explicit_expands_to_multiple_references() {
     let mut origins: Vec<(i64, i64)> = top
         .references
         .iter()
-        .map(|r| ((r.origin.x * 1000.0).round() as i64, (r.origin.y * 1000.0).round() as i64))
+        .map(|r| {
+            (
+                (r.origin.x * 1000.0).round() as i64,
+                (r.origin.y * 1000.0).round() as i64,
+            )
+        })
         .collect();
     origins.sort_unstable();
 
@@ -111,7 +135,12 @@ fn placement_repetition_y_explicit_expands_to_multiple_references() {
     let mut origins: Vec<(i64, i64)> = top
         .references
         .iter()
-        .map(|r| ((r.origin.x * 1000.0).round() as i64, (r.origin.y * 1000.0).round() as i64))
+        .map(|r| {
+            (
+                (r.origin.x * 1000.0).round() as i64,
+                (r.origin.y * 1000.0).round() as i64,
+            )
+        })
         .collect();
     origins.sort_unstable();
 

@@ -1,28 +1,31 @@
+mod analysis;
+mod gds_loader;
 mod gds_parser;
 mod geometry;
-mod gds_loader;
-mod port_meta;
 mod oasis_loader;
 mod oasis_parser;
+mod port_meta;
 mod streamer;
-mod analysis;
 
+use crate::analysis::SearchEngine;
+use crate::geometry::{Cell, Library, Matrix3x3, Point, Polygon};
+use crate::streamer::{send_binary_chunk, send_json, ChunkMsg};
+use anyhow::Result;
 use clap::Parser;
-use std::collections::{HashMap, HashSet};
+use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read, Seek, Write};
+use std::net::TcpStream;
 use std::path::Path;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
 use std::time::Instant;
-use crate::geometry::{Library, Cell, Matrix3x3, Point, Polygon};
-use crate::streamer::{ChunkMsg, send_binary_chunk, send_json};
-use crate::analysis::SearchEngine;
-use anyhow::Result;
-use rayon::prelude::*;
-use std::net::TcpStream;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -48,13 +51,20 @@ struct Args {
     #[arg(long, help = "Negative mode (for SVG)")]
     negative: bool,
 
-    #[arg(long, help = "TCP port (127.0.0.1) for binary geometry streaming to the VS Code extension. If set, binary chunks are streamed over TCP instead of stdout base64")]
+    #[arg(
+        long,
+        help = "TCP port (127.0.0.1) for binary geometry streaming to the VS Code extension. If set, binary chunks are streamed over TCP instead of stdout base64"
+    )]
     tcp_port: Option<u16>,
 
     #[arg(long, default_value = "polygons", value_parser = ["polygons", "triangles"], help = "Geometry payload mode for non-instance polygons")]
     geom_mode: String,
 
-    #[arg(long, default_value_t = false, help = "(WebGL+Rust+Instancing) Enable viewport-driven streaming. The engine will stream definitions once, then only send instances/flat geometry for the current viewport on request.")]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "(WebGL+Rust+Instancing) Enable viewport-driven streaming. The engine will stream definitions once, then only send instances/flat geometry for the current viewport on request."
+    )]
     viewport_streaming: bool,
 }
 
@@ -74,7 +84,10 @@ fn main() -> Result<()> {
     let mut file = File::open(&args.input)?;
 
     let mut magic = [0u8; 12];
-    let is_oasis = file.read_exact(&mut magic).map(|_| &magic[..11] == b"%SEMI-OASIS").unwrap_or(false);
+    let is_oasis = file
+        .read_exact(&mut magic)
+        .map(|_| &magic[..11] == b"%SEMI-OASIS")
+        .unwrap_or(false);
     file.rewind()?;
 
     let ext_is_oasis = Path::new(&args.input)
@@ -91,7 +104,11 @@ fn main() -> Result<()> {
 
     // Extract ports from $$$CONTEXT_INFO$$$ if it exists
     let mut context_ports = Vec::new();
-    if let Some(pos) = library.cells.iter().position(|c| c.name == "$$$CONTEXT_INFO$$$") {
+    if let Some(pos) = library
+        .cells
+        .iter()
+        .position(|c| c.name == "$$$CONTEXT_INFO$$$")
+    {
         context_ports = library.cells[pos].ports.clone();
     }
 
@@ -122,13 +139,14 @@ fn main() -> Result<()> {
         }
     }
 
-    let main_cell = library.cells.iter().find(|c| c.name == main_cell_name)
+    let main_cell = library
+        .cells
+        .iter()
+        .find(|c| c.name == main_cell_name)
         .ok_or_else(|| anyhow::anyhow!("Cell '{}' not found", main_cell_name))?;
 
     // 2. Metadata
-    let mut all_cell_names: Vec<String> = library.cells.iter()
-        .map(|c| c.name.clone())
-        .collect();
+    let mut all_cell_names: Vec<String> = library.cells.iter().map(|c| c.name.clone()).collect();
     all_cell_names.sort();
     // `top_level_cells` computed above (used for UI tree roots).
 
@@ -155,11 +173,15 @@ fn main() -> Result<()> {
 
     // Wrap library in Arc for sharing with search thread
     let library = Arc::new(library);
-    let main_cell = library.cells.iter().find(|c| c.name == main_cell_name)
+    let main_cell = library
+        .cells
+        .iter()
+        .find(|c| c.name == main_cell_name)
         .ok_or_else(|| anyhow::anyhow!("Cell '{}' not found", main_cell_name))?;
 
     let mut instances_map = HashMap::new();
-    let mut instances_by_name_opt = Some(analyze_instances(&library, main_cell, &mut instances_map));
+    let mut instances_by_name_opt =
+        Some(analyze_instances(&library, main_cell, &mut instances_map));
 
     if args.geom_mode == "triangles" && tcp_stream.is_none() {
         return Err(anyhow::anyhow!("--geom-mode triangles requires --tcp-port"));
@@ -176,24 +198,53 @@ fn main() -> Result<()> {
                 "message": "Viewport streaming requires WebGL instancing; falling back to full streaming"
             }));
         } else {
-            let tcp_ref = tcp_stream.as_mut().ok_or_else(|| anyhow::anyhow!("--viewport-streaming requires --tcp-port"))?;
+            let tcp_ref = tcp_stream
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("--viewport-streaming requires --tcp-port"))?;
             // IMPORTANT: In viewport-streaming mode, stdin carries JSON commands (viewport/find/etc).
             // The legacy flow-control mechanism reads from stdin inside `send()`, which can
             // accidentally consume those JSON commands and make the first viewport request disappear.
             // Disable stdin-based flow control for TCP streaming in this mode.
-            let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
-            let instances_by_name = instances_by_name_opt.take().ok_or_else(|| anyhow::anyhow!("instances already consumed"))?;
-            let rt = process_instanced_viewport_preamble(&library, main_cell, &args, &mut metadata, instances_by_name, &mut transport)?;
+            let mut transport = TcpTransport {
+                stream: tcp_ref,
+                flow_control_step: 0,
+            };
+            let instances_by_name = instances_by_name_opt
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("instances already consumed"))?;
+            let rt = process_instanced_viewport_preamble(
+                &library,
+                main_cell,
+                &args,
+                &mut metadata,
+                instances_by_name,
+                &mut transport,
+            )?;
             viewport_runtime = Some(rt);
         }
     }
 
     if viewport_runtime.is_none() {
         if args.use_instancing != 0 {
-            let instances_by_name = instances_by_name_opt.take().ok_or_else(|| anyhow::anyhow!("instances already consumed"))?;
-            process_instanced(&library, main_cell, &args, &mut metadata, instances_by_name, tcp_stream.as_mut())?;
+            let instances_by_name = instances_by_name_opt
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("instances already consumed"))?;
+            process_instanced(
+                &library,
+                main_cell,
+                &args,
+                &mut metadata,
+                instances_by_name,
+                tcp_stream.as_mut(),
+            )?;
         } else {
-            process_flattened(&library, main_cell, &args, &mut metadata, tcp_stream.as_mut())?;
+            process_flattened(
+                &library,
+                main_cell,
+                &args,
+                &mut metadata,
+                tcp_stream.as_mut(),
+            )?;
         }
     }
 
@@ -230,7 +281,9 @@ fn main() -> Result<()> {
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
         let line = line?;
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
 
         if let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&line) {
             if cmd["command"] == "find" {
@@ -246,7 +299,9 @@ fn main() -> Result<()> {
                         if let Some(s) = l.as_str() {
                             let parts: Vec<&str> = s.split('_').collect();
                             if parts.len() == 2 {
-                                if let (Ok(l), Ok(d)) = (parts[0].parse::<i16>(), parts[1].parse::<i16>()) {
+                                if let (Ok(l), Ok(d)) =
+                                    (parts[0].parse::<i16>(), parts[1].parse::<i16>())
+                                {
                                     active_layers.insert((l, d));
                                 }
                             }
@@ -270,29 +325,35 @@ fn main() -> Result<()> {
                 thread::spawn(move || {
                     let engine_guard = search_engine.lock().unwrap();
                     if let Some(engine) = &*engine_guard {
-                        if cancel_flag.load(Ordering::Relaxed) { return; }
+                        if cancel_flag.load(Ordering::Relaxed) {
+                            return;
+                        }
 
                         let start_time = Instant::now();
                         let run_search = || {
-                             engine.find(x, y, &active_layers, max_steps, Some(cancel_flag.clone()))
+                            engine.find(x, y, &active_layers, max_steps, Some(cancel_flag.clone()))
                         };
 
                         let (polys, limit_reached) = if max_workers > 0 {
-                             if let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(max_workers as usize).build() {
-                                 pool.install(run_search)
-                             } else {
-                                 run_search()
-                             }
+                            if let Ok(pool) = rayon::ThreadPoolBuilder::new()
+                                .num_threads(max_workers as usize)
+                                .build()
+                            {
+                                pool.install(run_search)
+                            } else {
+                                run_search()
+                            }
                         } else {
-                             run_search()
+                            run_search()
                         };
 
                         let duration = start_time.elapsed().as_millis();
 
                         if !cancel_flag.load(Ordering::Relaxed) {
-                            let simple_polys: Vec<Vec<[f64; 2]>> = polys.iter().map(|p| {
-                                p.points.iter().map(|pt| [pt.x, pt.y]).collect()
-                            }).collect();
+                            let simple_polys: Vec<Vec<[f64; 2]>> = polys
+                                .iter()
+                                .map(|p| p.points.iter().map(|pt| [pt.x, pt.y]).collect())
+                                .collect();
 
                             send_json(&serde_json::json!({
                                 "command": "found",
@@ -309,7 +370,7 @@ fn main() -> Result<()> {
                     }
                 });
             } else if cmd["command"] == "stop" {
-                let mut cancel_guard = current_search_cancel.lock().unwrap();
+                let cancel_guard = current_search_cancel.lock().unwrap();
                 if let Some(flag) = &*cancel_guard {
                     flag.store(true, Ordering::Relaxed);
                 }
@@ -334,7 +395,9 @@ fn main() -> Result<()> {
                         if let Some(s) = l.as_str() {
                             let parts: Vec<&str> = s.split('_').collect();
                             if parts.len() == 2 {
-                                if let (Ok(la), Ok(dt)) = (parts[0].parse::<i16>(), parts[1].parse::<i16>()) {
+                                if let (Ok(la), Ok(dt)) =
+                                    (parts[0].parse::<i16>(), parts[1].parse::<i16>())
+                                {
                                     active_layers.insert((la, dt));
                                 }
                             }
@@ -345,11 +408,22 @@ fn main() -> Result<()> {
                 // TCP/WebSocket transport is required for viewport responses.
                 if let Some(tcp_ref) = tcp_stream.as_mut() {
                     // Keep stdin free for JSON commands; avoid consuming them in transport flow control.
-                    let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
+                    let mut transport = TcpTransport {
+                        stream: tcp_ref,
+                        flow_control_step: 0,
+                    };
 
                     // Rendering viewport streaming (triangles/instances)
                     if let Some(rt) = viewport_runtime.as_mut() {
-                        stream_viewport_geometry(&library, rt, &args, &mut transport, req_id, (vminx, vmaxx, vminy, vmaxy), &active_layers)?;
+                        stream_viewport_geometry(
+                            &library,
+                            rt,
+                            &args,
+                            &mut transport,
+                            req_id,
+                            (vminx, vmaxx, vminy, vmaxy),
+                            &active_layers,
+                        )?;
                     }
 
                     // Snapping polygons (kind=4), requested by the webview.
@@ -461,21 +535,76 @@ fn process_flattened(
                 // IMPORTANT: When streaming over TCP (--tcp-port), stdin is reserved for JSON commands.
                 // The legacy flow-control mechanism reads from stdin inside `send()`, which can
                 // accidentally consume those JSON commands. Disable stdin-based flow control.
-                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
-                stream_recursive_polygons(lib, main_cell, &Matrix3x3::identity(), &mut builders, args, &mut transport, WsChunkKind::FlatPolygons, None)?;
-                flush_all_polygon_builders(&mut builders, args, &mut transport, WsChunkKind::FlatPolygons, None)?;
+                let mut transport = TcpTransport {
+                    stream: tcp_ref,
+                    flow_control_step: 0,
+                };
+                stream_recursive_polygons(
+                    lib,
+                    main_cell,
+                    &Matrix3x3::identity(),
+                    &mut builders,
+                    args,
+                    &mut transport,
+                    WsChunkKind::FlatPolygons,
+                    None,
+                )?;
+                flush_all_polygon_builders(
+                    &mut builders,
+                    args,
+                    &mut transport,
+                    WsChunkKind::FlatPolygons,
+                    None,
+                )?;
             } else {
-                let mut transport = StdoutTransport { flow_control_step: args.flow_control_step };
-                stream_recursive_polygons(lib, main_cell, &Matrix3x3::identity(), &mut builders, args, &mut transport, WsChunkKind::FlatPolygons, None)?;
-                flush_all_polygon_builders(&mut builders, args, &mut transport, WsChunkKind::FlatPolygons, None)?;
+                let mut transport = StdoutTransport {
+                    flow_control_step: args.flow_control_step,
+                };
+                stream_recursive_polygons(
+                    lib,
+                    main_cell,
+                    &Matrix3x3::identity(),
+                    &mut builders,
+                    args,
+                    &mut transport,
+                    WsChunkKind::FlatPolygons,
+                    None,
+                )?;
+                flush_all_polygon_builders(
+                    &mut builders,
+                    args,
+                    &mut transport,
+                    WsChunkKind::FlatPolygons,
+                    None,
+                )?;
             }
         }
         "triangles" => {
             let mut builders: HashMap<String, TriChunkBuilder> = HashMap::new();
-            let tcp_ref = tcp.as_deref_mut().ok_or_else(|| anyhow::anyhow!("tcp required"))?;
-            let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
-            stream_recursive_triangles(lib, main_cell, &Matrix3x3::identity(), &mut builders, args, &mut transport, WsChunkKind::FlatTriangles, None)?;
-            flush_all_triangle_builders(&mut builders, args, &mut transport, WsChunkKind::FlatTriangles, None)?;
+            let tcp_ref = tcp
+                .as_deref_mut()
+                .ok_or_else(|| anyhow::anyhow!("tcp required"))?;
+            let mut transport = TcpTransport {
+                stream: tcp_ref,
+                flow_control_step: 0,
+            };
+            stream_recursive_triangles(
+                lib,
+                main_cell,
+                &Matrix3x3::identity(),
+                &mut builders,
+                args,
+                &mut transport,
+                WsChunkKind::FlatTriangles,
+                None,
+            )?;
+            flush_all_triangle_builders(
+                &mut builders,
+                args,
+                &mut transport,
+                WsChunkKind::FlatTriangles,
+                None,
+            )?;
         }
         other => return Err(anyhow::anyhow!("Unknown geom_mode: {other}")),
     }
@@ -483,13 +612,14 @@ fn process_flattened(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn flatten_recursive(
     lib: &Library,
     cell: &Cell,
     transform: &Matrix3x3,
     out_polys: &mut HashMap<String, Vec<Polygon>>,
     out_labels: &mut HashMap<String, Vec<serde_json::Value>>,
-    bbox: &mut (f64, f64, f64, f64)
+    bbox: &mut (f64, f64, f64, f64),
 ) {
     for poly in &cell.polygons {
         let key = format!("{}_{}", poly.layer, poly.datatype);
@@ -497,19 +627,32 @@ fn flatten_recursive(
         for p in &poly.points {
             let pt = transform.transform_point(p);
             new_points.push(pt.clone());
-            if pt.x < bbox.0 { bbox.0 = pt.x; }
-            if pt.x > bbox.1 { bbox.1 = pt.x; }
-            if pt.y < bbox.2 { bbox.2 = pt.y; }
-            if pt.y > bbox.3 { bbox.3 = pt.y; }
+            if pt.x < bbox.0 {
+                bbox.0 = pt.x;
+            }
+            if pt.x > bbox.1 {
+                bbox.1 = pt.x;
+            }
+            if pt.y < bbox.2 {
+                bbox.2 = pt.y;
+            }
+            if pt.y > bbox.3 {
+                bbox.3 = pt.y;
+            }
         }
         out_polys.entry(key).or_default().push(Polygon {
-            layer: poly.layer, datatype: poly.datatype, points: new_points,
+            layer: poly.layer,
+            datatype: poly.datatype,
+            points: new_points,
         });
     }
 
     for label in &cell.labels {
         let key = format!("{}_{}", label.layer, label.texttype);
-        let pt = transform.transform_point(&Point { x: label.x, y: label.y });
+        let pt = transform.transform_point(&Point {
+            x: label.x,
+            y: label.y,
+        });
         out_labels.entry(key).or_default().push(serde_json::json!({
             "text": label.text, "x": pt.x, "y": pt.y, "rotation": label.rotation, "magnification": label.magnification, "anchor": label.anchor
         }));
@@ -524,7 +667,10 @@ fn flatten_recursive(
                     origin.y += (col as f64 * re.col_spacing.y) + (row as f64 * re.row_spacing.y);
 
                     let local_transform = Matrix3x3::from_transform(
-                        re.rotation.unwrap_or(0.0), re.magnification.unwrap_or(1.0), re.x_reflection, &origin
+                        re.rotation.unwrap_or(0.0),
+                        re.magnification.unwrap_or(1.0),
+                        re.x_reflection,
+                        &origin,
                     );
                     let combined = transform.multiply(&local_transform);
                     flatten_recursive(lib, ref_cell, &combined, out_polys, out_labels, bbox);
@@ -631,7 +777,10 @@ fn viewport_selection_fingerprint(
             Some(t) => t,
             None => continue,
         };
-        let local_bbox = *rt.cell_bbox_local.get(cell_name).unwrap_or(&(0.0, 0.0, 0.0, 0.0));
+        let local_bbox = *rt
+            .cell_bbox_local
+            .get(cell_name)
+            .unwrap_or(&(0.0, 0.0, 0.0, 0.0));
         for t in transforms {
             let tb = transform_bbox(t, local_bbox);
             if !bbox_intersects(tb, view) {
@@ -656,7 +805,11 @@ fn viewport_selection_fingerprint(
         for t in transforms.iter() {
             let tx = t.m[0][2];
             let ty = t.m[1][2];
-            if tx + radius < view.0 || tx - radius > view.1 || ty + radius < view.2 || ty - radius > view.3 {
+            if tx + radius < view.0
+                || tx - radius > view.1
+                || ty + radius < view.2
+                || ty - radius > view.3
+            {
                 continue;
             }
             2u8.hash(&mut hasher);
@@ -672,10 +825,18 @@ fn cell_local_bbox(cell: &Cell) -> (f64, f64, f64, f64) {
     let mut bbox = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     for poly in &cell.polygons {
         for p in &poly.points {
-            if p.x < bbox.0 { bbox.0 = p.x; }
-            if p.x > bbox.1 { bbox.1 = p.x; }
-            if p.y < bbox.2 { bbox.2 = p.y; }
-            if p.y > bbox.3 { bbox.3 = p.y; }
+            if p.x < bbox.0 {
+                bbox.0 = p.x;
+            }
+            if p.x > bbox.1 {
+                bbox.1 = p.x;
+            }
+            if p.y < bbox.2 {
+                bbox.2 = p.y;
+            }
+            if p.y > bbox.3 {
+                bbox.3 = p.y;
+            }
         }
     }
     if bbox.0 == f64::MAX {
@@ -711,12 +872,24 @@ fn transform_bbox(t: &Matrix3x3, b: (f64, f64, f64, f64)) -> (f64, f64, f64, f64
     let mut out = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     for c in corners.iter() {
         let p = t.transform_point(c);
-        if p.x < out.0 { out.0 = p.x; }
-        if p.x > out.1 { out.1 = p.x; }
-        if p.y < out.2 { out.2 = p.y; }
-        if p.y > out.3 { out.3 = p.y; }
+        if p.x < out.0 {
+            out.0 = p.x;
+        }
+        if p.x > out.1 {
+            out.1 = p.x;
+        }
+        if p.y < out.2 {
+            out.2 = p.y;
+        }
+        if p.y > out.3 {
+            out.3 = p.y;
+        }
     }
-    if out.0 == f64::MAX { (0.0, 0.0, 0.0, 0.0) } else { out }
+    if out.0 == f64::MAX {
+        (0.0, 0.0, 0.0, 0.0)
+    } else {
+        out
+    }
 }
 
 fn send_control(transport: &mut dyn ChunkTransport, opcode: u8, request_id: u32) -> Result<()> {
@@ -726,24 +899,48 @@ fn send_control(transport: &mut dyn ChunkTransport, opcode: u8, request_id: u32)
     transport.send(WsChunkKind::Control, "", None, 0, 0, &payload)
 }
 
-fn send_control_snap(transport: &mut dyn ChunkTransport, opcode: u8, request_id: u32, snap_token: &str) -> Result<()> {
+fn send_control_snap(
+    transport: &mut dyn ChunkTransport,
+    opcode: u8,
+    request_id: u32,
+    snap_token: &str,
+) -> Result<()> {
     let mut payload = Vec::with_capacity(1 + 4);
     payload.push(opcode);
     payload.extend_from_slice(&request_id.to_le_bytes());
     // Use a reserved layer_key so the webview can distinguish this from render viewport snapshots.
     // Encode token in cell_name so the webview can drop stale polygon chunks.
-    transport.send(WsChunkKind::Control, "__snap__", Some(snap_token), 0, 0, &payload)
+    transport.send(
+        WsChunkKind::Control,
+        "__snap__",
+        Some(snap_token),
+        0,
+        0,
+        &payload,
+    )
 }
 
 fn polygon_bbox(poly: &Polygon) -> (f64, f64, f64, f64) {
     let mut bbox = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     for p in &poly.points {
-        if p.x < bbox.0 { bbox.0 = p.x; }
-        if p.x > bbox.1 { bbox.1 = p.x; }
-        if p.y < bbox.2 { bbox.2 = p.y; }
-        if p.y > bbox.3 { bbox.3 = p.y; }
+        if p.x < bbox.0 {
+            bbox.0 = p.x;
+        }
+        if p.x > bbox.1 {
+            bbox.1 = p.x;
+        }
+        if p.y < bbox.2 {
+            bbox.2 = p.y;
+        }
+        if p.y > bbox.3 {
+            bbox.3 = p.y;
+        }
     }
-    if bbox.0 == f64::MAX { (0.0, 0.0, 0.0, 0.0) } else { bbox }
+    if bbox.0 == f64::MAX {
+        (0.0, 0.0, 0.0, 0.0)
+    } else {
+        bbox
+    }
 }
 
 fn stream_viewport_snap_polygons(
@@ -766,7 +963,9 @@ fn stream_viewport_snap_polygons(
             Some(c) => c,
             None => continue,
         };
-        if cell.polygons.is_empty() { continue; }
+        if cell.polygons.is_empty() {
+            continue;
+        }
 
         for t in transforms {
             for poly in &cell.polygons {
@@ -781,12 +980,27 @@ fn stream_viewport_snap_polygons(
 
                 let key = format!("{}_{}", poly.layer, poly.datatype);
                 // Tag snap-only polygons with the token in cell_name.
-                push_polygon_transformed(&key, poly, t, &mut builders, args, transport, WsChunkKind::FlatPolygons, Some(snap_token))?;
+                push_polygon_transformed(
+                    &key,
+                    poly,
+                    t,
+                    &mut builders,
+                    args,
+                    transport,
+                    WsChunkKind::FlatPolygons,
+                    Some(snap_token),
+                )?;
             }
         }
     }
 
-    flush_all_polygon_builders(&mut builders, args, transport, WsChunkKind::FlatPolygons, Some(snap_token))?;
+    flush_all_polygon_builders(
+        &mut builders,
+        args,
+        transport,
+        WsChunkKind::FlatPolygons,
+        Some(snap_token),
+    )?;
     send_control_snap(transport, 2, request_id, snap_token)?;
     Ok(())
 }
@@ -814,7 +1028,9 @@ fn process_instanced_viewport_preamble(
     // Global bbox + layer list + labels are the same as normal instanced mode.
     let mut bbox = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     scan_recursive_bbox(lib, main_cell, &Matrix3x3::identity(), &mut bbox);
-    if bbox.0 == f64::MAX { bbox = (0.0, 0.0, 0.0, 0.0); }
+    if bbox.0 == f64::MAX {
+        bbox = (0.0, 0.0, 0.0, 0.0);
+    }
 
     let mut all_layers: HashSet<String> = HashSet::new();
     for cell_name in single_instances.keys() {
@@ -863,7 +1079,10 @@ fn process_instanced_viewport_preamble(
             for label in &cell.labels {
                 let key = format!("{}_{}", label.layer, label.texttype);
                 for t in cell_instances {
-                    let pt = t.transform_point(&Point { x: label.x, y: label.y });
+                    let pt = t.transform_point(&Point {
+                        x: label.x,
+                        y: label.y,
+                    });
                     labels_by_layer.entry(key.clone()).or_default().push(serde_json::json!({
                         "text": label.text, "x": pt.x, "y": pt.y, "rotation": label.rotation, "magnification": label.magnification, "anchor": label.anchor
                     }));
@@ -883,13 +1102,32 @@ fn process_instanced_viewport_preamble(
                 if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
                     for poly in &cell.polygons {
                         let key = format!("{}_{}", poly.layer, poly.datatype);
-                        push_triangles_transformed(&key, poly, &Matrix3x3::identity(), &mut builders, args, transport, WsChunkKind::DefinitionTriangles, Some(cell_name.as_str()))?;
+                        push_triangles_transformed(
+                            &key,
+                            poly,
+                            &Matrix3x3::identity(),
+                            &mut builders,
+                            args,
+                            transport,
+                            WsChunkKind::DefinitionTriangles,
+                            Some(cell_name.as_str()),
+                        )?;
                     }
                 }
-                flush_all_triangle_builders(&mut builders, args, transport, WsChunkKind::DefinitionTriangles, Some(cell_name.as_str()))?;
+                flush_all_triangle_builders(
+                    &mut builders,
+                    args,
+                    transport,
+                    WsChunkKind::DefinitionTriangles,
+                    Some(cell_name.as_str()),
+                )?;
             }
         }
-        other => return Err(anyhow::anyhow!("viewport streaming requires --geom-mode triangles (got {other})")),
+        other => {
+            return Err(anyhow::anyhow!(
+                "viewport streaming requires --geom-mode triangles (got {other})"
+            ))
+        }
     }
 
     // Precompute local bboxes + radii for instance culling.
@@ -903,7 +1141,13 @@ fn process_instanced_viewport_preamble(
         }
     }
 
-    Ok(ViewportRuntime { single_instances, multi_instances, cell_bbox_local, cell_max_radius, last_fingerprint: None })
+    Ok(ViewportRuntime {
+        single_instances,
+        multi_instances,
+        cell_bbox_local,
+        cell_max_radius,
+        last_fingerprint: None,
+    })
 }
 
 fn stream_viewport_geometry(
@@ -939,22 +1183,42 @@ fn stream_viewport_geometry(
             Some(c) => c,
             None => continue,
         };
-        let local_bbox = *rt.cell_bbox_local.get(cell_name).unwrap_or(&(0.0, 0.0, 0.0, 0.0));
+        let local_bbox = *rt
+            .cell_bbox_local
+            .get(cell_name)
+            .unwrap_or(&(0.0, 0.0, 0.0, 0.0));
         for t in transforms {
             let tb = transform_bbox(t, local_bbox);
             if !bbox_intersects(tb, view) {
                 continue;
             }
             for poly in &cell.polygons {
-                if !active_layers.is_empty() && !active_layers.contains(&(poly.layer, poly.datatype)) {
+                if !active_layers.is_empty()
+                    && !active_layers.contains(&(poly.layer, poly.datatype))
+                {
                     continue;
                 }
                 let key = format!("{}_{}", poly.layer, poly.datatype);
-                push_triangles_transformed(&key, poly, t, &mut tri_builders, args, transport, WsChunkKind::FlatTriangles, None)?;
+                push_triangles_transformed(
+                    &key,
+                    poly,
+                    t,
+                    &mut tri_builders,
+                    args,
+                    transport,
+                    WsChunkKind::FlatTriangles,
+                    None,
+                )?;
             }
         }
     }
-    flush_all_triangle_builders(&mut tri_builders, args, transport, WsChunkKind::FlatTriangles, None)?;
+    flush_all_triangle_builders(
+        &mut tri_builders,
+        args,
+        transport,
+        WsChunkKind::FlatTriangles,
+        None,
+    )?;
 
     // Multi-instance cells: stream only instance transforms that could overlap view (translation +/- radius).
     let mut multi_keys: Vec<&String> = rt.multi_instances.keys().collect();
@@ -970,7 +1234,11 @@ fn stream_viewport_geometry(
         for t in transforms.iter() {
             let tx = t.m[0][2];
             let ty = t.m[1][2];
-            if tx + radius < view.0 || tx - radius > view.1 || ty + radius < view.2 || ty - radius > view.3 {
+            if tx + radius < view.0
+                || tx - radius > view.1
+                || ty + radius < view.2
+                || ty - radius > view.3
+            {
                 continue;
             }
             filtered.push(t);
@@ -991,7 +1259,14 @@ fn stream_viewport_geometry(
                     }
                 }
             }
-            transport.send(WsChunkKind::Instances, "", Some(cell_name.as_str()), i as u32, total_chunks as u32, &buffer)?;
+            transport.send(
+                WsChunkKind::Instances,
+                "",
+                Some(cell_name.as_str()),
+                i as u32,
+                total_chunks as u32,
+                &buffer,
+            )?;
         }
     }
 
@@ -1068,7 +1343,8 @@ impl ChunkTransport for TcpTransport<'_> {
         self.stream.write_all(&frame)?;
         self.stream.flush()?;
 
-        if self.flow_control_step > 0 && ((chunk_index as usize + 1) % self.flow_control_step == 0) {
+        if self.flow_control_step > 0 && ((chunk_index as usize + 1) % self.flow_control_step == 0)
+        {
             let mut input = String::new();
             let _ = std::io::stdin().read_line(&mut input);
         }
@@ -1092,14 +1368,20 @@ impl ChunkTransport for StdoutTransport {
     ) -> Result<()> {
         let msg_type = match kind {
             WsChunkKind::FlatPolygons => {
-                if cell_name.is_some() { "definition" } else { "flat" }
+                if cell_name.is_some() {
+                    "definition"
+                } else {
+                    "flat"
+                }
             }
             WsChunkKind::Instances => "instance",
             WsChunkKind::FlatTriangles | WsChunkKind::DefinitionTriangles => {
                 return Err(anyhow::anyhow!("Triangles require WebSocket transport"));
             }
             WsChunkKind::Control => {
-                return Err(anyhow::anyhow!("Control frames require WebSocket transport"));
+                return Err(anyhow::anyhow!(
+                    "Control frames require WebSocket transport"
+                ));
             }
         };
 
@@ -1115,14 +1397,27 @@ impl ChunkTransport for StdoutTransport {
     }
 }
 
-fn scan_recursive_bbox(lib: &Library, cell: &Cell, transform: &Matrix3x3, bbox: &mut (f64, f64, f64, f64)) {
+fn scan_recursive_bbox(
+    lib: &Library,
+    cell: &Cell,
+    transform: &Matrix3x3,
+    bbox: &mut (f64, f64, f64, f64),
+) {
     for poly in &cell.polygons {
         for p in &poly.points {
             let pt = transform.transform_point(p);
-            if pt.x < bbox.0 { bbox.0 = pt.x; }
-            if pt.x > bbox.1 { bbox.1 = pt.x; }
-            if pt.y < bbox.2 { bbox.2 = pt.y; }
-            if pt.y > bbox.3 { bbox.3 = pt.y; }
+            if pt.x < bbox.0 {
+                bbox.0 = pt.x;
+            }
+            if pt.x > bbox.1 {
+                bbox.1 = pt.x;
+            }
+            if pt.y < bbox.2 {
+                bbox.2 = pt.y;
+            }
+            if pt.y > bbox.3 {
+                bbox.3 = pt.y;
+            }
         }
     }
 
@@ -1160,25 +1455,39 @@ fn scan_recursive_flat(
         layer_keys.insert(key);
         for p in &poly.points {
             let pt = transform.transform_point(p);
-            if pt.x < bbox.0 { bbox.0 = pt.x; }
-            if pt.x > bbox.1 { bbox.1 = pt.x; }
-            if pt.y < bbox.2 { bbox.2 = pt.y; }
-            if pt.y > bbox.3 { bbox.3 = pt.y; }
+            if pt.x < bbox.0 {
+                bbox.0 = pt.x;
+            }
+            if pt.x > bbox.1 {
+                bbox.1 = pt.x;
+            }
+            if pt.y < bbox.2 {
+                bbox.2 = pt.y;
+            }
+            if pt.y > bbox.3 {
+                bbox.3 = pt.y;
+            }
         }
     }
 
     for label in &cell.labels {
         let key = format!("{}_{}", label.layer, label.texttype);
         layer_keys.insert(key.clone());
-        let pt = transform.transform_point(&Point { x: label.x, y: label.y });
-        labels_by_layer.entry(key).or_default().push(serde_json::json!({
-            "text": label.text,
-            "x": pt.x,
-            "y": pt.y,
-            "rotation": label.rotation,
-            "magnification": label.magnification,
-            "anchor": label.anchor
-        }));
+        let pt = transform.transform_point(&Point {
+            x: label.x,
+            y: label.y,
+        });
+        labels_by_layer
+            .entry(key)
+            .or_default()
+            .push(serde_json::json!({
+                "text": label.text,
+                "x": pt.x,
+                "y": pt.y,
+                "rotation": label.rotation,
+                "magnification": label.magnification,
+                "anchor": label.anchor
+            }));
     }
 
     for re in &cell.references {
@@ -1195,7 +1504,14 @@ fn scan_recursive_flat(
                         &origin,
                     );
                     let combined = transform.multiply(&local_transform);
-                    scan_recursive_flat(lib, ref_cell, &combined, bbox, layer_keys, labels_by_layer);
+                    scan_recursive_flat(
+                        lib,
+                        ref_cell,
+                        &combined,
+                        bbox,
+                        layer_keys,
+                        labels_by_layer,
+                    );
                 }
             }
         }
@@ -1214,7 +1530,9 @@ fn stream_recursive_polygons(
 ) -> Result<()> {
     for poly in &cell.polygons {
         let key = format!("{}_{}", poly.layer, poly.datatype);
-        push_polygon_transformed(&key, poly, transform, builders, args, transport, kind, cell_name)?;
+        push_polygon_transformed(
+            &key, poly, transform, builders, args, transport, kind, cell_name,
+        )?;
     }
 
     for re in &cell.references {
@@ -1231,7 +1549,9 @@ fn stream_recursive_polygons(
                         &origin,
                     );
                     let combined = transform.multiply(&local_transform);
-                    stream_recursive_polygons(lib, ref_cell, &combined, builders, args, transport, kind, cell_name)?;
+                    stream_recursive_polygons(
+                        lib, ref_cell, &combined, builders, args, transport, kind, cell_name,
+                    )?;
                 }
             }
         }
@@ -1251,7 +1571,9 @@ fn stream_recursive_triangles(
 ) -> Result<()> {
     for poly in &cell.polygons {
         let key = format!("{}_{}", poly.layer, poly.datatype);
-        push_triangles_transformed(&key, poly, transform, builders, args, transport, kind, cell_name)?;
+        push_triangles_transformed(
+            &key, poly, transform, builders, args, transport, kind, cell_name,
+        )?;
     }
 
     for re in &cell.references {
@@ -1268,7 +1590,9 @@ fn stream_recursive_triangles(
                         &origin,
                     );
                     let combined = transform.multiply(&local_transform);
-                    stream_recursive_triangles(lib, ref_cell, &combined, builders, args, transport, kind, cell_name)?;
+                    stream_recursive_triangles(
+                        lib, ref_cell, &combined, builders, args, transport, kind, cell_name,
+                    )?;
                 }
             }
         }
@@ -1286,15 +1610,23 @@ fn push_polygon_transformed(
     kind: WsChunkKind,
     cell_name: Option<&str>,
 ) -> Result<()> {
-    let builder = builders.entry(layer_key.to_string()).or_insert_with(PolyChunkBuilder::new);
+    let builder = builders
+        .entry(layer_key.to_string())
+        .or_insert_with(PolyChunkBuilder::new);
     builder.ensure_chunk_started();
     builder.poly_count += 1;
 
-    builder.buffer.extend_from_slice(&(poly.points.len() as u32).to_le_bytes());
+    builder
+        .buffer
+        .extend_from_slice(&(poly.points.len() as u32).to_le_bytes());
     for p in &poly.points {
         let pt = transform.transform_point(p);
-        builder.buffer.extend_from_slice(&(pt.x as f32).to_le_bytes());
-        builder.buffer.extend_from_slice(&(pt.y as f32).to_le_bytes());
+        builder
+            .buffer
+            .extend_from_slice(&(pt.x as f32).to_le_bytes());
+        builder
+            .buffer
+            .extend_from_slice(&(pt.y as f32).to_le_bytes());
     }
 
     if args.chunk_size > 0 && (builder.poly_count as usize) >= args.chunk_size {
@@ -1316,7 +1648,14 @@ fn flush_polygon_builder(
     }
     builder.buffer[0..4].copy_from_slice(&builder.poly_count.to_le_bytes());
 
-    transport.send(kind, layer_key, cell_name, builder.chunk_index, 0, &builder.buffer)?;
+    transport.send(
+        kind,
+        layer_key,
+        cell_name,
+        builder.chunk_index,
+        0,
+        &builder.buffer,
+    )?;
 
     builder.chunk_index += 1;
     builder.poly_count = 0;
@@ -1360,7 +1699,9 @@ fn push_triangles_transformed(
 
     // Chunk-level parallelism: buffer transformed polygon coordinates and triangulate in parallel on flush.
     // This keeps memory bounded to roughly chunk_size polygons per layer.
-    let builder = builders.entry(layer_key.to_string()).or_insert_with(TriChunkBuilder::new);
+    let builder = builders
+        .entry(layer_key.to_string())
+        .or_insert_with(TriChunkBuilder::new);
     builder.poly_count += 1;
     builder.pending_coords.push(coords);
 
@@ -1396,7 +1737,7 @@ fn triangulate_coords_to_vertices(coords: &[f64]) -> Vec<f32> {
 fn flush_triangle_builder(
     layer_key: &str,
     builder: &mut TriChunkBuilder,
-    args: &Args,
+    _args: &Args,
     transport: &mut dyn ChunkTransport,
     kind: WsChunkKind,
     cell_name: Option<&str>,
@@ -1454,7 +1795,7 @@ fn flush_all_triangle_builders(
 fn analyze_instances(
     lib: &Library,
     main_cell: &Cell,
-    out_instances_map: &mut HashMap<usize, Vec<Matrix3x3>>
+    out_instances_map: &mut HashMap<usize, Vec<Matrix3x3>>,
 ) -> HashMap<String, Vec<Matrix3x3>> {
     let mut instances: HashMap<String, Vec<Matrix3x3>> = HashMap::new();
     let mut stack = vec![(main_cell.name.clone(), Matrix3x3::identity())];
@@ -1466,14 +1807,22 @@ fn analyze_instances(
                 for col in 0..re.columns {
                     for row in 0..re.rows {
                         let mut origin = re.origin.clone();
-                        origin.x += (col as f64 * re.col_spacing.x) + (row as f64 * re.row_spacing.x);
-                        origin.y += (col as f64 * re.col_spacing.y) + (row as f64 * re.row_spacing.y);
+                        origin.x +=
+                            (col as f64 * re.col_spacing.x) + (row as f64 * re.row_spacing.x);
+                        origin.y +=
+                            (col as f64 * re.col_spacing.y) + (row as f64 * re.row_spacing.y);
 
                         let local_t = Matrix3x3::from_transform(
-                            re.rotation.unwrap_or(0.0), re.magnification.unwrap_or(1.0), re.x_reflection, &origin
+                            re.rotation.unwrap_or(0.0),
+                            re.magnification.unwrap_or(1.0),
+                            re.x_reflection,
+                            &origin,
                         );
                         let global_t = current_transform.multiply(&local_t);
-                        instances.entry(re.cell_name.clone()).or_default().push(global_t.clone());
+                        instances
+                            .entry(re.cell_name.clone())
+                            .or_default()
+                            .push(global_t.clone());
                         stack.push((re.cell_name.clone(), global_t));
                     }
                 }
@@ -1515,7 +1864,9 @@ fn process_instanced(
     let mut bbox = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     scan_recursive_bbox(lib, main_cell, &Matrix3x3::identity(), &mut bbox);
 
-    if bbox.0 == f64::MAX { bbox = (0.0, 0.0, 0.0, 0.0); }
+    if bbox.0 == f64::MAX {
+        bbox = (0.0, 0.0, 0.0, 0.0);
+    }
 
     // Collect Layers (polygons + labels)
     let mut all_layers: HashSet<String> = HashSet::new();
@@ -1542,11 +1893,11 @@ fn process_instanced(
     }
     // Also include layers from labels in single instances (or all instances)
     for cell_name in instances.keys() {
-         if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
-             for l in &cell.labels {
-                 all_layers.insert(format!("{}_{}", l.layer, l.texttype));
-             }
-         }
+        if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
+            for l in &cell.labels {
+                all_layers.insert(format!("{}_{}", l.layer, l.texttype));
+            }
+        }
     }
 
     // Ensure current cell ports are visible in the UI even if their layer is otherwise absent.
@@ -1571,48 +1922,103 @@ fn process_instanced(
             if let Some(tcp_ref) = tcp.as_deref_mut() {
                 // IMPORTANT: When streaming over TCP (--tcp-port), stdin is reserved for JSON commands.
                 // Disable stdin-based flow control to avoid consuming those commands.
-                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
+                let mut transport = TcpTransport {
+                    stream: tcp_ref,
+                    flow_control_step: 0,
+                };
                 for (cell_name, transforms) in &single_instances {
                     if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
                         for t in transforms {
                             for poly in &cell.polygons {
                                 let key = format!("{}_{}", poly.layer, poly.datatype);
-                                push_polygon_transformed(&key, poly, t, &mut builders, args, &mut transport, WsChunkKind::FlatPolygons, None)?;
+                                push_polygon_transformed(
+                                    &key,
+                                    poly,
+                                    t,
+                                    &mut builders,
+                                    args,
+                                    &mut transport,
+                                    WsChunkKind::FlatPolygons,
+                                    None,
+                                )?;
                             }
                         }
                     }
                 }
-                flush_all_polygon_builders(&mut builders, args, &mut transport, WsChunkKind::FlatPolygons, None)?;
+                flush_all_polygon_builders(
+                    &mut builders,
+                    args,
+                    &mut transport,
+                    WsChunkKind::FlatPolygons,
+                    None,
+                )?;
             } else {
-                let mut transport = StdoutTransport { flow_control_step: args.flow_control_step };
+                let mut transport = StdoutTransport {
+                    flow_control_step: args.flow_control_step,
+                };
                 for (cell_name, transforms) in &single_instances {
                     if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
                         for t in transforms {
                             for poly in &cell.polygons {
                                 let key = format!("{}_{}", poly.layer, poly.datatype);
-                                push_polygon_transformed(&key, poly, t, &mut builders, args, &mut transport, WsChunkKind::FlatPolygons, None)?;
+                                push_polygon_transformed(
+                                    &key,
+                                    poly,
+                                    t,
+                                    &mut builders,
+                                    args,
+                                    &mut transport,
+                                    WsChunkKind::FlatPolygons,
+                                    None,
+                                )?;
                             }
                         }
                     }
                 }
-                flush_all_polygon_builders(&mut builders, args, &mut transport, WsChunkKind::FlatPolygons, None)?;
+                flush_all_polygon_builders(
+                    &mut builders,
+                    args,
+                    &mut transport,
+                    WsChunkKind::FlatPolygons,
+                    None,
+                )?;
             }
         }
         "triangles" => {
-            let tcp_ref = tcp.as_deref_mut().ok_or_else(|| anyhow::anyhow!("tcp required"))?;
-            let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
+            let tcp_ref = tcp
+                .as_deref_mut()
+                .ok_or_else(|| anyhow::anyhow!("tcp required"))?;
+            let mut transport = TcpTransport {
+                stream: tcp_ref,
+                flow_control_step: 0,
+            };
             let mut builders: HashMap<String, TriChunkBuilder> = HashMap::new();
             for (cell_name, transforms) in &single_instances {
                 if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
                     for t in transforms {
                         for poly in &cell.polygons {
                             let key = format!("{}_{}", poly.layer, poly.datatype);
-                            push_triangles_transformed(&key, poly, t, &mut builders, args, &mut transport, WsChunkKind::FlatTriangles, None)?;
+                            push_triangles_transformed(
+                                &key,
+                                poly,
+                                t,
+                                &mut builders,
+                                args,
+                                &mut transport,
+                                WsChunkKind::FlatTriangles,
+                                None,
+                            )?;
                         }
                     }
                 }
             }
-            flush_all_triangle_builders(&mut builders, args, &mut transport, WsChunkKind::FlatTriangles, None)?;
+            flush_all_triangle_builders(
+                &mut builders,
+                args,
+                &mut transport,
+                WsChunkKind::FlatTriangles,
+                None,
+            )?;
         }
         other => return Err(anyhow::anyhow!("Unknown geom_mode: {other}")),
     }
@@ -1624,7 +2030,10 @@ fn process_instanced(
             for label in &cell.labels {
                 let key = format!("{}_{}", label.layer, label.texttype);
                 for t in cell_instances {
-                    let pt = t.transform_point(&Point { x: label.x, y: label.y });
+                    let pt = t.transform_point(&Point {
+                        x: label.x,
+                        y: label.y,
+                    });
                     labels_by_layer.entry(key.clone()).or_default().push(serde_json::json!({
                         "text": label.text, "x": pt.x, "y": pt.y, "rotation": label.rotation, "magnification": label.magnification, "anchor": label.anchor
                     }));
@@ -1646,38 +2055,93 @@ fn process_instanced(
             for (cell_name, _transforms) in multi_instances.iter() {
                 let mut builders: HashMap<String, PolyChunkBuilder> = HashMap::new();
                 if let Some(tcp_ref) = tcp.as_deref_mut() {
-                    let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
+                    let mut transport = TcpTransport {
+                        stream: tcp_ref,
+                        flow_control_step: 0,
+                    };
                     if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
                         for poly in &cell.polygons {
                             let key = format!("{}_{}", poly.layer, poly.datatype);
-                            push_polygon_transformed(&key, poly, &Matrix3x3::identity(), &mut builders, args, &mut transport, WsChunkKind::FlatPolygons, Some(cell_name.as_str()))?;
+                            push_polygon_transformed(
+                                &key,
+                                poly,
+                                &Matrix3x3::identity(),
+                                &mut builders,
+                                args,
+                                &mut transport,
+                                WsChunkKind::FlatPolygons,
+                                Some(cell_name.as_str()),
+                            )?;
                         }
                     }
-                    flush_all_polygon_builders(&mut builders, args, &mut transport, WsChunkKind::FlatPolygons, Some(cell_name.as_str()))?;
+                    flush_all_polygon_builders(
+                        &mut builders,
+                        args,
+                        &mut transport,
+                        WsChunkKind::FlatPolygons,
+                        Some(cell_name.as_str()),
+                    )?;
                 } else {
-                    let mut transport = StdoutTransport { flow_control_step: args.flow_control_step };
+                    let mut transport = StdoutTransport {
+                        flow_control_step: args.flow_control_step,
+                    };
                     if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
                         for poly in &cell.polygons {
                             let key = format!("{}_{}", poly.layer, poly.datatype);
-                            push_polygon_transformed(&key, poly, &Matrix3x3::identity(), &mut builders, args, &mut transport, WsChunkKind::FlatPolygons, Some(cell_name.as_str()))?;
+                            push_polygon_transformed(
+                                &key,
+                                poly,
+                                &Matrix3x3::identity(),
+                                &mut builders,
+                                args,
+                                &mut transport,
+                                WsChunkKind::FlatPolygons,
+                                Some(cell_name.as_str()),
+                            )?;
                         }
                     }
-                    flush_all_polygon_builders(&mut builders, args, &mut transport, WsChunkKind::FlatPolygons, Some(cell_name.as_str()))?;
+                    flush_all_polygon_builders(
+                        &mut builders,
+                        args,
+                        &mut transport,
+                        WsChunkKind::FlatPolygons,
+                        Some(cell_name.as_str()),
+                    )?;
                 }
             }
         }
         "triangles" => {
             for (cell_name, _transforms) in multi_instances.iter() {
-                let tcp_ref = tcp.as_deref_mut().ok_or_else(|| anyhow::anyhow!("tcp required"))?;
-                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
+                let tcp_ref = tcp
+                    .as_deref_mut()
+                    .ok_or_else(|| anyhow::anyhow!("tcp required"))?;
+                let mut transport = TcpTransport {
+                    stream: tcp_ref,
+                    flow_control_step: 0,
+                };
                 let mut builders: HashMap<String, TriChunkBuilder> = HashMap::new();
                 if let Some(cell) = lib.cells.iter().find(|c| c.name == *cell_name) {
                     for poly in &cell.polygons {
                         let key = format!("{}_{}", poly.layer, poly.datatype);
-                        push_triangles_transformed(&key, poly, &Matrix3x3::identity(), &mut builders, args, &mut transport, WsChunkKind::DefinitionTriangles, Some(cell_name.as_str()))?;
+                        push_triangles_transformed(
+                            &key,
+                            poly,
+                            &Matrix3x3::identity(),
+                            &mut builders,
+                            args,
+                            &mut transport,
+                            WsChunkKind::DefinitionTriangles,
+                            Some(cell_name.as_str()),
+                        )?;
                     }
                 }
-                flush_all_triangle_builders(&mut builders, args, &mut transport, WsChunkKind::DefinitionTriangles, Some(cell_name.as_str()))?;
+                flush_all_triangle_builders(
+                    &mut builders,
+                    args,
+                    &mut transport,
+                    WsChunkKind::DefinitionTriangles,
+                    Some(cell_name.as_str()),
+                )?;
             }
         }
         _ => {}
@@ -1698,11 +2162,30 @@ fn process_instanced(
             }
 
             if let Some(tcp_ref) = tcp.as_deref_mut() {
-                let mut transport = TcpTransport { stream: tcp_ref, flow_control_step: 0 };
-                transport.send(WsChunkKind::Instances, "", Some(cell_name.as_str()), i as u32, total_chunks as u32, &buffer)?;
+                let mut transport = TcpTransport {
+                    stream: tcp_ref,
+                    flow_control_step: 0,
+                };
+                transport.send(
+                    WsChunkKind::Instances,
+                    "",
+                    Some(cell_name.as_str()),
+                    i as u32,
+                    total_chunks as u32,
+                    &buffer,
+                )?;
             } else {
-                let mut transport = StdoutTransport { flow_control_step: args.flow_control_step };
-                transport.send(WsChunkKind::Instances, "", Some(cell_name.as_str()), i as u32, total_chunks as u32, &buffer)?;
+                let mut transport = StdoutTransport {
+                    flow_control_step: args.flow_control_step,
+                };
+                transport.send(
+                    WsChunkKind::Instances,
+                    "",
+                    Some(cell_name.as_str()),
+                    i as u32,
+                    total_chunks as u32,
+                    &buffer,
+                )?;
             }
         }
     }

@@ -3,7 +3,10 @@ use std::fs::File;
 use gds_engine_rust::oasis_loader::load_oasis;
 
 fn find_top(lib: &gds_engine_rust::geometry::Library) -> &gds_engine_rust::geometry::Cell {
-    lib.cells.iter().find(|c| c.name == "TOP").expect("TOP cell present")
+    lib.cells
+        .iter()
+        .find(|c| c.name == "TOP")
+        .expect("TOP cell present")
 }
 
 fn assert_points_close(

@@ -2,8 +2,14 @@ use std::fs::File;
 
 use gds_engine_rust::oasis_loader::load_oasis;
 
-fn find_cell<'a>(lib: &'a gds_engine_rust::geometry::Library, name: &str) -> &'a gds_engine_rust::geometry::Cell {
-    lib.cells.iter().find(|c| c.name == name).expect("cell present")
+fn find_cell<'a>(
+    lib: &'a gds_engine_rust::geometry::Library,
+    name: &str,
+) -> &'a gds_engine_rust::geometry::Cell {
+    lib.cells
+        .iter()
+        .find(|c| c.name == name)
+        .expect("cell present")
 }
 
 #[test]

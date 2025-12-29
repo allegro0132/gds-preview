@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Point {
@@ -88,7 +88,12 @@ impl Matrix3x3 {
         Self { m: res }
     }
 
-    pub fn from_transform(rotation: f64, magnification: f64, x_reflection: bool, origin: &Point) -> Self {
+    pub fn from_transform(
+        rotation: f64,
+        magnification: f64,
+        x_reflection: bool,
+        origin: &Point,
+    ) -> Self {
         let c = rotation.cos();
         let s = rotation.sin();
 
@@ -103,11 +108,7 @@ impl Matrix3x3 {
         }
 
         Self {
-            m: [
-                [m11, m12, origin.x],
-                [m21, m22, origin.y],
-                [0.0, 0.0, 1.0],
-            ],
+            m: [[m11, m12, origin.x], [m21, m22, origin.y], [0.0, 0.0, 1.0]],
         }
     }
 }

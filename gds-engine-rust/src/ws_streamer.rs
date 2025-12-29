@@ -120,7 +120,10 @@ impl WsServer {
         // [layer utf8]
         // [cell utf8]
         // [payload]
-        let mut frame = Vec::with_capacity(1 + 1 + 2 + 4 + 4 + 2 + 2 + layer_bytes.len() + cell_bytes.len() + payload.len());
+        // 16 = 1 + 1 + 2 + 4 + 4 + 2 + 2
+        let mut frame = Vec::with_capacity(
+            16 + layer_bytes.len() + cell_bytes.len() + payload.len(),
+        );
         frame.push(1u8);
         frame.push(kind as u8);
         frame.extend_from_slice(&0u16.to_le_bytes());
