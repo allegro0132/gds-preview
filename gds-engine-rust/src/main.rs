@@ -102,15 +102,20 @@ fn main() -> Result<()> {
     }
 
     // 1. Find target cell
+    // NOTE: $$$CONTEXT_INFO$$$ ports (when present) are intended for the top-level component.
+    // Do not inject them into arbitrary cells when the user explicitly opens a sub-cell.
+    let top_level_cells = find_top_level_cells(&library);
     let main_cell_name = if args.cell_name.is_empty() {
-        let top_level = find_top_level_cells(&library);
-        top_level.get(0).unwrap_or(&library.cells[0].name).clone()
+        top_level_cells
+            .get(0)
+            .unwrap_or(&library.cells[0].name)
+            .clone()
     } else {
         args.cell_name.clone()
     };
 
-    // Add ports to main cell
-    if !context_ports.is_empty() {
+    // Add context ports only when viewing a top-level cell.
+    if !context_ports.is_empty() && top_level_cells.iter().any(|c| c == &main_cell_name) {
         if let Some(cell) = library.cells.iter_mut().find(|c| c.name == main_cell_name) {
             cell.ports.extend(context_ports);
         }
@@ -124,7 +129,7 @@ fn main() -> Result<()> {
         .map(|c| c.name.clone())
         .collect();
     all_cell_names.sort();
-    let top_level_cells = find_top_level_cells(&library);
+    // `top_level_cells` computed above (used for UI tree roots).
 
     let mut hierarchy: HashMap<String, Vec<String>> = HashMap::new();
     for cell in &library.cells {
@@ -393,6 +398,12 @@ fn process_flattened(
         &mut layer_keys_set,
         &mut labels_by_layer,
     );
+
+    // Ports are rendered with a layer-based visibility check in the webview.
+    // Ensure their layers are present even if the cell has no geometry on that layer.
+    for port in &main_cell.ports {
+        layer_keys_set.insert(format!("{}_0", port.layer));
+    }
 
     if bbox.0 == f64::MAX {
         bbox = (0.0, 0.0, 0.0, 0.0);
@@ -733,6 +744,11 @@ fn process_instanced_viewport_preamble(
                 all_layers.insert(format!("{}_{}", l.layer, l.texttype));
             }
         }
+    }
+
+    // Ensure current cell ports are visible in the UI even if their layer is otherwise absent.
+    for port in &main_cell.ports {
+        all_layers.insert(format!("{}_0", port.layer));
     }
 
     let mut layer_keys: Vec<String> = all_layers.into_iter().collect();
@@ -1435,6 +1451,11 @@ fn process_instanced(
                  all_layers.insert(format!("{}_{}", l.layer, l.texttype));
              }
          }
+    }
+
+    // Ensure current cell ports are visible in the UI even if their layer is otherwise absent.
+    for port in &main_cell.ports {
+        all_layers.insert(format!("{}_0", port.layer));
     }
 
     let mut layer_keys: Vec<String> = all_layers.into_iter().collect();

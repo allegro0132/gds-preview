@@ -10,6 +10,19 @@ use flate2::read::ZlibDecoder;
 use crate::gds_loader::parse_port_string;
 use crate::geometry::{Cell, Label, Library, Point, Polygon, Reference};
 
+fn process_properties(properties: &mut Vec<String>, cell: &mut Cell, units: (f64, f64)) {
+    for val in properties.drain(..) {
+        // Keep this in sync with `gds_loader::process_properties` guard.
+        // OASIS property strings can come from different encodings; accept both quoted and
+        // unquoted key occurrences.
+        if val.contains("'port_type'") || val.contains("port_type") {
+            if let Some(port) = parse_port_string(&val, units) {
+                cell.ports.push(port);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OasisRecord {
     Pad = 0,
@@ -1303,8 +1316,13 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 property_value_table[idx] = String::from_utf8_lossy(&v).to_string();
             }
             OasisRecord::CellRefNum | OasisRecord::Cell => {
-                // Flush properties collected for previous cell
-                current_properties.clear();
+                // Flush properties collected for previous cell (if any).
+                if let Some(prev_idx) = current_cell {
+                    let units = library.units;
+                    process_properties(&mut current_properties, &mut library.cells[prev_idx], units);
+                } else {
+                    current_properties.clear();
+                }
 
                 let mut cell = Cell {
                     name: String::new(),
@@ -1977,16 +1995,10 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
                 if record == OasisRecord::LastProperty {
                     // Treat as delimiter: attach to current cell if relevant
                     if let Some(idx) = current_cell {
-                        if !current_properties.is_empty() {
-                            let unit_pair = library.units;
-                            for val in current_properties.drain(..) {
-                                if val.contains("port_type") {
-                                    if let Some(port) = parse_port_string(&val, unit_pair) {
-                                        library.cells[idx].ports.push(port);
-                                    }
-                                }
-                            }
-                        }
+                        let units = library.units;
+                        process_properties(&mut current_properties, &mut library.cells[idx], units);
+                    } else {
+                        current_properties.clear();
                     }
                 }
             }
@@ -2049,13 +2061,12 @@ pub(crate) fn parse_oasis<R: Read + Seek>(mut reader: R) -> Result<Library> {
         }
     }
 
-    // Final pass: attach any remaining properties to ports
-    for cell in &mut library.cells {
-        for val in current_properties.drain(..) {
-            if let Some(port) = parse_port_string(&val, library.units) {
-                cell.ports.push(port);
-            }
-        }
+    // Final pass: attach any remaining properties to the last open cell.
+    if let Some(idx) = current_cell {
+        let units = library.units;
+        process_properties(&mut current_properties, &mut library.cells[idx], units);
+    } else {
+        current_properties.clear();
     }
 
     Ok(library)
