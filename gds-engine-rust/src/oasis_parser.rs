@@ -7,8 +7,8 @@ use anyhow::{anyhow, Result};
 use flate2::read::DeflateDecoder;
 use flate2::read::ZlibDecoder;
 
-use crate::gds_loader::parse_port_string;
 use crate::geometry::{Cell, Label, Library, Point, Polygon, Reference};
+use crate::port_meta::parse_port_string;
 
 fn process_properties(properties: &mut Vec<String>, cell: &mut Cell, units: (f64, f64)) {
     for val in properties.drain(..) {

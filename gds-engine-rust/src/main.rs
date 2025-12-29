@@ -1,6 +1,7 @@
 mod gds_parser;
 mod geometry;
 mod gds_loader;
+mod port_meta;
 mod oasis_loader;
 mod oasis_parser;
 mod streamer;
