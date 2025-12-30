@@ -41,10 +41,11 @@ A high-performance GDSII/OASIS file viewer (offer Visual Studio Code extension +
   - **Backend Triangulation (Rust/WebGL)**: WebGL triangles can be generated in the Rust backend and streamed directly to the webview.
 - **Advanced Analysis**:
   - **Net Tracing**: Double-click any object to highlight all physically connected polygons (Net Tracing). Works across instances and hierarchy.
+    - Hold `Shift` while double-clicking to union-merge into the existing highlight set.
   - **Point Pick (Right-Click)**: Right-click to highlight the polygon under the cursor (single polygon only; no connected-object expansion).
-    - Hold `Ctrl`/`Cmd` while right-clicking to union-merge into the existing highlight set.
+    - Hold `Shift` while right-clicking to toggle highlight (remove if already highlighted, else add).
   - **Box Select (Right-Drag)**: Right-click and drag to draw a selection box; polygons fully contained in the box will be highlighted.
-    - Hold `Ctrl`/`Cmd` while box-selecting to union-merge into the existing highlight set.
+    - Hold `Shift` while box-selecting to union-merge into the existing highlight set.
   - **Layer Soloing**: Double-click a layer in the sidebar to instantly isolate it.
   - **Layer Tutti**: Double-click `Layer Control` in the sidebar to show all layers.
   - **Copy to KLayout**: After highlighting polygons, press `Cmd/Ctrl+C` to copy a KLayout paste payload (includes layer info). To paste as shapes, install the macro in [klayout/paste_gds_preview_polygons.py](klayout/paste_gds_preview_polygons.py).

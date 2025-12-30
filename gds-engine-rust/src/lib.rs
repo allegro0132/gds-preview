@@ -3,6 +3,7 @@ pub mod args;
 pub mod gds_loader;
 pub mod gds_parser;
 pub mod geometry;
+pub mod instance_order;
 pub mod oasis_loader;
 pub mod oasis_parser;
 pub mod port_meta;

@@ -12,6 +12,11 @@ export const state = {
     // Lightweight polygon cache for snapping (especially for WebGL).
     // Format: { [layerKey]: Array< Float32Array | Array<[number, number]> > } where each poly may have poly.bbox
     snapGeometry: {},
+
+    // Snap-only viewport polygon stream cache (tokened, used for box-select finalize).
+    // Format matches snapGeometry, but contents are expected to come from WS FlatPolygons v2
+    // and therefore may include poly.polyId.
+    snapGeometryViewport: {},
     labels: {},
     ports: [],
     bbox: { x_min: 0, x_max: 0, y_min: 0, y_max: 0 },

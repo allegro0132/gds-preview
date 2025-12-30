@@ -282,7 +282,7 @@ fn main() -> Result<()> {
                             engine.find(x, y, &active_layers, max_steps, Some(cancel_flag.clone()))
                         };
 
-                        let (polys, limit_reached) = if max_workers > 0 {
+                        let (hits, limit_reached) = if max_workers > 0 {
                             if let Ok(pool) = rayon::ThreadPoolBuilder::new()
                                 .num_threads(max_workers as usize)
                                 .build()
@@ -298,11 +298,14 @@ fn main() -> Result<()> {
                         let duration = start_time.elapsed().as_millis();
 
                         if !cancel_flag.load(Ordering::Relaxed) {
-                            let polys_v2: Vec<serde_json::Value> = polys
+                            let polys_v2: Vec<serde_json::Value> = hits
                                 .iter()
-                                .map(|p| {
-                                    let pts: Vec<[f64; 2]> = p.points.iter().map(|pt| [pt.x, pt.y]).collect();
+                                .map(|h| {
+                                    let p = &h.polygon;
+                                    let pts: Vec<[f64; 2]> =
+                                        p.points.iter().map(|pt| [pt.x, pt.y]).collect();
                                     serde_json::json!({
+                                        "polyId": [h.instance_id, h.poly_index],
                                         "layerKey": format!("{}_{}", p.layer, p.datatype),
                                         "points": pts
                                     })
@@ -356,10 +359,12 @@ fn main() -> Result<()> {
 
                         let polys_v2: Vec<serde_json::Value> = poly
                             .iter()
-                            .map(|p| {
+                            .map(|h| {
+                                let p = &h.polygon;
                                 let pts: Vec<[f64; 2]> =
                                     p.points.iter().map(|pt| [pt.x, pt.y]).collect();
                                 serde_json::json!({
+                                    "polyId": [h.instance_id, h.poly_index],
                                     "layerKey": format!("{}_{}", p.layer, p.datatype),
                                     "points": pts
                                 })

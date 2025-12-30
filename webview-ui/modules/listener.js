@@ -389,6 +389,14 @@ export function setupListeners() {
         return Number(n.toFixed(9));
     };
 
+    const polyIdKey = (it) => {
+        if (!it) return '';
+        if (Array.isArray(it.polyId) && it.polyId.length === 2) {
+            return `id:${it.polyId[0]},${it.polyId[1]}`;
+        }
+        return '';
+    };
+
     const buildKLayoutClipboardTextV2 = (highlightItems) => {
         // highlightItems: Array<{layerKey: string|null, points: Array<[x,y]>}>
         const payload = {
@@ -405,6 +413,7 @@ export function setupListeners() {
             payload.polygons.push({
                 layerKey: (typeof it.layerKey === 'string' && it.layerKey.length > 0) ? it.layerKey : null,
                 points: pts,
+                polyId: (Array.isArray(it.polyId) && it.polyId.length === 2) ? it.polyId : null,
             });
         }
 
@@ -485,11 +494,21 @@ export function setupListeners() {
     let boxSelectHasMoved = false;
     let suppressNextContextMenuUntil = 0;
 
+    const normCoord = (v) => {
+        // Normalize float32/f64 noise so keys match across selection paths.
+        if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+        return Math.round(v * 1e6) / 1e6;
+    };
+
     const polyItemKey = (it) => {
-        if (!it || !Array.isArray(it.points)) return '';
+        if (!it) return '';
+        if (Array.isArray(it.polyId) && it.polyId.length === 2) {
+            return `id:${it.polyId[0]},${it.polyId[1]}`;
+        }
+        if (!Array.isArray(it.points)) return '';
         const lk = typeof it.layerKey === 'string' ? it.layerKey : '';
-        // Note: points are already nested [x,y]. Use a simple stable string key.
-        return lk + ':' + it.points.map(p => `${p[0]},${p[1]}`).join(';');
+        // Note: points are already nested [x,y]. Use normalized coords for stable matching.
+        return lk + ':' + it.points.map(p => `${normCoord(p[0])},${normCoord(p[1])}`).join(';');
     };
 
     const mergeHighlightItems = (existing, incoming) => {
@@ -600,7 +619,7 @@ export function setupListeners() {
         return pts;
     };
 
-    const finalizeBoxSelect = (x0, y0, x1, y1, additive) => {
+    const finalizeBoxSelect = (x0, y0, x1, y1, additive, pickToggle) => {
         const sel = {
             minX: Math.min(x0, x1),
             maxX: Math.max(x0, x1),
@@ -614,7 +633,7 @@ export function setupListeners() {
         if (w < CLICK_EPS && h < CLICK_EPS) {
             // Treat tiny drags as a right-click pick (single polygon).
             const { x: wx, y: wy } = screenToWorld(x1, y1);
-            state.mergeNextHighlight = !!additive;
+            state.mergeNextHighlight = !!pickToggle;
             pickAndHighlight(wx, wy);
             return;
         }
@@ -643,7 +662,7 @@ export function setupListeners() {
             const snapToken = `__snap__:${((state.snapViewportSeq + 1) >>> 0)}`;
             state.snapViewportSeq = (state.snapViewportSeq + 1) >>> 0;
             state.snapViewportTokenCurrent = snapToken;
-            state.snapGeometry = {};
+            state.snapGeometryViewport = {};
 
             state.boxSelectPending = { token: snapToken, sel, additive: !!additive };
             updateStatus('Box select: requesting polygons...');
@@ -731,7 +750,8 @@ export function setupListeners() {
         const { x: wx, y: wy } = screenToWorld(mouseX, mouseY);
 
         // Additive highlight: merge next result into existing highlight set.
-        state.mergeNextHighlight = !!(e.ctrlKey || e.metaKey);
+        // (Shift is used for multi-select additive merge.)
+        state.mergeNextHighlight = !!e.shiftKey;
 
         findAndHighlight(wx, wy);
     });
@@ -758,7 +778,8 @@ export function setupListeners() {
             const { x, y } = getMouseInView(e.clientX, e.clientY);
             boxSelectActive = true;
             boxSelectStart = { x, y };
-            boxSelectAdditive = !!(e.ctrlKey || e.metaKey);
+            // Shift is used for additive merge when box-selecting.
+            boxSelectAdditive = !!e.shiftKey;
             boxSelectHasMoved = false;
             suppressNextContextMenuUntil = performance.now() + 1000;
             onInteraction();
@@ -794,12 +815,13 @@ export function setupListeners() {
             // This avoids the "small bbox" failure mode for very large polygons.
             if (!hasMoved) {
                 const { x: wx, y: wy } = screenToWorld(x, y);
-                state.mergeNextHighlight = !!additive;
+                // Shift is used for pick toggle (add/remove).
+                state.mergeNextHighlight = !!e.shiftKey;
                 pickAndHighlight(wx, wy);
                 return;
             }
 
-            finalizeBoxSelect(x0, y0, x, y, additive);
+            finalizeBoxSelect(x0, y0, x, y, additive, !!e.shiftKey);
             return;
         }
 
@@ -941,7 +963,7 @@ export function setupListeners() {
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
         const { x: wx, y: wy } = screenToWorld(mouseX, mouseY);
-        state.mergeNextHighlight = !!(e.ctrlKey || e.metaKey);
+        state.mergeNextHighlight = !!e.shiftKey;
         pickAndHighlight(wx, wy);
     });
 

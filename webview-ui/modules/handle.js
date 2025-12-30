@@ -24,10 +24,19 @@ function maybeFinalizeBoxSelectFromSnap(token) {
         const additive = !!p.additive;
         const selected = [];
 
+        const normCoord = (v) => {
+            if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+            return Math.round(v * 1e6) / 1e6;
+        };
+
         const polyItemKey = (it) => {
-            if (!it || !Array.isArray(it.points)) return '';
+            if (!it) return '';
+            if (Array.isArray(it.polyId) && it.polyId.length === 2) {
+                return `id:${it.polyId[0]},${it.polyId[1]}`;
+            }
+            if (!Array.isArray(it.points)) return '';
             const lk = typeof it.layerKey === 'string' ? it.layerKey : '';
-            return lk + ':' + it.points.map(pt => `${pt[0]},${pt[1]}`).join(';');
+            return lk + ':' + it.points.map(pt => `${normCoord(pt[0])},${normCoord(pt[1])}`).join(';');
         };
         const mergeItems = (existing, incoming) => {
             const out = [];
@@ -48,7 +57,7 @@ function maybeFinalizeBoxSelectFromSnap(token) {
         };
 
         for (const layerKey of state.activeLayers) {
-            const polys = state.snapGeometry ? state.snapGeometry[layerKey] : null;
+            const polys = state.snapGeometryViewport ? state.snapGeometryViewport[layerKey] : null;
             if (!polys || polys.length === 0) continue;
 
             for (const poly of polys) {
@@ -71,11 +80,14 @@ function maybeFinalizeBoxSelectFromSnap(token) {
 
                 // Convert to nested points for downstream features (copy-to-KLayout expects nested arrays).
                 if (isFlat) {
+                    // v2-only: viewport snap polygons must carry polyId.
+                    if (!poly.polyId) continue;
                     const pts = [];
                     for (let i = 0; i < poly.length; i += 2) pts.push([poly[i], poly[i + 1]]);
-                    selected.push({ layerKey, points: pts });
+                    selected.push({ layerKey, points: pts, polyId: poly.polyId });
                 } else {
-                    selected.push({ layerKey, points: poly });
+                    // This cache is expected to store Float32Array polygons only.
+                    continue;
                 }
             }
         }
@@ -103,6 +115,12 @@ function ensureSnapLayer(layerKey) {
     if (!state.snapGeometry) state.snapGeometry = {};
     if (!state.snapGeometry[layerKey]) state.snapGeometry[layerKey] = [];
     return state.snapGeometry[layerKey];
+}
+
+function ensureViewportSnapLayer(layerKey) {
+    if (!state.snapGeometryViewport) state.snapGeometryViewport = {};
+    if (!state.snapGeometryViewport[layerKey]) state.snapGeometryViewport[layerKey] = [];
+    return state.snapGeometryViewport[layerKey];
 }
 
 function pushSnapPolys(layerKey, polys) {
@@ -146,6 +164,39 @@ function pushSnapPolys(layerKey, polys) {
             flat.bbox = { minX, minY, maxX, maxY };
             target.push(flat);
         }
+
+        if (target.length > MAX_PER_LAYER) {
+            target.splice(0, target.length - MAX_PER_LAYER);
+        }
+    }
+}
+
+function pushViewportSnapPolys(layerKey, polys) {
+    if (!polys || polys.length === 0) return;
+    const target = ensureViewportSnapLayer(layerKey);
+
+    // Keep this cache bounded.
+    const MAX_PER_LAYER = 20000;
+
+    for (const poly of polys) {
+        // v2-only: viewportSnap polygons must be Float32Array and carry polyId.
+        if (!(poly instanceof Float32Array)) continue;
+        if (!poly.polyId) continue;
+
+        if (!poly.bbox) {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (let i = 0; i < poly.length; i += 2) {
+                const x = poly[i];
+                const y = poly[i + 1];
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+            poly.bbox = { minX, minY, maxX, maxY };
+        }
+
+        target.push(poly);
 
         if (target.length > MAX_PER_LAYER) {
             target.splice(0, target.length - MAX_PER_LAYER);
@@ -361,7 +412,7 @@ function handleGeometryWsBinary(buffer) {
     let off = 0;
     const version = dv.getUint8(off); off += 1;
     const kind = dv.getUint8(off); off += 1;
-    off += 2; // flags (unused)
+    const flags = dv.getUint16(off, true); off += 2;
     const chunkIndex = dv.getUint32(off, true); off += 4;
     const totalChunks = dv.getUint32(off, true); off += 4;
     const layerLen = dv.getUint16(off, true); off += 2;
@@ -387,7 +438,7 @@ function handleGeometryWsBinary(buffer) {
     }
 
     // Payload starts at off
-    if (version !== 1) {
+    if (version !== 1 && version !== 2) {
         console.warn('Unsupported WS geometry frame version:', version);
         return;
     }
@@ -465,11 +516,21 @@ function handleGeometryWsBinary(buffer) {
     }
 
     if (kind === 4) {
-        // Polygons payload: u32 polyCount, then per poly: u32 nPoints, then nPoints * (f32 x, f32 y)
+        // Polygons payload:
+        // - v1: u32 polyCount, then per poly: u32 nPoints, then nPoints * (f32 x, f32 y)
+        // - v2 (snap-only): u32 polyCount, then per poly:
+        //     u32 instance_id, u32 poly_index, u32 nPoints, then nPoints * (f32 x, f32 y)
         const polyCount = dv.getUint32(off, true);
         off += 4;
         const polys = [];
         for (let p = 0; p < polyCount; p++) {
+            let instanceId = null;
+            let polyIndex = null;
+            if (version === 2) {
+                instanceId = dv.getUint32(off, true); off += 4;
+                polyIndex = dv.getUint32(off, true); off += 4;
+            }
+
             const nPoints = dv.getUint32(off, true);
             off += 4;
             const flat = new Float32Array(nPoints * 2);
@@ -485,6 +546,11 @@ function handleGeometryWsBinary(buffer) {
                 if (y > maxY) maxY = y;
             }
             flat.bbox = { minX, minY, maxX, maxY };
+
+            if (version === 2 && instanceId !== null && polyIndex !== null) {
+                // polyId is a stable identifier for merge/toggle operations.
+                flat.polyId = [instanceId, polyIndex];
+            }
             polys.push(flat);
         }
 
@@ -501,11 +567,15 @@ function handleGeometryWsBinary(buffer) {
             // If this is a measure-snap viewport stream, cellName is a token like '__snap__:N'.
             // Drop stale chunks when a newer viewport request superseded this one.
             if (cellNameStr && cellNameStr.startsWith('__snap__:')) {
+                // v2-only: viewport snap polygons must arrive as WS geometry frame v2.
+                if (version !== 2) {
+                    return;
+                }
                 if (state.snapViewportTokenCurrent !== cellNameStr) {
                     // Stale snapshot; ignore.
                     return;
                 }
-                pushSnapPolys(layerKey, polys);
+                pushViewportSnapPolys(layerKey, polys);
                 maybeFinalizeBoxSelectFromSnap(cellNameStr);
                 // Avoid spamming status for snap-only background streams.
                 return;
@@ -632,23 +702,32 @@ export function handleSearchWorkerMessage(e) {
                     return {
                         layerKey: (typeof it.layerKey === 'string' && it.layerKey.length > 0) ? it.layerKey : null,
                         points: pts,
+                        polyId: (Array.isArray(it.polyId) && it.polyId.length === 2) ? it.polyId : null,
                     };
                 })
                 .filter(Boolean);
-        } else if (Array.isArray(msg.polygons)) {
-            items = msg.polygons
-                .map((poly) => {
-                    const pts = toNested(poly);
-                    if (!pts) return null;
-                    return { layerKey: null, points: pts };
-                })
-                .filter(Boolean);
+        } else {
+            // v2-only: highlight pipeline expects polygonsV2.
+            return;
         }
 
+        const normCoord = (v) => {
+            // Normalize float32/f64 noise so keys match across:
+            // - viewportSnap (Float32) polygons
+            // - pick/find (f64) polygons
+            if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+            return Math.round(v * 1e6) / 1e6;
+        };
+
         const polyItemKey = (it) => {
-            if (!it || !Array.isArray(it.points)) return '';
+            if (!it) return '';
+            if (Array.isArray(it.polyId) && it.polyId.length === 2) {
+                return `id:${it.polyId[0]},${it.polyId[1]}`;
+            }
+            if (!Array.isArray(it.points)) return '';
             const lk = typeof it.layerKey === 'string' ? it.layerKey : '';
-            return lk + ':' + it.points.map(p => `${p[0]},${p[1]}`).join(';');
+            // Note: points are already nested [x,y]. Use normalized coords for stable matching.
+            return lk + ':' + it.points.map(p => `${normCoord(p[0])},${normCoord(p[1])}`).join(';');
         };
         const mergeItems = (existing, incoming) => {
             const out = [];
@@ -668,12 +747,47 @@ export function handleSearchWorkerMessage(e) {
             return out;
         };
 
+        const toggleItems = (existing, incoming) => {
+            const existingArr = Array.isArray(existing) ? existing : [];
+            const incomingArr = Array.isArray(incoming) ? incoming : [];
+
+            const removeKeys = new Set();
+            const addList = [];
+
+            const existingKeys = new Set(existingArr.map(polyItemKey).filter(Boolean));
+
+            for (const it of incomingArr) {
+                if (!it || !Array.isArray(it.points) || it.points.length < 3) continue;
+                const k = polyItemKey(it);
+                if (!k) continue;
+                if (existingKeys.has(k)) {
+                    removeKeys.add(k);
+                } else {
+                    addList.push(it);
+                }
+            }
+
+            const kept = existingArr.filter(it => {
+                const k = polyItemKey(it);
+                return !k || !removeKeys.has(k);
+            });
+
+            return mergeItems(kept, addList);
+        };
+
         const additive = !!state.mergeNextHighlight;
         state.mergeNextHighlight = false;
 
-        state.highlightedPolygons = additive
-            ? mergeItems(state.highlightedPolygons, items)
-            : items;
+        // Modifier behavior:
+        // - for 'found' (double-click net tracing): Shift union-merge
+        // - for 'picked' (right-click pick): Shift toggle (remove if already highlighted, else add)
+        if (additive) {
+            state.highlightedPolygons = (msg.command === 'picked')
+                ? toggleItems(state.highlightedPolygons, items)
+                : mergeItems(state.highlightedPolygons, items);
+        } else {
+            state.highlightedPolygons = items;
+        }
 
         // Create Path2D for efficient rendering
         const path = new Path2D();

@@ -2,9 +2,8 @@ use crate::args::Args;
 use crate::geometry::{Cell, Library, Matrix3x3, Point, Polygon};
 use crate::renderer::{scan_recursive_bbox, sort_layer_keys};
 use crate::streamer::{
-    flush_all_polygon_builders, flush_all_triangle_builders, push_polygon_transformed,
-    push_triangles_transformed, send_json, ChunkTransport, PolyChunkBuilder, TriChunkBuilder,
-    WsChunkKind,
+    flush_all_triangle_builders, push_triangles_transformed, send_json, ChunkTransport,
+    TriChunkBuilder, WsChunkKind,
 };
 use anyhow::Result;
 use std::collections::hash_map::DefaultHasher;
@@ -303,10 +302,81 @@ pub fn stream_viewport_snap_polygons(
     // Begin snapping snapshot (does not affect WebGL render buffers).
     send_control_snap(transport, 1, request_id, snap_token)?;
 
-    let mut builders: HashMap<String, PolyChunkBuilder> = HashMap::new();
+    // Snap polygon stream format (WS frame version=2, kind=FlatPolygons):
+    // payload = u32 polyCount, then per poly:
+    //   u32 instance_id
+    //   u32 poly_index
+    //   u32 nPoints
+    //   nPoints * (f32 x, f32 y)
+    // NOTE: We intentionally do NOT reuse PolyChunkBuilder / push_polygon_transformed,
+    // because those are also used by CHUNK_B64 (canvas) decoding which expects the v1 payload.
+    #[derive(Default)]
+    struct SnapPolyChunkBuilder {
+        chunk_index: u32,
+        poly_count: u32,
+        buffer: Vec<u8>,
+    }
 
-    for (cell_idx, transforms) in instances_map {
-        let cell = match lib.cells.get(*cell_idx) {
+    impl SnapPolyChunkBuilder {
+        fn ensure_chunk_started(&mut self) {
+            if self.buffer.is_empty() {
+                self.buffer.extend_from_slice(&0u32.to_le_bytes());
+                self.poly_count = 0;
+            }
+        }
+
+        fn push(
+            &mut self,
+            poly: &Polygon,
+            transform: &Matrix3x3,
+            instance_id: u32,
+            poly_index: u32,
+        ) {
+            self.ensure_chunk_started();
+            self.poly_count += 1;
+
+            self.buffer.extend_from_slice(&instance_id.to_le_bytes());
+            self.buffer.extend_from_slice(&poly_index.to_le_bytes());
+            self.buffer
+                .extend_from_slice(&(poly.points.len() as u32).to_le_bytes());
+            for p in &poly.points {
+                let pt = transform.transform_point(p);
+                self.buffer.extend_from_slice(&(pt.x as f32).to_le_bytes());
+                self.buffer.extend_from_slice(&(pt.y as f32).to_le_bytes());
+            }
+        }
+
+        fn flush(
+            &mut self,
+            layer_key: &str,
+            transport: &mut dyn ChunkTransport,
+            snap_token: &str,
+        ) -> Result<()> {
+            if self.poly_count == 0 {
+                return Ok(());
+            }
+            self.buffer[0..4].copy_from_slice(&self.poly_count.to_le_bytes());
+            transport.send(
+                WsChunkKind::FlatPolygons,
+                layer_key,
+                Some(snap_token),
+                self.chunk_index,
+                0,
+                &self.buffer,
+            )?;
+
+            self.chunk_index += 1;
+            self.poly_count = 0;
+            self.buffer.clear();
+            Ok(())
+        }
+    }
+
+    let mut builders: HashMap<String, SnapPolyChunkBuilder> = HashMap::new();
+
+    let ordered = crate::instance_order::ordered_instances(instances_map);
+    for inst in ordered {
+        let cell = match lib.cells.get(inst.cell_idx) {
             Some(c) => c,
             None => continue,
         };
@@ -314,40 +384,29 @@ pub fn stream_viewport_snap_polygons(
             continue;
         }
 
-        for t in transforms {
-            for poly in &cell.polygons {
-                if !active_layers.contains(&(poly.layer, poly.datatype)) {
-                    continue;
-                }
+        for (poly_index, poly) in cell.polygons.iter().enumerate() {
+            if !active_layers.contains(&(poly.layer, poly.datatype)) {
+                continue;
+            }
 
-                let bb = transform_bbox(t, polygon_bbox(poly));
-                if !bbox_intersects(bb, view) {
-                    continue;
-                }
+            let bb = transform_bbox(&inst.matrix, polygon_bbox(poly));
+            if !bbox_intersects(bb, view) {
+                continue;
+            }
 
-                let key = format!("{}_{}", poly.layer, poly.datatype);
-                // Tag snap-only polygons with the token in cell_name.
-                push_polygon_transformed(
-                    &key,
-                    poly,
-                    t,
-                    &mut builders,
-                    args,
-                    transport,
-                    WsChunkKind::FlatPolygons,
-                    Some(snap_token),
-                )?;
+            let key = format!("{}_{}", poly.layer, poly.datatype);
+            let builder = builders.entry(key.clone()).or_default();
+            builder.push(poly, &inst.matrix, inst.instance_id, poly_index as u32);
+
+            if args.chunk_size > 0 && (builder.poly_count as usize) >= args.chunk_size {
+                builder.flush(&key, transport, snap_token)?;
             }
         }
     }
 
-    flush_all_polygon_builders(
-        &mut builders,
-        args,
-        transport,
-        WsChunkKind::FlatPolygons,
-        Some(snap_token),
-    )?;
+    for (layer_key, builder) in builders.iter_mut() {
+        builder.flush(layer_key, transport, snap_token)?;
+    }
     send_control_snap(transport, 2, request_id, snap_token)?;
     Ok(())
 }

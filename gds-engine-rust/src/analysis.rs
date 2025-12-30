@@ -177,9 +177,17 @@ pub fn transform_polygon(poly: &Polygon, m: &Matrix3x3) -> Polygon {
 }
 
 pub struct Instance {
+    pub instance_id: u32,
     pub cell_idx: usize,
     pub matrix: Matrix3x3,
     pub bbox: BBox,
+}
+
+#[derive(Clone, Debug)]
+pub struct PolygonHit {
+    pub polygon: Polygon,
+    pub instance_id: u32,
+    pub poly_index: u32,
 }
 
 #[allow(dead_code)]
@@ -208,20 +216,21 @@ impl SearchEngine {
 
         let mut instances = Vec::new();
 
-        for (cell_idx, transforms) in instances_map {
-            if cell_idx >= cell_bboxes.len() {
+        let ordered = crate::instance_order::ordered_instances(&instances_map);
+        instances.reserve(ordered.len());
+
+        for inst in ordered {
+            if inst.cell_idx >= cell_bboxes.len() {
                 continue;
             }
-            let base_bbox = &cell_bboxes[cell_idx];
-
-            for t in transforms {
-                let inst_bbox = base_bbox.transform(&t);
-                instances.push(Instance {
-                    cell_idx,
-                    matrix: t,
-                    bbox: inst_bbox,
-                });
-            }
+            let base_bbox = &cell_bboxes[inst.cell_idx];
+            let inst_bbox = base_bbox.transform(&inst.matrix);
+            instances.push(Instance {
+                instance_id: inst.instance_id,
+                cell_idx: inst.cell_idx,
+                matrix: inst.matrix,
+                bbox: inst_bbox,
+            });
         }
 
         Self {
@@ -239,7 +248,7 @@ impl SearchEngine {
         active_layers: &HashSet<(i16, i16)>,
         max_steps: usize,
         cancel_flag: Option<Arc<AtomicBool>>,
-    ) -> (Vec<Polygon>, bool) {
+    ) -> (Vec<PolygonHit>, bool) {
         let mut start_poly: Option<Polygon> = None;
         let mut start_instance_idx: Option<usize> = None;
 
@@ -295,14 +304,14 @@ impl SearchEngine {
         }
 
         let mut candidates: Vec<Polygon> = Vec::new();
-        let mut candidates_indices: Vec<(usize, usize)> = Vec::new();
+        let mut candidates_ids: Vec<(u32, u32)> = Vec::new();
 
         if let Some(idx) = start_instance_idx {
             self.add_instance_to_candidates(
                 idx,
                 active_layers,
                 &mut candidates,
-                &mut candidates_indices,
+                &mut candidates_ids,
             );
         }
 
@@ -334,8 +343,18 @@ impl SearchEngine {
             }
 
             if steps >= max_steps {
-                let res_polys = visited.iter().map(|&i| candidates[i].clone()).collect();
-                return (res_polys, true);
+                let res_hits = visited
+                    .iter()
+                    .map(|&i| {
+                        let (instance_id, poly_index) = candidates_ids[i];
+                        PolygonHit {
+                            polygon: candidates[i].clone(),
+                            instance_id,
+                            poly_index,
+                        }
+                    })
+                    .collect();
+                return (res_hits, true);
             }
             steps += current_frontier.len();
 
@@ -371,7 +390,7 @@ impl SearchEngine {
                     inst_idx,
                     active_layers,
                     &mut candidates,
-                    &mut candidates_indices,
+                    &mut candidates_ids,
                 );
             }
 
@@ -425,8 +444,18 @@ impl SearchEngine {
             }
         }
 
-        let res_polys = visited.iter().map(|&i| candidates[i].clone()).collect();
-        (res_polys, false)
+        let res_hits = visited
+            .iter()
+            .map(|&i| {
+                let (instance_id, poly_index) = candidates_ids[i];
+                PolygonHit {
+                    polygon: candidates[i].clone(),
+                    instance_id,
+                    poly_index,
+                }
+            })
+            .collect();
+        (res_hits, false)
     }
 
     fn add_instance_to_candidates(
@@ -434,19 +463,19 @@ impl SearchEngine {
         inst_idx: usize,
         active_layers: &HashSet<(i16, i16)>,
         candidates: &mut Vec<Polygon>,
-        indices: &mut Vec<(usize, usize)>,
+        ids: &mut Vec<(u32, u32)>,
     ) {
         let inst = &self.instances[inst_idx];
         let cell = &self.library.cells[inst.cell_idx];
         for (poly_idx, poly) in cell.polygons.iter().enumerate() {
             if active_layers.contains(&(poly.layer, poly.datatype)) {
                 candidates.push(transform_polygon(poly, &inst.matrix));
-                indices.push((inst_idx, poly_idx));
+                ids.push((inst.instance_id, poly_idx as u32));
             }
         }
     }
 
-    pub fn pick(&self, x: f64, y: f64, layer_order: &Vec<(i16, i16)>) -> Option<Polygon> {
+    pub fn pick(&self, x: f64, y: f64, layer_order: &Vec<(i16, i16)>) -> Option<PolygonHit> {
         // Pick a single polygon under (x,y), preferring layers in the given order.
         // layer_order is expected to be the active layer stack order (top -> bottom).
         if layer_order.is_empty() {
@@ -458,7 +487,7 @@ impl SearchEngine {
             priority.insert(*ld, i);
         }
 
-        let mut best_poly: Option<Polygon> = None;
+        let mut best_hit: Option<PolygonHit> = None;
         let mut best_prio: usize = usize::MAX;
 
         for inst in &self.instances {
@@ -487,7 +516,7 @@ impl SearchEngine {
             let local_x = (m22 * dx - m12 * dy) * inv_det;
             let local_y = (m11 * dy - m21 * dx) * inv_det;
 
-            for poly in &cell.polygons {
+            for (poly_index, poly) in cell.polygons.iter().enumerate() {
                 let key = (poly.layer, poly.datatype);
                 let pr = match priority.get(&key) {
                     Some(p) => *p,
@@ -501,16 +530,20 @@ impl SearchEngine {
 
                 if point_in_polygon(local_x, local_y, poly) {
                     best_prio = pr;
-                    best_poly = Some(transform_polygon(poly, &inst.matrix));
+                    best_hit = Some(PolygonHit {
+                        polygon: transform_polygon(poly, &inst.matrix),
+                        instance_id: inst.instance_id,
+                        poly_index: poly_index as u32,
+                    });
 
                     // Can't beat topmost layer.
                     if best_prio == 0 {
-                        return best_poly;
+                        return best_hit;
                     }
                 }
             }
         }
 
-        best_poly
+        best_hit
     }
 }

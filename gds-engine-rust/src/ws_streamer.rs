@@ -42,7 +42,12 @@ impl ChunkTransport for TcpTransport<'_> {
         let mut frame = Vec::with_capacity(
             1 + 1 + 2 + 4 + 4 + 2 + 2 + layer_bytes.len() + cell_bytes.len() + payload.len(),
         );
-        frame.push(1u8);
+        let version: u8 = if matches!(kind, WsChunkKind::FlatPolygons) && cell_name.starts_with("__snap__:") {
+            2u8
+        } else {
+            1u8
+        };
+        frame.push(version);
         frame.push(kind as u8);
         frame.extend_from_slice(&0u16.to_le_bytes());
         frame.extend_from_slice(&chunk_index.to_le_bytes());
