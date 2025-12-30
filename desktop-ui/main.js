@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, Menu, dialog, nativeTheme } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, Menu, dialog, nativeTheme, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const cp = require('child_process');
@@ -1231,6 +1231,20 @@ ipcMain.on('vscode-message', (event, message) => {
                  view.process.stdin.write(JSON.stringify(message) + "\n");
              }
              break;
+
+        case 'copyToClipboard': {
+            const text = typeof message.text === 'string' ? message.text : '';
+            const count = typeof message.count === 'number' ? message.count : null;
+            try {
+                clipboard.writeText(text);
+                const suffix = (typeof count === 'number' && Number.isFinite(count)) ? ` (${count} polygon(s))` : '';
+                view.browserView.webContents.send('webview-message', { command: 'status', message: `Copied to clipboard${suffix}` });
+            } catch (e) {
+                console.error('Clipboard write failed', e);
+                view.browserView.webContents.send('webview-message', { command: 'status', message: 'Clipboard copy failed' });
+            }
+            break;
+        }
     }
 });
 
