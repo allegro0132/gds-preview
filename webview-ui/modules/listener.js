@@ -335,7 +335,11 @@ export function findAndHighlight(x, y) {
     vscode.postMessage({
         command: 'find',
         x, y,
-        layers: Array.from(state.activeLayers),
+        // Preserve layer stack order (top -> bottom) to match the UI.
+        // Backend 'find' treats this as a set, but keeping a stable order is still useful.
+        layers: Array.isArray(state.allLayers)
+            ? state.allLayers.filter(lk => state.activeLayers.has(lk))
+            : Array.from(state.activeLayers),
         maxSteps: state.config.maxSteps,
         maxWorkers: state.config.maxWorkers
     });
@@ -348,7 +352,10 @@ export function pickAndHighlight(x, y) {
     vscode.postMessage({
         command: 'pick',
         x, y,
-        layers: Array.from(state.activeLayers),
+        // IMPORTANT: pick must respect active layer order (top -> bottom).
+        layers: Array.isArray(state.allLayers)
+            ? state.allLayers.filter(lk => state.activeLayers.has(lk))
+            : Array.from(state.activeLayers),
     });
 
     updateStatus('Picking...');

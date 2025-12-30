@@ -328,7 +328,8 @@ fn main() -> Result<()> {
                 let y = cmd["y"].as_f64().unwrap_or(0.0);
                 let layers_val = cmd["layers"].as_array();
 
-                let mut active_layers = HashSet::new();
+                // IMPORTANT: preserve the incoming order (top -> bottom) for layer-priority picking.
+                let mut layer_order: Vec<(i16, i16)> = Vec::new();
                 if let Some(layers) = layers_val {
                     for l in layers {
                         if let Some(s) = l.as_str() {
@@ -337,7 +338,7 @@ fn main() -> Result<()> {
                                 if let (Ok(la), Ok(dt)) =
                                     (parts[0].parse::<i16>(), parts[1].parse::<i16>())
                                 {
-                                    active_layers.insert((la, dt));
+                                    layer_order.push((la, dt));
                                 }
                             }
                         }
@@ -350,7 +351,7 @@ fn main() -> Result<()> {
                     if let Some(engine) = &*engine_guard {
                         let start_time = Instant::now();
 
-                        let poly = engine.pick(x, y, &active_layers);
+                        let poly = engine.pick(x, y, &layer_order);
                         let duration = start_time.elapsed().as_millis();
 
                         let polys_v2: Vec<serde_json::Value> = poly

@@ -446,13 +446,21 @@ impl SearchEngine {
         }
     }
 
-    pub fn pick(
-        &self,
-        x: f64,
-        y: f64,
-        active_layers: &HashSet<(i16, i16)>,
-    ) -> Option<Polygon> {
-        // Find the first polygon containing (x,y) among instances/layers.
+    pub fn pick(&self, x: f64, y: f64, layer_order: &Vec<(i16, i16)>) -> Option<Polygon> {
+        // Pick a single polygon under (x,y), preferring layers in the given order.
+        // layer_order is expected to be the active layer stack order (top -> bottom).
+        if layer_order.is_empty() {
+            return None;
+        }
+
+        let mut priority: HashMap<(i16, i16), usize> = HashMap::with_capacity(layer_order.len());
+        for (i, ld) in layer_order.iter().enumerate() {
+            priority.insert(*ld, i);
+        }
+
+        let mut best_poly: Option<Polygon> = None;
+        let mut best_prio: usize = usize::MAX;
+
         for inst in &self.instances {
             if x < inst.bbox.min_x || x > inst.bbox.max_x || y < inst.bbox.min_y || y > inst.bbox.max_y {
                 continue;
@@ -480,15 +488,29 @@ impl SearchEngine {
             let local_y = (m11 * dy - m21 * dx) * inv_det;
 
             for poly in &cell.polygons {
-                if !active_layers.contains(&(poly.layer, poly.datatype)) {
+                let key = (poly.layer, poly.datatype);
+                let pr = match priority.get(&key) {
+                    Some(p) => *p,
+                    None => continue,
+                };
+
+                // If we already found a polygon in a higher-priority layer, no need to test lower ones.
+                if pr >= best_prio {
                     continue;
                 }
+
                 if point_in_polygon(local_x, local_y, poly) {
-                    return Some(transform_polygon(poly, &inst.matrix));
+                    best_prio = pr;
+                    best_poly = Some(transform_polygon(poly, &inst.matrix));
+
+                    // Can't beat topmost layer.
+                    if best_prio == 0 {
+                        return best_poly;
+                    }
                 }
             }
         }
 
-        None
+        best_poly
     }
 }
