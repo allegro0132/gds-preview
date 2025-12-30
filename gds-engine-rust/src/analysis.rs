@@ -445,4 +445,50 @@ impl SearchEngine {
             }
         }
     }
+
+    pub fn pick(
+        &self,
+        x: f64,
+        y: f64,
+        active_layers: &HashSet<(i16, i16)>,
+    ) -> Option<Polygon> {
+        // Find the first polygon containing (x,y) among instances/layers.
+        for inst in &self.instances {
+            if x < inst.bbox.min_x || x > inst.bbox.max_x || y < inst.bbox.min_y || y > inst.bbox.max_y {
+                continue;
+            }
+
+            let cell = &self.library.cells[inst.cell_idx];
+
+            let m = &inst.matrix.m;
+            let m11 = m[0][0];
+            let m12 = m[0][1];
+            let tx = m[0][2];
+            let m21 = m[1][0];
+            let m22 = m[1][1];
+            let ty = m[1][2];
+
+            let det = m11 * m22 - m12 * m21;
+            if det.abs() < 1e-6 {
+                continue;
+            }
+
+            let inv_det = 1.0 / det;
+            let dx = x - tx;
+            let dy = y - ty;
+            let local_x = (m22 * dx - m12 * dy) * inv_det;
+            let local_y = (m11 * dy - m21 * dx) * inv_det;
+
+            for poly in &cell.polygons {
+                if !active_layers.contains(&(poly.layer, poly.datatype)) {
+                    continue;
+                }
+                if point_in_polygon(local_x, local_y, poly) {
+                    return Some(transform_polygon(poly, &inst.matrix));
+                }
+            }
+        }
+
+        None
+    }
 }

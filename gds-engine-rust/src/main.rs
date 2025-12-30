@@ -323,6 +323,60 @@ fn main() -> Result<()> {
                         }));
                     }
                 });
+            } else if cmd["command"] == "pick" {
+                let x = cmd["x"].as_f64().unwrap_or(0.0);
+                let y = cmd["y"].as_f64().unwrap_or(0.0);
+                let layers_val = cmd["layers"].as_array();
+
+                let mut active_layers = HashSet::new();
+                if let Some(layers) = layers_val {
+                    for l in layers {
+                        if let Some(s) = l.as_str() {
+                            let parts: Vec<&str> = s.split('_').collect();
+                            if parts.len() == 2 {
+                                if let (Ok(la), Ok(dt)) =
+                                    (parts[0].parse::<i16>(), parts[1].parse::<i16>())
+                                {
+                                    active_layers.insert((la, dt));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let search_engine = search_engine.clone();
+                thread::spawn(move || {
+                    let engine_guard = search_engine.lock().unwrap();
+                    if let Some(engine) = &*engine_guard {
+                        let start_time = Instant::now();
+
+                        let poly = engine.pick(x, y, &active_layers);
+                        let duration = start_time.elapsed().as_millis();
+
+                        let polys_v2: Vec<serde_json::Value> = poly
+                            .iter()
+                            .map(|p| {
+                                let pts: Vec<[f64; 2]> =
+                                    p.points.iter().map(|pt| [pt.x, pt.y]).collect();
+                                serde_json::json!({
+                                    "layerKey": format!("{}_{}", p.layer, p.datatype),
+                                    "points": pts
+                                })
+                            })
+                            .collect();
+
+                        send_json(&serde_json::json!({
+                            "command": "picked",
+                            "polygonsV2": polys_v2,
+                            "duration": duration
+                        }));
+                    } else {
+                        send_json(&serde_json::json!({
+                            "command": "status",
+                            "message": "Search engine initializing..."
+                        }));
+                    }
+                });
             } else if cmd["command"] == "stop" {
                 let cancel_guard = current_search_cancel.lock().unwrap();
                 if let Some(flag) = &*cancel_guard {

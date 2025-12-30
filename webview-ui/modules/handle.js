@@ -610,7 +610,7 @@ export function handleSearchWorkerMessage(e) {
     const msg = e.data;
     if (msg.command === 'status') {
         updateStatus(msg.message);
-    } else if (msg.command === 'found') {
+    } else if (msg.command === 'found' || msg.command === 'picked') {
         const toNested = (poly) => {
             if (!poly) return null;
             if (poly instanceof Float32Array) {
@@ -689,7 +689,13 @@ export function handleSearchWorkerMessage(e) {
         state.highlightedPath = path;
 
         const timeStr = msg.duration ? ` in ${msg.duration}ms` : '';
-        if (msg.limitReached) {
+        if (msg.command === 'picked') {
+            if (state.highlightedPolygons.length === 0) {
+                updateStatus(`No polygon found at clicked location${timeStr}`);
+            } else {
+                updateStatus(`Highlighted ${state.highlightedPolygons.length} polygon(s)${timeStr}`);
+            }
+        } else if (msg.limitReached) {
             updateStatus(`Highlighted ${state.highlightedPolygons.length} objects (Search limit reached)${timeStr}`);
         } else if (state.highlightedPolygons.length === 0) {
             updateStatus(`No object found at clicked location${timeStr}`);

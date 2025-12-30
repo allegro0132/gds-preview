@@ -81,7 +81,7 @@ window.addEventListener('message', event => {
     } else if (message.command === 'addPorts') {
         state.ports = message.ports;
         requestAnimationFrame(drawLabels);
-    } else if (message.command === 'found') {
+    } else if (message.command === 'found' || message.command === 'picked') {
         handleSearchWorkerMessage({ data: message });
     } else if (message.command === 'done') {
         // Rust engine signals initial load completion via {command:"done"}.

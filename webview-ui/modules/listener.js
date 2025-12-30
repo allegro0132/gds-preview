@@ -343,6 +343,17 @@ export function findAndHighlight(x, y) {
     updateStatus("Searching...");
 }
 
+export function pickAndHighlight(x, y) {
+    // Send a point-pick request to backend (single polygon only).
+    vscode.postMessage({
+        command: 'pick',
+        x, y,
+        layers: Array.from(state.activeLayers),
+    });
+
+    updateStatus('Picking...');
+}
+
 export function setupListeners() {
     window.addEventListener('resize', () => {
         if (state.currentEngine === 'canvas' || state.currentEngine === 'webgl') {
@@ -464,6 +475,7 @@ export function setupListeners() {
     let boxSelectActive = false;
     let boxSelectStart = null; // {x,y} in view container coords
     let boxSelectAdditive = false;
+    let boxSelectHasMoved = false;
     let suppressNextContextMenuUntil = 0;
 
     const polyItemKey = (it) => {
@@ -514,24 +526,6 @@ export function setupListeners() {
     const clearBoxSelectRect = () => {
         if (!state.boxSelect) return;
         state.boxSelect.active = false;
-    };
-
-    const recenterAt = (mouseX, mouseY, rect) => {
-        onInteraction();
-
-        const centerX = rect.width / 2;
-        const centerY = rect.height / 2;
-
-        const worldX = (mouseX - state.offsetX) / state.scale;
-        const worldY = (mouseY - state.offsetY) / -state.scale;
-
-        state.offsetX = centerX - worldX * state.scale;
-        state.offsetY = centerY - worldY * -state.scale;
-
-        if (state.currentEngine === 'canvas') requestAnimationFrame(draw);
-        else requestAnimationFrame(drawWebGL);
-        requestAnimationFrame(drawLabels);
-        scheduleViewportRequest();
     };
 
     const getPolyBBox = (poly) => {
@@ -611,9 +605,10 @@ export function setupListeners() {
         const h = sel.maxY - sel.minY;
         const CLICK_EPS = 3;
         if (w < CLICK_EPS && h < CLICK_EPS) {
-            // Treat tiny drags as a normal right-click recenter.
-            const rect = viewContainer.getBoundingClientRect();
-            recenterAt(x1, y1, rect);
+            // Treat tiny drags as a right-click pick (single polygon).
+            const { x: wx, y: wy } = screenToWorld(x1, y1);
+            state.mergeNextHighlight = !!additive;
+            pickAndHighlight(wx, wy);
             return;
         }
 
@@ -757,7 +752,7 @@ export function setupListeners() {
             boxSelectActive = true;
             boxSelectStart = { x, y };
             boxSelectAdditive = !!(e.ctrlKey || e.metaKey);
-            setBoxSelectRect(x, y, x, y);
+            boxSelectHasMoved = false;
             suppressNextContextMenuUntil = performance.now() + 1000;
             onInteraction();
             e.preventDefault();
@@ -779,12 +774,23 @@ export function setupListeners() {
             const y0 = boxSelectStart ? boxSelectStart.y : y;
 
             const additive = boxSelectAdditive;
+            const hasMoved = boxSelectHasMoved;
 
             boxSelectActive = false;
             boxSelectStart = null;
             boxSelectAdditive = false;
+            boxSelectHasMoved = false;
             clearBoxSelectRect();
             requestAnimationFrame(drawLabels);
+
+            // If the user didn't actually drag, treat as a right-click pick.
+            // This avoids the "small bbox" failure mode for very large polygons.
+            if (!hasMoved) {
+                const { x: wx, y: wy } = screenToWorld(x, y);
+                state.mergeNextHighlight = !!additive;
+                pickAndHighlight(wx, wy);
+                return;
+            }
 
             finalizeBoxSelect(x0, y0, x, y, additive);
             return;
@@ -801,7 +807,17 @@ export function setupListeners() {
             const { x, y } = getMouseInView(e.clientX, e.clientY);
             const x0 = boxSelectStart ? boxSelectStart.x : x;
             const y0 = boxSelectStart ? boxSelectStart.y : y;
-            setBoxSelectRect(x0, y0, x, y);
+            const DRAG_EPS = 4;
+            if (!boxSelectHasMoved) {
+                const dx = x - x0;
+                const dy = y - y0;
+                if ((dx * dx + dy * dy) >= (DRAG_EPS * DRAG_EPS)) {
+                    boxSelectHasMoved = true;
+                    setBoxSelectRect(x0, y0, x, y);
+                }
+            } else {
+                setBoxSelectRect(x0, y0, x, y);
+            }
             requestAnimationFrame(drawLabels);
             return;
         }
@@ -913,37 +929,13 @@ export function setupListeners() {
         }
         onInteraction();
 
+        // Right-click (contextmenu) is a point-pick highlight.
         const rect = viewContainer.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
-        const centerX = rect.width / 2;
-        const centerY = rect.height / 2;
-
-        if (state.currentEngine === 'svg') {
-            if (!state.panZoomInstance) return;
-            const dx = centerX - mouseX;
-            const dy = centerY - mouseY;
-            state.panZoomInstance.panBy({ x: dx, y: dy });
-
-            const pan = state.panZoomInstance.getPan();
-            const sizes = state.panZoomInstance.getSizes();
-            state.offsetX = pan.x;
-            state.offsetY = pan.y;
-            state.scale = sizes.realZoom;
-            requestAnimationFrame(drawLabels);
-            return;
-        }
-
-        const worldX = (mouseX - state.offsetX) / state.scale;
-        const worldY = (mouseY - state.offsetY) / -state.scale;
-
-        state.offsetX = centerX - worldX * state.scale;
-        state.offsetY = centerY - worldY * -state.scale;
-
-        if (state.currentEngine === 'canvas') requestAnimationFrame(draw);
-        else requestAnimationFrame(drawWebGL);
-        requestAnimationFrame(drawLabels);
-        scheduleViewportRequest();
+        const { x: wx, y: wy } = screenToWorld(mouseX, mouseY);
+        state.mergeNextHighlight = !!(e.ctrlKey || e.metaKey);
+        pickAndHighlight(wx, wy);
     });
 
     if (elements.layerControlHeader) {

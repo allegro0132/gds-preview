@@ -242,7 +242,7 @@ class GdsView {
                                 layerKey: data.layerKey,
                                 data: data
                             });
-                        } else if (data.command === 'found') {
+                        } else if (data.command === 'found' || data.command === 'picked' || data.command === 'status') {
                             this.browserView.webContents.send('webview-message', data);
                         } else if (data.command === 'done') {
                             this._doneSent = true;
@@ -1197,6 +1197,11 @@ ipcMain.on('vscode-message', (event, message) => {
                  view.process.stdin.write(JSON.stringify(message) + "\n");
              }
              break;
+        case 'pick':
+             if (view.process && view.process.stdin) {
+                 view.process.stdin.write(JSON.stringify(message) + "\n");
+             }
+             break;
         case 'viewport':
              if (gdsConfig.enableProfiling) {
                  try {
@@ -1204,6 +1209,21 @@ ipcMain.on('vscode-message', (event, message) => {
                          requestId: message.requestId,
                          bbox: message.bbox,
                          layers: Array.isArray(message.layers) ? message.layers.length : null
+                     });
+                 } catch (_) { }
+             }
+             if (view.process && view.process.stdin) {
+                 view.process.stdin.write(JSON.stringify(message) + "\n");
+             }
+             break;
+        case 'viewportSnap':
+             if (gdsConfig.enableProfiling) {
+                 try {
+                     console.log(`[View ${view.id}] [prof] viewportSnap request -> engine`, {
+                         requestId: message.requestId,
+                         bbox: message.bbox,
+                         layers: Array.isArray(message.layers) ? message.layers.length : null,
+                         snapToken: message.snapToken
                      });
                  } catch (_) { }
              }

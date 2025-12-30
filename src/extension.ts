@@ -440,7 +440,7 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                                 (err) => console.log(`[Webview Log] Initialize message delivery failed: ${err}`)
                             );
                             isFirstLine = false;
-                        } else if (data.command === 'found' || data.command === 'status') {
+                        } else if (data.command === 'found' || data.command === 'picked' || data.command === 'status') {
                             webviewPanel.webview.postMessage(data);
                         } else if (data.command === 'done') {
                             isEngineReady = true;
@@ -607,6 +607,11 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         }
                         return;
                     case 'find':
+                        if (currentProcess) {
+                            currentProcess.stdin?.write(JSON.stringify(message) + "\n");
+                        }
+                        return;
+                    case 'pick':
                         if (currentProcess) {
                             currentProcess.stdin?.write(JSON.stringify(message) + "\n");
                         }

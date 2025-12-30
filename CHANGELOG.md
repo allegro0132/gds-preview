@@ -4,6 +4,18 @@ All notable changes to the "gds-preview" extension will be documented in this fi
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.3.16] - 2025-12-30
+
+### Added
+- **Copy to KLayout (v2 payload)**: Copy highlighted polygons to clipboard with layer info for pasting into KLayout via a macro.
+- **Box Select (Right-Drag)**: Drag a bbox to highlight polygons fully contained in the selection box.
+- **Additive highlight (Ctrl/Cmd)**: Hold `Ctrl`/`Cmd` while box-selecting or highlighting to union-merge with existing highlights.
+- **Point Pick (Right-Click)**: Right-click to highlight the polygon under the cursor (single polygon; no connected expansion).
+
+### Changed
+- **Right-click behavior**: Removed right-click "recenter" and replaced it with point-pick highlight.
+- **Backend protocol (Rust)**: Added `viewportSnap` (snap polygons in bbox) and `pick`/`picked` (single polygon at point) commands.
+
 ## [0.3.14] - 2025-12-29
 
 ### Added
