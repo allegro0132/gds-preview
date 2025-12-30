@@ -424,17 +424,19 @@ function handleGeometryWsBinary(buffer) {
     off += cellLen;
     const cellName = cellNameStr || null;
 
-    // Fast-path drop: snap viewport polygon streams are tagged with a token in cellName.
-    // If the viewport has changed and a new token was issued, ignore old chunks without parsing payload.
-    if (
-        kind === 4 &&
-        state.currentEngine === 'webgl' &&
-        cellNameStr &&
-        cellNameStr.startsWith('__snap__:') &&
-        state.snapViewportTokenCurrent &&
-        cellNameStr !== state.snapViewportTokenCurrent
-    ) {
-        return;
+    // Fast-path drop: snap polygon streams are tagged with a token in cellName.
+    // We support two concurrent snap consumers:
+    // - Measure tool (viewport snapPolygons) -> state.snapGeometry (token = state.snapViewportTokenCurrent)
+    // - Box select (viewportSnap) -> state.snapGeometryViewport (token = state.boxSelectPending.token)
+    // If a chunk belongs to neither active token, drop it without parsing.
+    if (kind === 4 && state.currentEngine === 'webgl' && cellNameStr && cellNameStr.startsWith('__snap__:')) {
+        const measureToken = state.snapViewportTokenCurrent || null;
+        const boxToken = (state.boxSelectPending && state.boxSelectPending.token) ? state.boxSelectPending.token : null;
+        const matchesMeasure = !!measureToken && cellNameStr === measureToken;
+        const matchesBox = !!boxToken && cellNameStr === boxToken;
+        if ((measureToken || boxToken) && !matchesMeasure && !matchesBox) {
+            return;
+        }
     }
 
     // Payload starts at off
@@ -456,14 +458,24 @@ function handleGeometryWsBinary(buffer) {
         // Snapping-only viewport markers: do NOT touch render snapshot staging.
         // We use layerKey='__snap__' to distinguish from render viewport streaming.
         if (layerKey === '__snap__') {
+            const token = cellNameStr || null;
+            const measureToken = state.snapViewportTokenCurrent || null;
+            const boxToken = (state.boxSelectPending && state.boxSelectPending.token) ? state.boxSelectPending.token : null;
+
             // Drop stale control frames from an older snap token.
-            if (cellNameStr && state.snapViewportTokenCurrent && cellNameStr !== state.snapViewportTokenCurrent) {
+            if (token && (measureToken || boxToken) && token !== measureToken && token !== boxToken) {
                 return;
             }
             if (opcode === 1) {
                 // cellName carries the snap token so we can drop stale polygon chunks.
-                state.snapViewportTokenCurrent = cellNameStr || null;
-                state.snapGeometry = {};
+                // If this begin belongs to an active box-select request, clear the viewportSnap cache;
+                // otherwise treat it as the measure snapping stream and clear snapGeometry.
+                if (token && boxToken && token === boxToken) {
+                    state.snapGeometryViewport = {};
+                } else {
+                    state.snapViewportTokenCurrent = token;
+                    state.snapGeometry = {};
+                }
             }
             return;
         }
@@ -564,20 +576,29 @@ function handleGeometryWsBinary(buffer) {
 
         // WebGL: keep a lightweight polygon cache for snapping.
         if (state.currentEngine === 'webgl') {
-            // If this is a measure-snap viewport stream, cellName is a token like '__snap__:N'.
-            // Drop stale chunks when a newer viewport request superseded this one.
+            // Snap polygon streams are tagged with a token like '__snap__:N'.
             if (cellNameStr && cellNameStr.startsWith('__snap__:')) {
-                // v2-only: viewport snap polygons must arrive as WS geometry frame v2.
-                if (version !== 2) {
+                const isBoxSelect = !!(state.boxSelectPending && state.boxSelectPending.token === cellNameStr);
+                const isMeasure = !!(state.snapViewportTokenCurrent && state.snapViewportTokenCurrent === cellNameStr);
+
+                // Box select (viewportSnap) must be v2 so polyId is available for stable merge/toggle.
+                if (isBoxSelect) {
+                    if (version !== 2) return;
+                    pushViewportSnapPolys(layerKey, polys);
+                    maybeFinalizeBoxSelectFromSnap(cellNameStr);
+                    // Avoid spamming status for snap-only background streams.
                     return;
                 }
-                if (state.snapViewportTokenCurrent !== cellNameStr) {
-                    // Stale snapshot; ignore.
+
+                // Measure snapping stream: populate state.snapGeometry so edge/vertex snapping works.
+                // This stream may be v1 or v2; the parser above already handled both.
+                if (isMeasure) {
+                    pushSnapPolys(layerKey, polys);
+                    // Avoid spamming status for background snap streams.
                     return;
                 }
-                pushViewportSnapPolys(layerKey, polys);
-                maybeFinalizeBoxSelectFromSnap(cellNameStr);
-                // Avoid spamming status for snap-only background streams.
+
+                // If we can't attribute this token to an active consumer, drop it.
                 return;
             }
 
