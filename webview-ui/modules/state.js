@@ -44,6 +44,15 @@ export const state = {
     highlightedPath: null,
     searchRequestId: null,
 
+    // Box selection (right mouse drag)
+    boxSelect: {
+        active: false,
+        x0: 0,
+        y0: 0,
+        x1: 0,
+        y1: 0,
+    },
+
     // Measure tool
     measureEnabled: false,
     // Completed measurements in the current measure session.
@@ -82,6 +91,10 @@ export const state = {
     // We tag each request with a token so stale polygon chunks can be dropped.
     snapViewportSeq: 0,
     snapViewportTokenCurrent: null,
+
+    // WebGL box selection: pending request info until snap polygons arrive.
+    // { token: string, sel: { minX, maxX, minY, maxY } } where sel is screen-space.
+    boxSelectPending: null,
 
     // Viewport snapshot staging (avoid flicker by swapping on EndViewport)
     viewportReceivingRequestId: 0,

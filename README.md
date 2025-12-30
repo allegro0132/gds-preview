@@ -43,6 +43,28 @@ A high-performance GDSII/OASIS file viewer (offer Visual Studio Code extension +
   - **Net Tracing**: Double-click any object to highlight all physically connected polygons (Net Tracing). Works across instances and hierarchy.
   - **Layer Soloing**: Double-click a layer in the sidebar to instantly isolate it.
   - **Layer Tutti**: Double-click `Layer Control` in the sidebar to show all layers.
+    - **Copy to KLayout**: After highlighting polygons, press `Cmd/Ctrl+C` to copy a KLayout (pya) snippet. To paste as shapes, install the macro in [klayout/paste_gds_preview_polygons.py](klayout/paste_gds_preview_polygons.py).
+
+  ### Install the KLayout paste macro
+
+  This enables “paste from clipboard into the layout window” for the polygons copied from this viewer.
+
+  1. Open KLayout.
+  2. Open the Macro Development IDE:
+    - `Tools` → `Macro Development...`
+  3. Load the macro file:
+    - In Macro Development, choose `File` → `Open...`
+    - Select [klayout/paste_gds_preview_polygons.py](klayout/paste_gds_preview_polygons.py)
+    - Make sure it is enabled (checkbox / enabled state depends on your KLayout version).
+  4. Add a keyboard shortcut:
+    - `File` → `Preferences...`
+    - `Application` → `Customize Menu`
+    - Find the macro entry you just loaded (it may appear under the `Macros` section), and add a shortcut.
+    - Recommended shortcut: `Ctrl+Shift+V`.
+
+  After that, in the KLayout layout window:
+  - Use this viewer: highlight polygons → `Cmd/Ctrl+C`
+  - In KLayout: press your shortcut (e.g. `Ctrl+Shift+V`) to paste as shapes.
 
 ## Rendering Engines
 

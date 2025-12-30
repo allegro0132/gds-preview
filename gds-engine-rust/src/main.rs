@@ -394,6 +394,60 @@ fn main() -> Result<()> {
                         )?;
                     }
                 }
+            } else if cmd["command"] == "viewportSnap" {
+                // Snap polygons only for a bbox. This is used by WebGL box selection.
+                // Unlike the 'viewport' command, this MUST NOT trigger render viewport geometry streaming.
+                let req_id = cmd["requestId"].as_u64().unwrap_or(0) as u32;
+                let bbox = &cmd["bbox"];
+                let vminx = bbox["minX"].as_f64().unwrap_or(0.0);
+                let vmaxx = bbox["maxX"].as_f64().unwrap_or(0.0);
+                let vminy = bbox["minY"].as_f64().unwrap_or(0.0);
+                let vmaxy = bbox["maxY"].as_f64().unwrap_or(0.0);
+
+                let snap_token = cmd["snapToken"].as_str();
+
+                let layers_val = cmd["layers"].as_array();
+                let mut active_layers: HashSet<(i16, i16)> = HashSet::new();
+                if let Some(layers) = layers_val {
+                    for l in layers {
+                        if let Some(s) = l.as_str() {
+                            let parts: Vec<&str> = s.split('_').collect();
+                            if parts.len() == 2 {
+                                if let (Ok(la), Ok(dt)) =
+                                    (parts[0].parse::<i16>(), parts[1].parse::<i16>())
+                                {
+                                    active_layers.insert((la, dt));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(tcp_ref) = tcp_stream.as_mut() {
+                    let mut transport = TcpTransport {
+                        stream: tcp_ref,
+                        flow_control_step: 0,
+                    };
+
+                    let want_snap_polys = cmd["snapPolygons"].as_bool().unwrap_or(true);
+                    if want_snap_polys {
+                        let token_owned = snap_token
+                            .filter(|s| !s.trim().is_empty())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("__snap__:{}", req_id));
+
+                        stream_viewport_snap_polygons(
+                            &library,
+                            &instances_map_for_snap,
+                            &args,
+                            &mut transport,
+                            req_id,
+                            token_owned.as_str(),
+                            (vminx, vmaxx, vminy, vmaxy),
+                            &active_layers,
+                        )?;
+                    }
+                }
             }
         }
     }

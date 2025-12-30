@@ -551,6 +551,25 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
 
                 console.log(`Received message: ${JSON.stringify(message)}`);
                 switch (message.command) {
+                    case 'copyToClipboard': {
+                        const text = typeof message.text === 'string' ? message.text : '';
+                        if (!text) {
+                            void webviewPanel.webview.postMessage({ command: 'status', message: 'Nothing to copy' });
+                            return;
+                        }
+                        const count = typeof message.count === 'number' ? message.count : undefined;
+                        void vscode.env.clipboard.writeText(text).then(
+                            () => {
+                                const suffix = typeof count === 'number' ? ` (${count} polygon(s))` : '';
+                                void webviewPanel.webview.postMessage({ command: 'status', message: `Copied to clipboard${suffix}` });
+                            },
+                            (err) => {
+                                console.error('Clipboard write failed', err);
+                                void webviewPanel.webview.postMessage({ command: 'status', message: 'Clipboard copy failed' });
+                            }
+                        );
+                        return;
+                    }
                     case 'changeCell':
                         currentCell = message.cellName;
                         void updateWebview(message.cellName);
@@ -593,6 +612,11 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                         }
                         return;
                     case 'viewport':
+                        if (currentProcess) {
+                            currentProcess.stdin?.write(JSON.stringify(message) + "\n");
+                        }
+                        return;
+                    case 'viewportSnap':
                         if (currentProcess) {
                             currentProcess.stdin?.write(JSON.stringify(message) + "\n");
                         }

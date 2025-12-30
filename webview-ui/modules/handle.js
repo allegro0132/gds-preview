@@ -1,7 +1,76 @@
 import { state, elements } from './state.js';
 import { updateStatus, checkCompletion } from './utils.js';
 import { draw, drawWebGL, drawLabels, setupCanvasMode, setupSvgMode, setupWebGLMode } from './renderer.js';
-import { updateTransform, resizeCanvas, fitView, screenToWorld } from './transform.js';
+import { updateTransform, resizeCanvas, fitView, screenToWorld, worldToScreen } from './transform.js';
+
+let boxSelectFinalizeTimer = null;
+
+function maybeFinalizeBoxSelectFromSnap(token) {
+    const pending = state.boxSelectPending;
+    if (!pending || !pending.token || pending.token !== token) return;
+
+    if (boxSelectFinalizeTimer) {
+        clearTimeout(boxSelectFinalizeTimer);
+        boxSelectFinalizeTimer = null;
+    }
+
+    // Debounce until snap chunks stop arriving.
+    boxSelectFinalizeTimer = setTimeout(() => {
+        boxSelectFinalizeTimer = null;
+        const p = state.boxSelectPending;
+        if (!p || p.token !== token || !p.sel) return;
+
+        const sel = p.sel;
+        const selected = [];
+
+        for (const layerKey of state.activeLayers) {
+            const polys = state.snapGeometry ? state.snapGeometry[layerKey] : null;
+            if (!polys || polys.length === 0) continue;
+
+            for (const poly of polys) {
+                if (!poly) continue;
+                const isFlat = poly instanceof Float32Array;
+                const n = isFlat ? (poly.length / 2) : poly.length;
+                if (n < 3) continue;
+
+                let inside = true;
+                for (let i = 0; i < n; i++) {
+                    const wx = isFlat ? poly[i * 2] : poly[i][0];
+                    const wy = isFlat ? poly[i * 2 + 1] : poly[i][1];
+                    const s = worldToScreen(wx, wy);
+                    if (s.x < sel.minX || s.x > sel.maxX || s.y < sel.minY || s.y > sel.maxY) {
+                        inside = false;
+                        break;
+                    }
+                }
+                if (!inside) continue;
+
+                // Convert to nested points for downstream features (copy-to-KLayout expects nested arrays).
+                if (isFlat) {
+                    const pts = [];
+                    for (let i = 0; i < poly.length; i += 2) pts.push([poly[i], poly[i + 1]]);
+                    selected.push(pts);
+                } else {
+                    selected.push(poly);
+                }
+            }
+        }
+
+        state.highlightedPolygons = selected;
+        const path = new Path2D();
+        for (const poly of selected) {
+            if (!poly || poly.length < 2) continue;
+            path.moveTo(poly[0][0], poly[0][1]);
+            for (let i = 1; i < poly.length; i++) path.lineTo(poly[i][0], poly[i][1]);
+            path.closePath();
+        }
+        state.highlightedPath = selected.length > 0 ? path : null;
+        state.boxSelectPending = null;
+
+        updateStatus(`Box selected ${selected.length} polygon(s)`);
+        requestAnimationFrame(drawLabels);
+    }, 60);
+}
 
 function ensureSnapLayer(layerKey) {
     if (!state.snapGeometry) state.snapGeometry = {};
@@ -410,6 +479,7 @@ function handleGeometryWsBinary(buffer) {
                     return;
                 }
                 pushSnapPolys(layerKey, polys);
+                maybeFinalizeBoxSelectFromSnap(cellNameStr);
                 // Avoid spamming status for snap-only background streams.
                 return;
             }

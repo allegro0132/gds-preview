@@ -543,6 +543,26 @@ export function drawLabels() {
 
     // Tool overlays (measure, etc.) on top of labels/ports
     drawMeasurementOverlay(ctx);
+
+    // Box selection overlay (right mouse drag)
+    if (state.boxSelect && state.boxSelect.active) {
+        const x0 = state.boxSelect.x0;
+        const y0 = state.boxSelect.y0;
+        const x1 = state.boxSelect.x1;
+        const y1 = state.boxSelect.y1;
+        const left = Math.min(x0, x1);
+        const top = Math.min(y0, y1);
+        const w = Math.abs(x1 - x0);
+        const h = Math.abs(y1 - y0);
+
+        ctx.save();
+        ctx.strokeStyle = '#00FFFF';
+        ctx.globalAlpha = 0.9;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(left + 0.5, top + 0.5, w, h);
+        ctx.restore();
+    }
 }
 
 export function drawHighlights(targetCtx) {
