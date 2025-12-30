@@ -21,7 +21,31 @@ function maybeFinalizeBoxSelectFromSnap(token) {
         if (!p || p.token !== token || !p.sel) return;
 
         const sel = p.sel;
+        const additive = !!p.additive;
         const selected = [];
+
+        const polyItemKey = (it) => {
+            if (!it || !Array.isArray(it.points)) return '';
+            const lk = typeof it.layerKey === 'string' ? it.layerKey : '';
+            return lk + ':' + it.points.map(pt => `${pt[0]},${pt[1]}`).join(';');
+        };
+        const mergeItems = (existing, incoming) => {
+            const out = [];
+            const seen = new Set();
+            const add = (arr) => {
+                if (!Array.isArray(arr)) return;
+                for (const it of arr) {
+                    if (!it || !Array.isArray(it.points) || it.points.length < 3) continue;
+                    const k = polyItemKey(it);
+                    if (!k || seen.has(k)) continue;
+                    seen.add(k);
+                    out.push(it);
+                }
+            };
+            add(existing);
+            add(incoming);
+            return out;
+        };
 
         for (const layerKey of state.activeLayers) {
             const polys = state.snapGeometry ? state.snapGeometry[layerKey] : null;
@@ -49,25 +73,28 @@ function maybeFinalizeBoxSelectFromSnap(token) {
                 if (isFlat) {
                     const pts = [];
                     for (let i = 0; i < poly.length; i += 2) pts.push([poly[i], poly[i + 1]]);
-                    selected.push(pts);
+                    selected.push({ layerKey, points: pts });
                 } else {
-                    selected.push(poly);
+                    selected.push({ layerKey, points: poly });
                 }
             }
         }
 
-        state.highlightedPolygons = selected;
+        state.highlightedPolygons = additive
+            ? mergeItems(state.highlightedPolygons, selected)
+            : selected;
         const path = new Path2D();
-        for (const poly of selected) {
+        for (const it of state.highlightedPolygons) {
+            const poly = it && it.points;
             if (!poly || poly.length < 2) continue;
             path.moveTo(poly[0][0], poly[0][1]);
             for (let i = 1; i < poly.length; i++) path.lineTo(poly[i][0], poly[i][1]);
             path.closePath();
         }
-        state.highlightedPath = selected.length > 0 ? path : null;
+        state.highlightedPath = state.highlightedPolygons.length > 0 ? path : null;
         state.boxSelectPending = null;
 
-        updateStatus(`Box selected ${selected.length} polygon(s)`);
+        updateStatus(`Box selected ${state.highlightedPolygons.length} polygon(s)`);
         requestAnimationFrame(drawLabels);
     }, 60);
 }
@@ -584,12 +611,75 @@ export function handleSearchWorkerMessage(e) {
     if (msg.command === 'status') {
         updateStatus(msg.message);
     } else if (msg.command === 'found') {
-        state.highlightedPolygons = msg.polygons;
+        const toNested = (poly) => {
+            if (!poly) return null;
+            if (poly instanceof Float32Array) {
+                const pts = [];
+                for (let i = 0; i < poly.length; i += 2) pts.push([poly[i], poly[i + 1]]);
+                return pts;
+            }
+            if (Array.isArray(poly)) return poly;
+            return null;
+        };
+
+        let items = [];
+        if (Array.isArray(msg.polygonsV2)) {
+            items = msg.polygonsV2
+                .map((it) => {
+                    if (!it) return null;
+                    const pts = toNested(it.points);
+                    if (!pts) return null;
+                    return {
+                        layerKey: (typeof it.layerKey === 'string' && it.layerKey.length > 0) ? it.layerKey : null,
+                        points: pts,
+                    };
+                })
+                .filter(Boolean);
+        } else if (Array.isArray(msg.polygons)) {
+            items = msg.polygons
+                .map((poly) => {
+                    const pts = toNested(poly);
+                    if (!pts) return null;
+                    return { layerKey: null, points: pts };
+                })
+                .filter(Boolean);
+        }
+
+        const polyItemKey = (it) => {
+            if (!it || !Array.isArray(it.points)) return '';
+            const lk = typeof it.layerKey === 'string' ? it.layerKey : '';
+            return lk + ':' + it.points.map(p => `${p[0]},${p[1]}`).join(';');
+        };
+        const mergeItems = (existing, incoming) => {
+            const out = [];
+            const seen = new Set();
+            const add = (arr) => {
+                if (!Array.isArray(arr)) return;
+                for (const it of arr) {
+                    if (!it || !Array.isArray(it.points) || it.points.length < 3) continue;
+                    const k = polyItemKey(it);
+                    if (!k || seen.has(k)) continue;
+                    seen.add(k);
+                    out.push(it);
+                }
+            };
+            add(existing);
+            add(incoming);
+            return out;
+        };
+
+        const additive = !!state.mergeNextHighlight;
+        state.mergeNextHighlight = false;
+
+        state.highlightedPolygons = additive
+            ? mergeItems(state.highlightedPolygons, items)
+            : items;
 
         // Create Path2D for efficient rendering
         const path = new Path2D();
-        for (const poly of msg.polygons) {
-            if (poly.length < 2) continue;
+        for (const it of state.highlightedPolygons) {
+            const poly = it && it.points;
+            if (!poly || poly.length < 2) continue;
             path.moveTo(poly[0][0], poly[0][1]);
             for (let i = 1; i < poly.length; i++) {
                 path.lineTo(poly[i][0], poly[i][1]);

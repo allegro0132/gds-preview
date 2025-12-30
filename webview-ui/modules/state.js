@@ -44,6 +44,10 @@ export const state = {
     highlightedPath: null,
     searchRequestId: null,
 
+    // If true, the next highlight operation (double-click find) will merge (union)
+    // with existing highlights instead of replacing them.
+    mergeNextHighlight: false,
+
     // Box selection (right mouse drag)
     boxSelect: {
         active: false,

@@ -582,7 +582,8 @@ export function drawHighlights(targetCtx) {
     } else {
         // Fallback for legacy or non-path data (though we should always have path now)
         ctxToUse.beginPath();
-        for (const poly of state.highlightedPolygons) {
+        for (const item of state.highlightedPolygons) {
+            const poly = item && item.points ? item.points : item;
             const isFlat = poly instanceof Float32Array;
             const len = isFlat ? poly.length / 2 : poly.length;
             if (len < 2) continue;

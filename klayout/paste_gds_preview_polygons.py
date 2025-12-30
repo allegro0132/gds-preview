@@ -11,15 +11,17 @@
 #   3) (Optional) Assign a shortcut (e.g. Cmd+V) to the macro
 #
 # Notes:
-#   - This macro expects clipboard text starting with:
-#       "# gds-preview: polygons v1"
-#   - The clipboard payload defines a variable named `polys` (list[pya.DPolygon]).
+#   - v2 (recommended): clipboard starts with "# gds-preview: polygons v2" and contains JSON.
+#       The macro will create/lookup the referenced layers and paste polygons into those layers.
+#   - v1 (legacy): clipboard starts with "# gds-preview: polygons v1" and contains a Python snippet
+#       defining `polys` (list[pya.DPolygon]) pasted into the currently selected layer.
 
 import pya
+import json
 
 
 def _call_maybe(obj, attr: str):
-    """Call a method or return a property value, handling KLayout's Ruby-ish names."""
+    """Call a method or return a property value, handling Ruby-ish names."""
     if obj is None:
         return None
     try:
@@ -44,6 +46,19 @@ def _call_predicate(obj, base: str) -> bool:
         except Exception:
             continue
     return False
+
+
+def _call_method(obj, name: str, *args):
+    if obj is None:
+        return None
+    try:
+        fn = getattr(obj, name)
+    except Exception:
+        return None
+    try:
+        return fn(*args) if callable(fn) else None
+    except Exception:
+        return None
 
 
 def _get_clipboard_text() -> str:
@@ -88,21 +103,44 @@ def _get_target_layer_index(view: "pya.LayoutView") -> int:
         return -1
 
 
-def _extract_polys_from_clipboard(text: str):
-    header = "# gds-preview: polygons v1"
-    if not text.strip().startswith(header):
-        raise ValueError(
-            "Clipboard does not look like gds-preview polygons (missing header)"
-        )
+def _extract_payload_from_clipboard(text: str):
+    s = text.strip()
+    if s.startswith("# gds-preview: polygons v2"):
+        # v2 format: header line(s) + JSON as the remaining non-comment lines.
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        # Drop comment lines
+        data_lines = [ln for ln in lines if not ln.startswith('#')]
+        if not data_lines:
+            raise ValueError("No JSON payload found for v2")
+        raw = "\n".join(data_lines)
+        payload = json.loads(raw)
+        polys = payload.get("polygons")
+        if not isinstance(polys, list) or len(polys) == 0:
+            raise ValueError("No polygons found in v2 payload")
+        return {"version": 2, "polygons": polys}
 
-    # The payload is a Python snippet defining `polys`.
-    # We execute it in a restricted namespace and then retrieve `polys`.
-    ns = {"pya": pya}
-    exec(text, ns, ns)
-    polys = ns.get("polys")
-    if not isinstance(polys, list) or len(polys) == 0:
-        raise ValueError("No polygons found in clipboard payload")
-    return polys
+    if s.startswith("# gds-preview: polygons v1"):
+        # v1 format: Python snippet defining `polys` (list[pya.DPolygon]).
+        ns = {"pya": pya}
+        exec(text, ns, ns)
+        polys = ns.get("polys")
+        if not isinstance(polys, list) or len(polys) == 0:
+            raise ValueError("No polygons found in clipboard payload")
+        return {"version": 1, "polys": polys}
+
+    raise ValueError(
+        "Clipboard does not look like gds-preview polygons (missing header)"
+    )
+
+
+def _parse_layer_key(layer_key: str):
+    if not isinstance(layer_key, str) or '_' not in layer_key:
+        return None
+    parts = layer_key.split('_', 1)
+    try:
+        return int(parts[0]), int(parts[1])
+    except Exception:
+        return None
 
 
 def paste_gds_preview_polygons():
@@ -119,22 +157,64 @@ def paste_gds_preview_polygons():
     if cell is None:
         raise RuntimeError("No target cell")
 
-    layer_index = _get_target_layer_index(view)
-    if layer_index < 0:
-        raise RuntimeError(
-            "No current layer selected (select a layer in the layer list)")
-
     text = _get_clipboard_text()
     if not text:
         raise RuntimeError("Clipboard is empty (or not accessible)")
 
-    polys = _extract_polys_from_clipboard(text)
+    payload = _extract_payload_from_clipboard(text)
 
     view.transaction("Paste gds-preview polygons")
     try:
-        shapes = cell.shapes(layer_index)
-        for poly in polys:
-            shapes.insert(poly)
+        if payload.get("version") == 2:
+            layout = _call_maybe(cv, "layout")
+            if layout is None:
+                raise RuntimeError("No layout available")
+
+            for item in payload.get("polygons", []):
+                layer_key = item.get("layerKey")
+                pts = item.get("points")
+                if not isinstance(pts, list) or len(pts) < 3:
+                    continue
+
+                # Create/lookup layer
+                parsed = _parse_layer_key(layer_key) if layer_key is not None else None
+                if parsed is None:
+                    # Fall back to currently selected layer
+                    layer_index = _get_target_layer_index(view)
+                    if layer_index < 0:
+                        raise RuntimeError(
+                            "No current layer selected (select a layer in the layer list)"
+                        )
+                else:
+                    la, dt = parsed
+                    li = _call_method(layout, "layer", la, dt)
+                    if li is None:
+                        # Some versions expose layout.layer as a normal method
+                        li = layout.layer(la, dt)
+                    layer_index = int(li)
+
+                dpts = []
+                for p in pts:
+                    if not isinstance(p, list) or len(p) < 2:
+                        continue
+                    dpts.append(pya.DPoint(float(p[0]), float(p[1])))
+                if len(dpts) < 3:
+                    continue
+
+                dpoly = pya.DPolygon(dpts)
+                cell.shapes(layer_index).insert(dpoly)
+
+        else:
+            layer_index = _get_target_layer_index(view)
+            if layer_index < 0:
+                raise RuntimeError(
+                    "No current layer selected (select a layer in the layer list)"
+                )
+
+            polys = payload.get("polys") or []
+            shapes = cell.shapes(layer_index)
+            for poly in polys:
+                shapes.insert(poly)
     finally:
         view.commit()
 

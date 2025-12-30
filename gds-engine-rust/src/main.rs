@@ -298,14 +298,20 @@ fn main() -> Result<()> {
                         let duration = start_time.elapsed().as_millis();
 
                         if !cancel_flag.load(Ordering::Relaxed) {
-                            let simple_polys: Vec<Vec<[f64; 2]>> = polys
+                            let polys_v2: Vec<serde_json::Value> = polys
                                 .iter()
-                                .map(|p| p.points.iter().map(|pt| [pt.x, pt.y]).collect())
+                                .map(|p| {
+                                    let pts: Vec<[f64; 2]> = p.points.iter().map(|pt| [pt.x, pt.y]).collect();
+                                    serde_json::json!({
+                                        "layerKey": format!("{}_{}", p.layer, p.datatype),
+                                        "points": pts
+                                    })
+                                })
                                 .collect();
 
                             send_json(&serde_json::json!({
                                 "command": "found",
-                                "polygons": simple_polys,
+                                "polygonsV2": polys_v2,
                                 "limitReached": limit_reached,
                                 "duration": duration
                             }));

@@ -43,7 +43,7 @@ A high-performance GDSII/OASIS file viewer (offer Visual Studio Code extension +
   - **Net Tracing**: Double-click any object to highlight all physically connected polygons (Net Tracing). Works across instances and hierarchy.
   - **Layer Soloing**: Double-click a layer in the sidebar to instantly isolate it.
   - **Layer Tutti**: Double-click `Layer Control` in the sidebar to show all layers.
-    - **Copy to KLayout**: After highlighting polygons, press `Cmd/Ctrl+C` to copy a KLayout (pya) snippet. To paste as shapes, install the macro in [klayout/paste_gds_preview_polygons.py](klayout/paste_gds_preview_polygons.py).
+    - **Copy to KLayout**: After highlighting polygons, press `Cmd/Ctrl+C` to copy a KLayout paste payload (includes layer info). To paste as shapes, install the macro in [klayout/paste_gds_preview_polygons.py](klayout/paste_gds_preview_polygons.py).
 
   ### Install the KLayout paste macro
 
@@ -64,7 +64,7 @@ A high-performance GDSII/OASIS file viewer (offer Visual Studio Code extension +
 
   After that, in the KLayout layout window:
   - Use this viewer: highlight polygons → `Cmd/Ctrl+C`
-  - In KLayout: press your shortcut (e.g. `Ctrl+Shift+V`) to paste as shapes.
+  - In KLayout: press your shortcut (e.g. `Ctrl+Shift+V`) to paste as shapes (polygons will be placed onto their original layers).
 
 ## Rendering Engines
 
