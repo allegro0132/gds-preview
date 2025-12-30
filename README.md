@@ -47,7 +47,7 @@ A high-performance GDSII/OASIS file viewer (offer Visual Studio Code extension +
     - Hold `Ctrl`/`Cmd` while box-selecting to union-merge into the existing highlight set.
   - **Layer Soloing**: Double-click a layer in the sidebar to instantly isolate it.
   - **Layer Tutti**: Double-click `Layer Control` in the sidebar to show all layers.
-    - **Copy to KLayout**: After highlighting polygons, press `Cmd/Ctrl+C` to copy a KLayout paste payload (includes layer info). To paste as shapes, install the macro in [klayout/paste_gds_preview_polygons.py](klayout/paste_gds_preview_polygons.py).
+  - **Copy to KLayout**: After highlighting polygons, press `Cmd/Ctrl+C` to copy a KLayout paste payload (includes layer info). To paste as shapes, install the macro in [klayout/paste_gds_preview_polygons.py](klayout/paste_gds_preview_polygons.py).
 
   ### Install the KLayout paste macro
 
@@ -57,13 +57,13 @@ A high-performance GDSII/OASIS file viewer (offer Visual Studio Code extension +
   2. Open the Macro Development IDE:
     - `Tools` → `Macro Development...`
   3. Load the macro file:
-    - In Macro Development, choose `File` → `Open...`
+    - In Macro Development, choose `Python` → `Import file`
     - Select [klayout/paste_gds_preview_polygons.py](klayout/paste_gds_preview_polygons.py)
-    - Make sure it is enabled (checkbox / enabled state depends on your KLayout version).
+    - Make sure it is enabled.
   4. Add a keyboard shortcut:
-    - `File` → `Preferences...`
+    - `klayout` → `Preferences...`
     - `Application` → `Customize Menu`
-    - Find the macro entry you just loaded (it may appear under the `Macros` section), and add a shortcut.
+    - Find the macro entry you just loaded (it may appear under the `Main Menu` section), and add a shortcut.
     - Recommended shortcut: `Ctrl+Shift+V`.
 
   After that, in the KLayout layout window:
