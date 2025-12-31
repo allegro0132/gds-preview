@@ -576,9 +576,13 @@ export function drawHighlights(targetCtx) {
     ctxToUse.lineWidth = 2 / state.scale;
     ctxToUse.fillStyle = 'rgba(0, 255, 255, 0.3)';
 
-    if (state.highlightedPath) {
-        ctxToUse.fill(state.highlightedPath);
-        ctxToUse.stroke(state.highlightedPath);
+    const pathToDraw = state.highlightedPath
+        ? state.highlightedPath
+        : (state.highlightedPathBuild && state.highlightedPathBuild.path ? state.highlightedPathBuild.path : null);
+
+    if (pathToDraw) {
+        ctxToUse.fill(pathToDraw);
+        ctxToUse.stroke(pathToDraw);
     } else {
         // Fallback for legacy or non-path data (though we should always have path now)
         ctxToUse.beginPath();

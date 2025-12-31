@@ -47,6 +47,9 @@ export const state = {
     svgFragments: {},
     highlightedPolygons: [],
     highlightedPath: null,
+    // For very large selections, building a single Path2D can take seconds+ and freeze the UI.
+    // When set, we build the path incrementally across animation frames.
+    highlightedPathBuild: null,
     searchRequestId: null,
 
     // If true, the next highlight operation (double-click find) will merge (union)

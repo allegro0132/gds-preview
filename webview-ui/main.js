@@ -6,7 +6,8 @@ import {
     handleDataUpdate,
     handleInitialize,
     handleAddLayerChunk,
-    handleAddLayerChunkB64
+    handleAddLayerChunkB64,
+    stopHighlightedPathBuild
 } from './modules/handle.js';
 import { updateStatus, checkCompletion } from './modules/utils.js';
 import { draw, drawLabels } from './modules/renderer.js';
@@ -152,6 +153,7 @@ window.addEventListener('message', event => {
         state.rotationState = 0;
         state.highlightedPolygons = [];
         state.highlightedPath = null;
+        stopHighlightedPathBuild();
         state.hasUserInteracted = false;
 
         state.measureEnabled = false;
@@ -190,6 +192,10 @@ window.addEventListener('message', event => {
 
         state.vscode.postMessage({ command: 'reset' });
     } else if (message.command === 'stop') {
+        const stoppedHighlightBuild = stopHighlightedPathBuild();
+        if (stoppedHighlightBuild) {
+            updateStatus('Stopped highlight Path2D build');
+        }
         if (state.searchRequestId) {
             state.searchRequestId = null;
             updateStatus("Search stopped by user");

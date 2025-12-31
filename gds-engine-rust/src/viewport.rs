@@ -9,6 +9,7 @@ use anyhow::Result;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::time::Instant;
 
 #[derive(Clone, Debug)]
 pub struct ViewportRuntime {
@@ -297,8 +298,12 @@ pub fn stream_viewport_snap_polygons(
     request_id: u32,
     snap_token: &str,
     view: (f64, f64, f64, f64),
+    quad_world: Option<[Point; 4]>,
     active_layers: &HashSet<(i16, i16)>,
 ) -> Result<()> {
+    let t0 = Instant::now();
+    let mut candidates: u64 = 0;
+    let mut accepted: u64 = 0;
     // Begin snapping snapshot (does not affect WebGL render buffers).
     send_control_snap(transport, 1, request_id, snap_token)?;
 
@@ -374,6 +379,36 @@ pub fn stream_viewport_snap_polygons(
 
     let mut builders: HashMap<String, SnapPolyChunkBuilder> = HashMap::new();
 
+    fn cross(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
+        ax * by - ay * bx
+    }
+
+    fn point_in_convex_quad(p: &Point, q: &[Point; 4]) -> bool {
+        // Accept either winding by checking if all cross products share the same sign.
+        // Allow a tiny epsilon to avoid rejecting borderline points due to float error.
+        let eps = 1e-12;
+        let mut has_pos = false;
+        let mut has_neg = false;
+        for i in 0..4 {
+            let a = &q[i];
+            let b = &q[(i + 1) % 4];
+            let abx = b.x - a.x;
+            let aby = b.y - a.y;
+            let apx = p.x - a.x;
+            let apy = p.y - a.y;
+            let c = cross(abx, aby, apx, apy);
+            if c > eps {
+                has_pos = true;
+            } else if c < -eps {
+                has_neg = true;
+            }
+            if has_pos && has_neg {
+                return false;
+            }
+        }
+        true
+    }
+
     let ordered = crate::instance_order::ordered_instances(instances_map);
     for inst in ordered {
         let cell = match lib.cells.get(inst.cell_idx) {
@@ -385,14 +420,37 @@ pub fn stream_viewport_snap_polygons(
         }
 
         for (poly_index, poly) in cell.polygons.iter().enumerate() {
+            candidates += 1;
             if !active_layers.contains(&(poly.layer, poly.datatype)) {
                 continue;
             }
 
             let bb = transform_bbox(&inst.matrix, polygon_bbox(poly));
-            if !bbox_intersects(bb, view) {
+            if quad_world.is_some() {
+                // For final hits, require the polygon bbox to be fully inside the view bbox.
+                // This is a fast reject before the more expensive per-vertex quad test.
+                if bb.0 < view.0 || bb.1 > view.1 || bb.2 < view.2 || bb.3 > view.3 {
+                    continue;
+                }
+            } else if !bbox_intersects(bb, view) {
                 continue;
             }
+
+            if let Some(q) = &quad_world {
+                let mut inside = true;
+                for p in &poly.points {
+                    let pt = inst.matrix.transform_point(p);
+                    if !point_in_convex_quad(&pt, q) {
+                        inside = false;
+                        break;
+                    }
+                }
+                if !inside {
+                    continue;
+                }
+            }
+
+            accepted += 1;
 
             let key = format!("{}_{}", poly.layer, poly.datatype);
             let builder = builders.entry(key.clone()).or_default();
@@ -408,6 +466,17 @@ pub fn stream_viewport_snap_polygons(
         builder.flush(layer_key, transport, snap_token)?;
     }
     send_control_snap(transport, 2, request_id, snap_token)?;
+
+    if quad_world.is_some() {
+        eprintln!(
+            "[viewportSnap quadWorld] req_id={} token={} candidates={} accepted={} ms={}",
+            request_id,
+            snap_token,
+            candidates,
+            accepted,
+            t0.elapsed().as_millis()
+        );
+    }
     Ok(())
 }
 

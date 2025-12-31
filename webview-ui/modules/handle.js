@@ -5,6 +5,198 @@ import { updateTransform, resizeCanvas, fitView, screenToWorld, worldToScreen } 
 
 let boxSelectFinalizeTimer = null;
 
+export function cancelHighlightedPathBuild() {
+    if (state.highlightedPathBuild) {
+        state.highlightedPathBuild.cancelled = true;
+        state.highlightedPathBuild = null;
+    }
+}
+
+export function stopHighlightedPathBuild() {
+    const build = state.highlightedPathBuild;
+    if (!build) return false;
+
+    // Freeze at the current partial path and stop further work.
+    state.highlightedPath = build.path || null;
+    build.cancelled = true;
+    state.highlightedPathBuild = null;
+    requestAnimationFrame(drawLabels);
+    return true;
+}
+
+export function scheduleHighlightedPathBuild(items, reason) {
+    cancelHighlightedPathBuild();
+
+    if (!Array.isArray(items) || items.length === 0) {
+        state.highlightedPath = null;
+        return;
+    }
+
+    const build = {
+        cancelled: false,
+        idx: 0,
+        path: new Path2D(),
+        total: items.length,
+        startedAtMs: performance.now(),
+        lastDrawAtMs: 0,
+        reason: reason || 'highlight',
+    };
+    state.highlightedPath = null;
+    state.highlightedPathBuild = build;
+
+    const step = () => {
+        if (build.cancelled || state.highlightedPathBuild !== build) return;
+        const t0 = performance.now();
+
+        // Time-sliced build: aim to keep each chunk under ~8ms.
+        const BUDGET_MS = 8;
+        while (build.idx < build.total) {
+            const it = items[build.idx];
+            build.idx += 1;
+            const poly = it && it.points;
+            if (!poly || poly.length < 2) continue;
+            build.path.moveTo(poly[0][0], poly[0][1]);
+            for (let i = 1; i < poly.length; i++) build.path.lineTo(poly[i][0], poly[i][1]);
+            build.path.closePath();
+
+            if ((performance.now() - t0) >= BUDGET_MS) break;
+        }
+
+        // Keep showing partial path while building, but throttle redraws.
+        const now = performance.now();
+        if (build.idx >= build.total || (now - build.lastDrawAtMs) > 50) {
+            build.lastDrawAtMs = now;
+            requestAnimationFrame(drawLabels);
+        }
+
+        if (build.idx >= build.total) {
+            state.highlightedPath = build.path;
+            state.highlightedPathBuild = null;
+            if (state.enableProfiling) {
+                try {
+                    console.log('[prof] highlightedPath build done', {
+                        reason: build.reason,
+                        items: build.total,
+                        msTotal: performance.now() - build.startedAtMs,
+                    });
+                } catch (_) { }
+            }
+            return;
+        }
+
+        if (state.enableProfiling && (build.idx % 5000) < 50) {
+            try {
+                console.log('[prof] highlightedPath build progress', {
+                    reason: build.reason,
+                    done: build.idx,
+                    total: build.total,
+                    msSoFar: performance.now() - build.startedAtMs,
+                });
+            } catch (_) { }
+        }
+
+        requestAnimationFrame(step);
+    };
+
+    requestAnimationFrame(step);
+}
+
+function finalizeBoxSelectDirectFromSnap(token) {
+    const pending = state.boxSelectPending;
+    if (!pending || pending.token !== token) return;
+
+    const t0 = performance.now();
+
+    const additive = !!pending.additive;
+    const selected = [];
+
+    const normCoord = (v) => {
+        if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+        return Math.round(v * 1e6) / 1e6;
+    };
+    const polyItemKey = (it) => {
+        if (!it) return '';
+        if (Array.isArray(it.polyId) && it.polyId.length === 2) {
+            return `id:${it.polyId[0]},${it.polyId[1]}`;
+        }
+        if (!Array.isArray(it.points)) return '';
+        const lk = typeof it.layerKey === 'string' ? it.layerKey : '';
+        return lk + ':' + it.points.map(pt => `${normCoord(pt[0])},${normCoord(pt[1])}`).join(';');
+    };
+    const mergeItems = (existing, incoming) => {
+        const out = [];
+        const seen = new Set();
+        const add = (arr) => {
+            if (!Array.isArray(arr)) return;
+            for (const it of arr) {
+                if (!it || !Array.isArray(it.points) || it.points.length < 3) continue;
+                const k = polyItemKey(it);
+                if (!k || seen.has(k)) continue;
+                seen.add(k);
+                out.push(it);
+            }
+        };
+        add(existing);
+        add(incoming);
+        return out;
+    };
+
+    for (const layerKey of state.activeLayers) {
+        const polys = state.snapGeometryViewport ? state.snapGeometryViewport[layerKey] : null;
+        if (!polys || polys.length === 0) continue;
+        for (const poly of polys) {
+            if (!(poly instanceof Float32Array)) continue;
+            if (!poly.polyId) continue;
+            const pts = [];
+            for (let i = 0; i < poly.length; i += 2) pts.push([poly[i], poly[i + 1]]);
+            selected.push({ layerKey, points: pts, polyId: poly.polyId });
+        }
+    }
+
+    const tConverted = performance.now();
+
+    state.highlightedPolygons = additive
+        ? mergeItems(state.highlightedPolygons, selected)
+        : selected;
+
+    // For huge selections, build Path2D incrementally to avoid freezing the UI.
+    const LARGE_HIGHLIGHT_THRESHOLD = 5000;
+    if (state.highlightedPolygons.length > LARGE_HIGHLIGHT_THRESHOLD) {
+        scheduleHighlightedPathBuild(state.highlightedPolygons, 'boxSelect');
+    } else {
+        cancelHighlightedPathBuild();
+        const path = new Path2D();
+        for (const it of state.highlightedPolygons) {
+            const poly = it && it.points;
+            if (!poly || poly.length < 2) continue;
+            path.moveTo(poly[0][0], poly[0][1]);
+            for (let i = 1; i < poly.length; i++) path.lineTo(poly[i][0], poly[i][1]);
+            path.closePath();
+        }
+        state.highlightedPath = state.highlightedPolygons.length > 0 ? path : null;
+    }
+    state.boxSelectPending = null;
+
+    const tDone = performance.now();
+
+    if (state.enableProfiling) {
+        try {
+            console.log('[prof] boxSelect finalize (backendFinal)', {
+                token,
+                receivedPolys: pending.receivedPolys ?? null,
+                selectedCount: state.highlightedPolygons.length,
+                msConvert: tConverted - t0,
+                msPath: tDone - tConverted,
+                msTotal: tDone - t0,
+                msSinceRequest: (typeof pending.startedAtMs === 'number') ? (tDone - pending.startedAtMs) : null,
+            });
+        } catch (_) { }
+    }
+
+    updateStatus(`Box selected ${state.highlightedPolygons.length} polygon(s)`);
+    requestAnimationFrame(drawLabels);
+}
+
 function maybeFinalizeBoxSelectFromSnap(token) {
     const pending = state.boxSelectPending;
     if (!pending || !pending.token || pending.token !== token) return;
@@ -95,15 +287,22 @@ function maybeFinalizeBoxSelectFromSnap(token) {
         state.highlightedPolygons = additive
             ? mergeItems(state.highlightedPolygons, selected)
             : selected;
-        const path = new Path2D();
-        for (const it of state.highlightedPolygons) {
-            const poly = it && it.points;
-            if (!poly || poly.length < 2) continue;
-            path.moveTo(poly[0][0], poly[0][1]);
-            for (let i = 1; i < poly.length; i++) path.lineTo(poly[i][0], poly[i][1]);
-            path.closePath();
+
+        const LARGE_HIGHLIGHT_THRESHOLD = 5000;
+        if (state.highlightedPolygons.length > LARGE_HIGHLIGHT_THRESHOLD) {
+            scheduleHighlightedPathBuild(state.highlightedPolygons, 'boxSelect');
+        } else {
+            cancelHighlightedPathBuild();
+            const path = new Path2D();
+            for (const it of state.highlightedPolygons) {
+                const poly = it && it.points;
+                if (!poly || poly.length < 2) continue;
+                path.moveTo(poly[0][0], poly[0][1]);
+                for (let i = 1; i < poly.length; i++) path.lineTo(poly[i][0], poly[i][1]);
+                path.closePath();
+            }
+            state.highlightedPath = state.highlightedPolygons.length > 0 ? path : null;
         }
-        state.highlightedPath = state.highlightedPolygons.length > 0 ? path : null;
         state.boxSelectPending = null;
 
         updateStatus(`Box selected ${state.highlightedPolygons.length} polygon(s)`);
@@ -471,10 +670,24 @@ function handleGeometryWsBinary(buffer) {
                 // If this begin belongs to an active box-select request, clear the viewportSnap cache;
                 // otherwise treat it as the measure snapping stream and clear snapGeometry.
                 if (token && boxToken && token === boxToken) {
+                    if (state.boxSelectPending && state.boxSelectPending.backendFinal) {
+                        state.boxSelectPending.receivedPolys = 0;
+                    }
+                    if (state.enableProfiling) {
+                        try { console.log('[prof] boxSelect snap begin', { token }); } catch (_) { }
+                    }
                     state.snapGeometryViewport = {};
                 } else {
                     state.snapViewportTokenCurrent = token;
                     state.snapGeometry = {};
+                }
+            } else if (opcode === 2) {
+                // End of snap stream. For backend-final box select, finalize immediately without costly containment checks.
+                if (token && boxToken && token === boxToken && state.boxSelectPending && state.boxSelectPending.backendFinal) {
+                    if (state.enableProfiling) {
+                        try { console.log('[prof] boxSelect snap end', { token, receivedPolys: state.boxSelectPending?.receivedPolys ?? null }); } catch (_) { }
+                    }
+                    finalizeBoxSelectDirectFromSnap(token);
                 }
             }
             return;
@@ -585,7 +798,12 @@ function handleGeometryWsBinary(buffer) {
                 if (isBoxSelect) {
                     if (version !== 2) return;
                     pushViewportSnapPolys(layerKey, polys);
-                    maybeFinalizeBoxSelectFromSnap(cellNameStr);
+                    if (state.boxSelectPending && state.boxSelectPending.backendFinal) {
+                        state.boxSelectPending.receivedPolys = (state.boxSelectPending.receivedPolys || 0) + polys.length;
+                    }
+                    if (!(state.boxSelectPending && state.boxSelectPending.backendFinal)) {
+                        maybeFinalizeBoxSelectFromSnap(cellNameStr);
+                    }
                     // Avoid spamming status for snap-only background streams.
                     return;
                 }
@@ -811,17 +1029,23 @@ export function handleSearchWorkerMessage(e) {
         }
 
         // Create Path2D for efficient rendering
-        const path = new Path2D();
-        for (const it of state.highlightedPolygons) {
-            const poly = it && it.points;
-            if (!poly || poly.length < 2) continue;
-            path.moveTo(poly[0][0], poly[0][1]);
-            for (let i = 1; i < poly.length; i++) {
-                path.lineTo(poly[i][0], poly[i][1]);
+        const LARGE_HIGHLIGHT_THRESHOLD = 5000;
+        if (state.highlightedPolygons.length > LARGE_HIGHLIGHT_THRESHOLD) {
+            scheduleHighlightedPathBuild(state.highlightedPolygons, msg.command);
+        } else {
+            cancelHighlightedPathBuild();
+            const path = new Path2D();
+            for (const it of state.highlightedPolygons) {
+                const poly = it && it.points;
+                if (!poly || poly.length < 2) continue;
+                path.moveTo(poly[0][0], poly[0][1]);
+                for (let i = 1; i < poly.length; i++) {
+                    path.lineTo(poly[i][0], poly[i][1]);
+                }
+                path.closePath();
             }
-            path.closePath();
+            state.highlightedPath = path;
         }
-        state.highlightedPath = path;
 
         const timeStr = msg.duration ? ` in ${msg.duration}ms` : '';
         if (msg.command === 'picked') {
@@ -1067,6 +1291,8 @@ export function handleInitialize(data) {
     state.snapViewportTokenCurrent = null;
     state.labels = {};
     state.highlightedPolygons = [];
+    cancelHighlightedPathBuild();
+    state.highlightedPath = null;
     state.bbox = data.bbox;
     if (data.ports) {
         state.ports = data.ports;
@@ -1268,6 +1494,8 @@ export function handleDataUpdate(data) {
     state.statusPinUntil = 0;
 
     state.highlightedPolygons = [];
+    cancelHighlightedPathBuild();
+    state.highlightedPath = null;
     state.searchWorker.postMessage({ command: 'clear' });
 
     buildTree(data.hierarchy, data.top_level_cells, data.all_cells, data.cell_name);

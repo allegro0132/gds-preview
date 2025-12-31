@@ -2,6 +2,7 @@ import { state, elements } from './state.js';
 import { updateStatus } from './utils.js';
 import { draw, drawWebGL, drawLabels } from './renderer.js';
 import { updateTransform, resizeCanvas, fitView, screenToWorld, worldToScreen } from './transform.js';
+import { cancelHighlightedPathBuild, scheduleHighlightedPathBuild } from './handle.js';
 
 function clamp01(v) {
     return Math.max(0, Math.min(1, v));
@@ -645,6 +646,7 @@ export function setupListeners() {
             const c2 = screenToWorld(sel.maxX, sel.minY);
             const c3 = screenToWorld(sel.maxX, sel.maxY);
             const c4 = screenToWorld(sel.minX, sel.maxY);
+            const quadWorld = [c1, c2, c3, c4];
             const bbox = {
                 minX: Math.min(c1.x, c2.x, c3.x, c4.x),
                 maxX: Math.max(c1.x, c2.x, c3.x, c4.x),
@@ -661,15 +663,34 @@ export function setupListeners() {
 
             const snapToken = `__snap__:${((state.snapViewportSeq + 1) >>> 0)}`;
             state.snapViewportSeq = (state.snapViewportSeq + 1) >>> 0;
-            state.snapViewportTokenCurrent = snapToken;
             state.snapGeometryViewport = {};
 
-            state.boxSelectPending = { token: snapToken, sel, additive: !!additive };
+            // backendFinal=true: backend filters polygons fully inside quadWorld and we can highlight directly.
+            state.boxSelectPending = {
+                token: snapToken,
+                sel,
+                additive: !!additive,
+                backendFinal: true,
+                startedAtMs: performance.now(),
+            };
             updateStatus('Box select: requesting polygons...');
+            if (state.enableProfiling) {
+                try {
+                    console.log('[prof] boxSelect viewportSnap send', {
+                        requestId,
+                        snapToken,
+                        bbox,
+                        quadWorld,
+                        layers: state.activeLayers.size,
+                        additive: !!additive,
+                    });
+                } catch (_) { }
+            }
             state.vscode.postMessage({
                 command: 'viewportSnap',
                 requestId,
                 bbox,
+                quadWorld,
                 layers: Array.from(state.activeLayers),
                 snapPolygons: true,
                 snapToken,
@@ -711,17 +732,24 @@ export function setupListeners() {
         state.highlightedPolygons = additive
             ? mergeHighlightItems(state.highlightedPolygons, selected)
             : selected;
-        const path = new Path2D();
-        for (const it of state.highlightedPolygons) {
-            const poly = it && it.points;
-            if (!poly || poly.length < 2) continue;
-            path.moveTo(poly[0][0], poly[0][1]);
-            for (let i = 1; i < poly.length; i++) {
-                path.lineTo(poly[i][0], poly[i][1]);
+
+        const LARGE_HIGHLIGHT_THRESHOLD = 5000;
+        if (state.highlightedPolygons.length > LARGE_HIGHLIGHT_THRESHOLD) {
+            scheduleHighlightedPathBuild(state.highlightedPolygons, 'boxSelect');
+        } else {
+            cancelHighlightedPathBuild();
+            const path = new Path2D();
+            for (const it of state.highlightedPolygons) {
+                const poly = it && it.points;
+                if (!poly || poly.length < 2) continue;
+                path.moveTo(poly[0][0], poly[0][1]);
+                for (let i = 1; i < poly.length; i++) {
+                    path.lineTo(poly[i][0], poly[i][1]);
+                }
+                path.closePath();
             }
-            path.closePath();
+            state.highlightedPath = state.highlightedPolygons.length > 0 ? path : null;
         }
-        state.highlightedPath = state.highlightedPolygons.length > 0 ? path : null;
 
         updateStatus(`Box selected ${state.highlightedPolygons.length} polygon(s)`);
         requestAnimationFrame(drawLabels);

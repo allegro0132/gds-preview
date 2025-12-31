@@ -456,6 +456,7 @@ fn main() -> Result<()> {
                             req_id,
                             token_owned.as_str(),
                             (vminx, vmaxx, vminy, vmaxy),
+                            None,
                             &active_layers,
                         )?;
                     }
@@ -469,6 +470,26 @@ fn main() -> Result<()> {
                 let vmaxx = bbox["maxX"].as_f64().unwrap_or(0.0);
                 let vminy = bbox["minY"].as_f64().unwrap_or(0.0);
                 let vmaxy = bbox["maxY"].as_f64().unwrap_or(0.0);
+
+                // Optional: selection quad in world coordinates (screen-aligned rectangle mapped into world).
+                // If provided, backend filters polygons fully inside this quad and returns final hits.
+                let quad_world = cmd["quadWorld"].as_array().and_then(|arr| {
+                    if arr.len() != 4 {
+                        return None;
+                    }
+                    let mut pts: Vec<gds_engine_rust::geometry::Point> = Vec::with_capacity(4);
+                    for v in arr {
+                        let x = v["x"].as_f64()?;
+                        let y = v["y"].as_f64()?;
+                        pts.push(gds_engine_rust::geometry::Point { x, y });
+                    }
+                    Some([
+                        pts[0].clone(),
+                        pts[1].clone(),
+                        pts[2].clone(),
+                        pts[3].clone(),
+                    ])
+                });
 
                 let snap_token = cmd["snapToken"].as_str();
 
@@ -510,6 +531,7 @@ fn main() -> Result<()> {
                             req_id,
                             token_owned.as_str(),
                             (vminx, vmaxx, vminy, vmaxy),
+                            quad_world,
                             &active_layers,
                         )?;
                     }
