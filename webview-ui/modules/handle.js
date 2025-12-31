@@ -159,6 +159,8 @@ function finalizeBoxSelectDirectFromSnap(token) {
         ? mergeItems(state.highlightedPolygons, selected)
         : selected;
 
+    state.highlightEdgesDirty = true;
+
     // WebGL+Rust: backend owns highlight rendering; push polyId set and skip Path2D.
     postHighlightUpdate('boxSelect');
 
@@ -1144,6 +1146,8 @@ export function handleSearchWorkerMessage(e) {
             state.highlightedPolygons = items;
         }
 
+        state.highlightEdgesDirty = true;
+
         // WebGL+Rust: backend owns highlight rendering; we only keep polygons for copy/measure.
         // Send polyId set to backend so it can stream __highlight__ triangles.
         postHighlightUpdate(msg.command);
@@ -1417,6 +1421,7 @@ export function handleInitialize(data) {
     state.snapViewportTokenCurrent = null;
     state.labels = {};
     state.highlightedPolygons = [];
+    state.highlightEdgesDirty = true;
     cancelHighlightedPathBuild();
     state.highlightedPath = null;
     state.bbox = data.bbox;
@@ -1620,6 +1625,7 @@ export function handleDataUpdate(data) {
     state.statusPinUntil = 0;
 
     state.highlightedPolygons = [];
+    state.highlightEdgesDirty = true;
     cancelHighlightedPathBuild();
     state.highlightedPath = null;
     state.searchWorker.postMessage({ command: 'clear' });

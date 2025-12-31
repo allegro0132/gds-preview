@@ -55,9 +55,76 @@ function getHighlightStyle() {
     // User request: dark theme => white, light theme => black.
     // Keep alpha modest to avoid completely hiding geometry.
     const strokeCss = dark ? '#ffffff' : '#000000';
-    const fillCss = dark ? 'rgba(255, 255, 255, 0.5)' : 'rgba(0, 0, 0, 0.7)';
-    const gl = dark ? { r: 1.0, g: 1.0, b: 1.0, a: 0.5 } : { r: 0.0, g: 0.0, b: 0.0, a: 0.7 };
+    const fillCss = dark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)';
+    const gl = dark ? { r: 1.0, g: 1.0, b: 1.0, a: 0.3 } : { r: 0.0, g: 0.0, b: 0.0, a: 0.3 };
     return { strokeCss, fillCss, gl };
+}
+
+function rebuildHighlightEdgeBufferIfNeeded() {
+    if (!state.gl) return;
+    if (!state.highlightEdgesDirty) return;
+
+    state.highlightEdgesDirty = false;
+
+    const items = Array.isArray(state.highlightedPolygons) ? state.highlightedPolygons : [];
+    if (items.length === 0) {
+        if (state.highlightEdgeBuffer) {
+            try { state.gl.deleteBuffer(state.highlightEdgeBuffer); } catch (_) { }
+        }
+        state.highlightEdgeBuffer = null;
+        state.highlightEdgeCount = 0;
+        return;
+    }
+
+    let totalFloats = 0;
+    for (const item of items) {
+        const poly = (item && item.points) ? item.points : item;
+        if (!poly) continue;
+        const isFlat = poly instanceof Float32Array;
+        const n = isFlat ? (poly.length / 2) : poly.length;
+        if (n < 2) continue;
+        // Each edge contributes 2 vertices => 4 floats.
+        totalFloats += n * 4;
+    }
+
+    if (totalFloats <= 0) {
+        if (state.highlightEdgeBuffer) {
+            try { state.gl.deleteBuffer(state.highlightEdgeBuffer); } catch (_) { }
+        }
+        state.highlightEdgeBuffer = null;
+        state.highlightEdgeCount = 0;
+        return;
+    }
+
+    const data = new Float32Array(totalFloats);
+    let k = 0;
+    for (const item of items) {
+        const poly = (item && item.points) ? item.points : item;
+        if (!poly) continue;
+        const isFlat = poly instanceof Float32Array;
+        const n = isFlat ? (poly.length / 2) : poly.length;
+        if (n < 2) continue;
+
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const x0 = isFlat ? poly[i * 2] : poly[i][0];
+            const y0 = isFlat ? poly[i * 2 + 1] : poly[i][1];
+            const x1 = isFlat ? poly[j * 2] : poly[j][0];
+            const y1 = isFlat ? poly[j * 2 + 1] : poly[j][1];
+
+            data[k++] = x0;
+            data[k++] = y0;
+            data[k++] = x1;
+            data[k++] = y1;
+        }
+    }
+
+    if (!state.highlightEdgeBuffer) {
+        state.highlightEdgeBuffer = state.gl.createBuffer();
+    }
+    state.gl.bindBuffer(state.gl.ARRAY_BUFFER, state.highlightEdgeBuffer);
+    state.gl.bufferData(state.gl.ARRAY_BUFFER, data, state.gl.STATIC_DRAW);
+    state.highlightEdgeCount = data.length / 2;
 }
 
 function drawMeasurementOverlay(ctx) {
@@ -506,6 +573,39 @@ export function drawWebGL() {
             }
         }
     }
+
+    // Highlight edge outlines (gl.LINES)
+    // Buffer rebuild is triggered only when highlights change.
+    rebuildHighlightEdgeBufferIfNeeded();
+    if (state.currentEngine === 'webgl' && state.highlightEdgeBuffer && state.highlightEdgeCount > 0) {
+        const resolutionLocation = state.gl.getUniformLocation(state.glProgram, "u_resolution");
+        const offsetLocation = state.gl.getUniformLocation(state.glProgram, "u_offset");
+        const scaleLocation = state.gl.getUniformLocation(state.glProgram, "u_scale");
+        const flipLocation = state.gl.getUniformLocation(state.glProgram, "u_flip");
+        const rotationLocation = state.gl.getUniformLocation(state.glProgram, "u_rotation");
+        const colorLocation = state.gl.getUniformLocation(state.glProgram, "u_color");
+        const isInstancedLocation = state.gl.getUniformLocation(state.glProgram, "u_isInstanced");
+        const positionLocation = state.gl.getAttribLocation(state.glProgram, "a_position");
+
+        const h = getHighlightStyle();
+
+        state.gl.useProgram(state.glProgram);
+        state.gl.uniform2f(resolutionLocation, state.gl.canvas.width, state.gl.canvas.height);
+        state.gl.uniform2f(offsetLocation, state.offsetX, state.offsetY);
+        state.gl.uniform1f(scaleLocation, state.scale);
+        state.gl.uniform2f(flipLocation, state.flipState.x, state.flipState.y);
+        state.gl.uniform1f(rotationLocation, state.rotationState * Math.PI / 180);
+        state.gl.uniform1i(isInstancedLocation, 0);
+
+        // Slightly higher alpha than fill so the outline reads clearly.
+        state.gl.uniform4f(colorLocation, h.gl.r, h.gl.g, h.gl.b, 0.85);
+
+        state.gl.bindBuffer(state.gl.ARRAY_BUFFER, state.highlightEdgeBuffer);
+        state.gl.enableVertexAttribArray(positionLocation);
+        state.gl.vertexAttribPointer(positionLocation, 2, state.gl.FLOAT, false, 0, 0);
+        try { state.gl.lineWidth(1); } catch (_) { }
+        state.gl.drawArrays(state.gl.LINES, 0, state.highlightEdgeCount);
+    }
 }
 
 export function drawLabels() {
@@ -679,7 +779,10 @@ export function drawHighlights(targetCtx) {
 
     if (pathToDraw) {
         ctxToUse.fill(pathToDraw);
-        ctxToUse.stroke(pathToDraw);
+        // During WebGL pan/zoom (drag), outline is rendered in WebGL as gl.LINES.
+        if (!(state.currentEngine === 'webgl' && state.isInteracting)) {
+            ctxToUse.stroke(pathToDraw);
+        }
     } else {
         // Fallback for legacy or non-path data (though we should always have path now)
         ctxToUse.beginPath();
@@ -703,7 +806,9 @@ export function drawHighlights(targetCtx) {
             ctxToUse.closePath();
         }
         ctxToUse.fill();
-        ctxToUse.stroke();
+        if (!(state.currentEngine === 'webgl' && state.isInteracting)) {
+            ctxToUse.stroke();
+        }
     }
     ctxToUse.restore();
 }

@@ -48,6 +48,13 @@ function clearHighlightState(reason) {
     state.highlightActiveSeq = 0;
     state.highlightReceivingSeq = 0;
 
+    if (state.gl && state.highlightEdgeBuffer) {
+        try { state.gl.deleteBuffer(state.highlightEdgeBuffer); } catch (_) { }
+    }
+    state.highlightEdgeBuffer = null;
+    state.highlightEdgeCount = 0;
+    state.highlightEdgesDirty = true;
+
     // Clear backend-driven highlight overlay in WebGL+Rust mode.
     if (isWebglRustMode() && state.vscode) {
         state.highlightClientSeq = (state.highlightClientSeq || 0) + 1;

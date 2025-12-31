@@ -90,6 +90,12 @@ export const state = {
     highlightActiveSeq: 0,
     highlightReceivingSeq: 0,
 
+    // WebGL highlight edge overlay (gl.LINES)
+    // Rebuilt only when highlighted polygons change; reused during pan/zoom.
+    highlightEdgeBuffer: null,
+    highlightEdgeCount: 0,
+    highlightEdgesDirty: true,
+
     instanceBuffers: {},
     definitions: {},
     definitionGeometry: {},
