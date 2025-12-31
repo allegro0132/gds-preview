@@ -159,21 +159,29 @@ function finalizeBoxSelectDirectFromSnap(token) {
         ? mergeItems(state.highlightedPolygons, selected)
         : selected;
 
-    // For huge selections, build Path2D incrementally to avoid freezing the UI.
-    const LARGE_HIGHLIGHT_THRESHOLD = 5000;
-    if (state.highlightedPolygons.length > LARGE_HIGHLIGHT_THRESHOLD) {
-        scheduleHighlightedPathBuild(state.highlightedPolygons, 'boxSelect');
+    // WebGL+Rust: backend owns highlight rendering; push polyId set and skip Path2D.
+    postHighlightUpdate('boxSelect');
+
+    if (!isWebglRust()) {
+        // For huge selections, build Path2D incrementally to avoid freezing the UI.
+        const LARGE_HIGHLIGHT_THRESHOLD = 5000;
+        if (state.highlightedPolygons.length > LARGE_HIGHLIGHT_THRESHOLD) {
+            scheduleHighlightedPathBuild(state.highlightedPolygons, 'boxSelect');
+        } else {
+            cancelHighlightedPathBuild();
+            const path = new Path2D();
+            for (const it of state.highlightedPolygons) {
+                const poly = it && it.points;
+                if (!poly || poly.length < 2) continue;
+                path.moveTo(poly[0][0], poly[0][1]);
+                for (let i = 1; i < poly.length; i++) path.lineTo(poly[i][0], poly[i][1]);
+                path.closePath();
+            }
+            state.highlightedPath = state.highlightedPolygons.length > 0 ? path : null;
+        }
     } else {
         cancelHighlightedPathBuild();
-        const path = new Path2D();
-        for (const it of state.highlightedPolygons) {
-            const poly = it && it.points;
-            if (!poly || poly.length < 2) continue;
-            path.moveTo(poly[0][0], poly[0][1]);
-            for (let i = 1; i < poly.length; i++) path.lineTo(poly[i][0], poly[i][1]);
-            path.closePath();
-        }
-        state.highlightedPath = state.highlightedPolygons.length > 0 ? path : null;
+        state.highlightedPath = null;
     }
     state.boxSelectPending = null;
 
@@ -624,6 +632,57 @@ function handleGeometryWsBinary(buffer) {
     off += cellLen;
     const cellName = cellNameStr || null;
 
+    const isHighlightLayer = layerKey === '__highlight__';
+
+    const freeBufferList = (lst) => {
+        if (!state.gl || !Array.isArray(lst)) return;
+        for (const it of lst) {
+            try {
+                if (it && it.buffer) state.gl.deleteBuffer(it.buffer);
+            } catch (_) { }
+        }
+    };
+
+    const beginHighlightSnapshot = (seq) => {
+        if (!state.gl) return;
+        state.highlightReceivingSeq = (seq >>> 0);
+        // Clear staging; keep active until commit.
+        state.highlightStagingBuffers = [];
+    };
+
+    const commitHighlightSnapshot = (seq) => {
+        if (!state.gl) return;
+        if ((seq >>> 0) !== (state.highlightReceivingSeq >>> 0)) return;
+        // Free old buffers to avoid leaks across many highlight updates.
+        freeBufferList(state.highlightBuffers);
+        state.highlightBuffers = state.highlightStagingBuffers || [];
+        state.highlightStagingBuffers = null;
+        state.highlightActiveSeq = (seq >>> 0);
+    };
+
+    const addWebGLHighlightVerticesChunk = (vertices) => {
+        if (!state.gl || !vertices || vertices.length <= 0) return;
+
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let i = 0; i < vertices.length; i += 2) {
+            const x = vertices[i];
+            const y = vertices[i + 1];
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+        const bbox = { minX, minY, maxX, maxY };
+
+        const glBuffer = state.gl.createBuffer();
+        state.gl.bindBuffer(state.gl.ARRAY_BUFFER, glBuffer);
+        state.gl.bufferData(state.gl.ARRAY_BUFFER, vertices, state.gl.STATIC_DRAW);
+
+        const target = state.highlightStagingBuffers || state.highlightBuffers || (state.highlightBuffers = []);
+        target.push({ buffer: glBuffer, count: vertices.length / 2, bbox });
+        scheduleDrawWebGL();
+    };
+
     // Fast-path drop: snap polygon streams are tagged with a token in cellName.
     // We support two concurrent snap consumers:
     // - Measure tool (viewport snapPolygons) -> state.snapGeometry (token = state.snapViewportTokenCurrent)
@@ -654,6 +713,18 @@ function handleGeometryWsBinary(buffer) {
     if (kind === 5) {
         const opcode = dv.getUint8(off); off += 1;
         const requestId = dv.getUint32(off, true); off += 4;
+
+        // Highlight snapshots: begin/end for __highlight__ overlay buffers.
+        if (isHighlightLayer) {
+            if (opcode === 1) {
+                beginHighlightSnapshot(requestId);
+                scheduleDrawWebGL();
+            } else if (opcode === 2) {
+                commitHighlightSnapshot(requestId);
+                scheduleDrawWebGL();
+            }
+            return;
+        }
 
         // Snapping-only viewport markers: do NOT touch render snapshot staging.
         // We use layerKey='__snap__' to distinguish from render viewport streaming.
@@ -735,6 +806,13 @@ function handleGeometryWsBinary(buffer) {
         // The float payload is not guaranteed to be 4-byte aligned because the header includes
         // variable-length UTF-8 strings. Slice into a new ArrayBuffer to guarantee alignment.
         const vertices = new Float32Array(buffer.slice(start, end));
+
+        // Highlight overlay triangles
+        if (isHighlightLayer) {
+            addWebGLHighlightVerticesChunk(vertices);
+            return;
+        }
+
         addWebGLVerticesChunk(layerKey, kind === 2 ? 'definition' : 'flat', cellName, vertices);
         updateStatus(`Loading ${layerKey || 'Unknown'}${cellName ? ' ' + cellName : ''} ${formatChunkProgress(chunkIndex, totalChunks)}`);
         maybeSignalReadyForNext(chunkIndex, totalChunks);
@@ -833,6 +911,40 @@ function handleGeometryWsBinary(buffer) {
     }
 
     console.warn('Unknown WS geometry frame kind:', kind);
+}
+
+function isWebglRust() {
+    return state.currentEngine === 'webgl' && state.config && state.config.engineType === 'rust';
+}
+
+function collectHighlightPolyIds(items) {
+    const out = [];
+    if (!Array.isArray(items)) return out;
+    for (const it of items) {
+        const pid = it && it.polyId;
+        if (!Array.isArray(pid) || pid.length !== 2) continue;
+        const a = pid[0];
+        const b = pid[1];
+        if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+        out.push([a >>> 0, b >>> 0]);
+    }
+    return out;
+}
+
+function postHighlightUpdate(reason) {
+    if (!isWebglRust()) return;
+    if (!state.vscode || !state.vscode.postMessage) return;
+
+    const polyIds = collectHighlightPolyIds(state.highlightedPolygons);
+    const clientSeq = (state.highlightClientSeq + 1) >>> 0;
+    state.highlightClientSeq = clientSeq;
+
+    state.vscode.postMessage({
+        command: 'highlightUpdate',
+        clientSeq,
+        polyIds,
+        reason: reason || null,
+    });
 }
 
 function connectGeometryWebSocket(wsInfo) {
@@ -1032,23 +1144,33 @@ export function handleSearchWorkerMessage(e) {
             state.highlightedPolygons = items;
         }
 
+        // WebGL+Rust: backend owns highlight rendering; we only keep polygons for copy/measure.
+        // Send polyId set to backend so it can stream __highlight__ triangles.
+        postHighlightUpdate(msg.command);
+
         // Create Path2D for efficient rendering
-        const LARGE_HIGHLIGHT_THRESHOLD = 5000;
-        if (state.highlightedPolygons.length > LARGE_HIGHLIGHT_THRESHOLD) {
-            scheduleHighlightedPathBuild(state.highlightedPolygons, msg.command);
-        } else {
-            cancelHighlightedPathBuild();
-            const path = new Path2D();
-            for (const it of state.highlightedPolygons) {
-                const poly = it && it.points;
-                if (!poly || poly.length < 2) continue;
-                path.moveTo(poly[0][0], poly[0][1]);
-                for (let i = 1; i < poly.length; i++) {
-                    path.lineTo(poly[i][0], poly[i][1]);
+        if (!isWebglRust()) {
+            const LARGE_HIGHLIGHT_THRESHOLD = 5000;
+            if (state.highlightedPolygons.length > LARGE_HIGHLIGHT_THRESHOLD) {
+                scheduleHighlightedPathBuild(state.highlightedPolygons, msg.command);
+            } else {
+                cancelHighlightedPathBuild();
+                const path = new Path2D();
+                for (const it of state.highlightedPolygons) {
+                    const poly = it && it.points;
+                    if (!poly || poly.length < 2) continue;
+                    path.moveTo(poly[0][0], poly[0][1]);
+                    for (let i = 1; i < poly.length; i++) {
+                        path.lineTo(poly[i][0], poly[i][1]);
+                    }
+                    path.closePath();
                 }
-                path.closePath();
+                state.highlightedPath = path;
             }
-            state.highlightedPath = path;
+        } else {
+            // Ensure any in-progress Path2D build is cancelled to avoid wasted main-thread work.
+            cancelHighlightedPathBuild();
+            state.highlightedPath = null;
         }
 
         const timeStr = msg.duration ? ` in ${msg.duration}ms` : '';

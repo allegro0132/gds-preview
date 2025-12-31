@@ -4,13 +4,14 @@ use gds_engine_rust::analysis::SearchEngine;
 use gds_engine_rust::args::Args;
 use gds_engine_rust::geometry::Library;
 use gds_engine_rust::renderer::{analyze_instances, process_flattened, process_instanced};
-use gds_engine_rust::streamer::send_json;
+use gds_engine_rust::streamer::{send_json, triangulate_coords_to_vertices, WsChunkKind};
 use gds_engine_rust::viewport::{
     process_instanced_viewport_preamble, stream_viewport_geometry, stream_viewport_snap_polygons,
     ViewportRuntime,
 };
 use gds_engine_rust::ws_streamer::TcpTransport;
 use gds_engine_rust::{gds_loader, oasis_loader};
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, Read, Seek};
@@ -217,6 +218,122 @@ fn main() -> Result<()> {
     // Keep instances available for viewport polygon streaming (snapping).
     let instances_map_for_snap = instances_map;
     let instances_map_for_search = instances_map_for_snap.clone();
+
+    // Stable instance_id mapping, shared across:
+    // - SearchEngine polyId: [instance_id, poly_index]
+    // - viewportSnap polyId: [instance_id, poly_index]
+    // - highlightUpdate (webview -> backend)
+    let ordered_instances_for_ids =
+        gds_engine_rust::instance_order::ordered_instances(&instances_map_for_snap);
+
+    // Backend highlight state (polyId set). Rendering is streamed to webview as __highlight__ triangles.
+    let mut highlight_set: HashSet<(u32, u32)> = HashSet::new();
+
+    // Small helper: send a WS control frame (kind=5) with layerKey='__highlight__'.
+    fn send_highlight_control(
+        transport: &mut dyn gds_engine_rust::streamer::ChunkTransport,
+        opcode: u8,
+        seq: u32,
+    ) -> Result<()> {
+        let mut payload = Vec::with_capacity(1 + 4);
+        payload.push(opcode);
+        payload.extend_from_slice(&seq.to_le_bytes());
+        transport.send(WsChunkKind::Control, "__highlight__", None, 0, 0, &payload)
+    }
+
+    fn stream_highlight_triangles(
+        lib: &Library,
+        ordered_instances: &[gds_engine_rust::instance_order::OrderedInstance],
+        poly_ids: &[(u32, u32)],
+        seq: u32,
+        transport: &mut dyn gds_engine_rust::streamer::ChunkTransport,
+    ) -> Result<()> {
+        // Begin snapshot (webview will stage buffers)
+        send_highlight_control(transport, 1, seq)?;
+
+        if poly_ids.is_empty() {
+            // Empty snapshot clears overlay.
+            send_highlight_control(transport, 2, seq)?;
+            return Ok(());
+        }
+
+        // Triangulate each polygon in parallel.
+        // Note: same limitation as existing triangle streaming: no holes.
+        let parts: Vec<Vec<f32>> = poly_ids
+            .par_iter()
+            .filter_map(|(instance_id, poly_index)| {
+                let inst = ordered_instances.get(*instance_id as usize)?;
+                let cell = lib.cells.get(inst.cell_idx)?;
+                let poly = cell.polygons.get(*poly_index as usize)?;
+                if poly.points.len() < 3 {
+                    return Some(Vec::new());
+                }
+
+                let mut coords: Vec<f64> = Vec::with_capacity(poly.points.len() * 2);
+                for p in &poly.points {
+                    let pt = inst.matrix.transform_point(p);
+                    coords.push(pt.x);
+                    coords.push(pt.y);
+                }
+                Some(triangulate_coords_to_vertices(&coords))
+            })
+            .collect();
+
+        // Chunk the output to avoid giant WS frames.
+        // vertexCount is u32 count of vertices; payload is tightly packed f32 coords.
+        const MAX_VERTICES_PER_FRAME: usize = 200_000;
+        let mut chunk_index: u32 = 0;
+
+        let mut pending_vertices: Vec<f32> = Vec::new();
+        pending_vertices.reserve(MAX_VERTICES_PER_FRAME * 2);
+
+        let flush = |transport: &mut dyn gds_engine_rust::streamer::ChunkTransport,
+                     chunk_index: &mut u32,
+                     pending: &mut Vec<f32>| -> Result<()> {
+            if pending.is_empty() {
+                return Ok(());
+            }
+            let vertex_count: u32 = (pending.len() / 2) as u32;
+            let mut payload = Vec::with_capacity(4 + pending.len() * 4);
+            payload.extend_from_slice(&vertex_count.to_le_bytes());
+            for v in pending.iter() {
+                payload.extend_from_slice(&v.to_le_bytes());
+            }
+            transport.send(
+                WsChunkKind::FlatTriangles,
+                "__highlight__",
+                None,
+                *chunk_index,
+                0,
+                &payload,
+            )?;
+            *chunk_index += 1;
+            pending.clear();
+            Ok(())
+        };
+
+        for mut v in parts {
+            if v.is_empty() {
+                continue;
+            }
+            // Flush if adding would exceed the per-frame limit.
+            let incoming_vertices = v.len() / 2;
+            let pending_count = pending_vertices.len() / 2;
+            if pending_count > 0 && (pending_count + incoming_vertices) > MAX_VERTICES_PER_FRAME {
+                flush(transport, &mut chunk_index, &mut pending_vertices)?;
+            }
+            pending_vertices.append(&mut v);
+            let pending_count_after = pending_vertices.len() / 2;
+            if pending_count_after >= MAX_VERTICES_PER_FRAME {
+                flush(transport, &mut chunk_index, &mut pending_vertices)?;
+            }
+        }
+
+        flush(transport, &mut chunk_index, &mut pending_vertices)?;
+        // End snapshot (webview commits staging -> active)
+        send_highlight_control(transport, 2, seq)?;
+        Ok(())
+    }
 
     thread::spawn(move || {
         let engine = SearchEngine::new(library_clone, instances_map_for_search);
@@ -535,6 +652,51 @@ fn main() -> Result<()> {
                             &active_layers,
                         )?;
                     }
+                }
+            }
+            // WebGL highlight overlay update: webview sends the final polyId set.
+            else if cmd["command"] == "highlightUpdate" {
+                let seq = cmd["clientSeq"].as_u64().unwrap_or(0) as u32;
+                let mut incoming: Vec<(u32, u32)> = Vec::new();
+
+                if let Some(arr) = cmd["polyIds"].as_array() {
+                    incoming.reserve(arr.len());
+                    for v in arr {
+                        if let Some(pair) = v.as_array() {
+                            if pair.len() != 2 {
+                                continue;
+                            }
+                            let a = pair[0].as_u64().unwrap_or(u64::MAX);
+                            let b = pair[1].as_u64().unwrap_or(u64::MAX);
+                            if a == u64::MAX || b == u64::MAX {
+                                continue;
+                            }
+                            incoming.push((a as u32, b as u32));
+                        }
+                    }
+                }
+
+                let new_set: HashSet<(u32, u32)> = incoming.iter().copied().collect();
+                if new_set == highlight_set {
+                    continue;
+                }
+                highlight_set = new_set;
+
+                // Stream triangles over TCP/WS when available.
+                if let Some(tcp_ref) = tcp_stream.as_mut() {
+                    let mut transport = TcpTransport {
+                        stream: tcp_ref,
+                        flow_control_step: 0,
+                    };
+                    // Preserve the incoming order for deterministic overlay generation.
+                    // (Duplicates are harmless; the set is what matters semantically.)
+                    stream_highlight_triangles(
+                        &library,
+                        &ordered_instances_for_ids,
+                        &incoming,
+                        seq,
+                        &mut transport,
+                    )?;
                 }
             }
         }

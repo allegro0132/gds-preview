@@ -82,6 +82,14 @@ export const state = {
     instancedArraysExt: null,
     drawWebGLPending: false,
     layerBuffers: {},
+
+    // WebGL highlight overlay (Rust-generated triangles)
+    // Buffers contain triangles in world coords; rendered on top of layers.
+    highlightBuffers: null, // Array<{ buffer: WebGLBuffer, count: number, bbox?: {minX,minY,maxX,maxY} }>
+    highlightStagingBuffers: null,
+    highlightActiveSeq: 0,
+    highlightReceivingSeq: 0,
+
     instanceBuffers: {},
     definitions: {},
     definitionGeometry: {},
@@ -113,6 +121,9 @@ export const state = {
     viewportStagingLayerBuffers: null,
     viewportStagingInstanceBuffers: null,
     viewportStagingInstanceTransforms: null,
+
+    // Highlight updates (WebGL + Rust)
+    highlightClientSeq: 0,
 
     // Workers
     workerPool: [],

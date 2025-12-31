@@ -626,6 +626,12 @@ class GdsPreviewProvider implements vscode.CustomReadonlyEditorProvider {
                             currentProcess.stdin?.write(JSON.stringify(message) + "\n");
                         }
                         return;
+
+                    case 'highlightUpdate':
+                        if (currentProcess) {
+                            currentProcess.stdin?.write(JSON.stringify(message) + "\n");
+                        }
+                        return;
                 }
             },
             undefined,

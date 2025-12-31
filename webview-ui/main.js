@@ -191,6 +191,17 @@ window.addEventListener('message', event => {
         if (state.currentEngine === 'canvas') requestAnimationFrame(draw);
 
         state.vscode.postMessage({ command: 'reset' });
+
+            // Clear backend-driven highlight overlay in WebGL+Rust mode.
+            if (state.engine === 'rust' && state.renderMode === 'webgl') {
+                state.highlightClientSeq = (state.highlightClientSeq || 0) + 1;
+                state.vscode.postMessage({
+                    command: 'highlightUpdate',
+                    clientSeq: state.highlightClientSeq,
+                    polyIds: [],
+                    reason: 'reset',
+                });
+            }
     } else if (message.command === 'stop') {
         const stoppedHighlightBuild = stopHighlightedPathBuild();
         if (stoppedHighlightBuild) {

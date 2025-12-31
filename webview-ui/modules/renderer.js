@@ -2,6 +2,64 @@ import { state, elements } from './state.js';
 import { updateStatus, darken, createShader, createProgram } from './utils.js';
 import { updateTransform, resizeCanvas, fitView, worldToScreen, screenToWorld, applyRotationAndFlip, applyContextTransform } from './transform.js';
 
+function parseCssColorToRgb(s) {
+    if (!s) return null;
+    const str = String(s).trim();
+    if (!str) return null;
+
+    if (str[0] === '#') {
+        const hex = str.slice(1);
+        if (hex.length === 3) {
+            const r = parseInt(hex[0] + hex[0], 16);
+            const g = parseInt(hex[1] + hex[1], 16);
+            const b = parseInt(hex[2] + hex[2], 16);
+            if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)) return { r, g, b };
+        }
+        if (hex.length === 6) {
+            const r = parseInt(hex.slice(0, 2), 16);
+            const g = parseInt(hex.slice(2, 4), 16);
+            const b = parseInt(hex.slice(4, 6), 16);
+            if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)) return { r, g, b };
+        }
+        return null;
+    }
+
+    const m = str.match(/rgba?\(([^)]+)\)/i);
+    if (m) {
+        const parts = m[1].split(',').map(p => p.trim());
+        if (parts.length >= 3) {
+            const r = Number(parts[0]);
+            const g = Number(parts[1]);
+            const b = Number(parts[2]);
+            if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)) {
+                return { r: Math.max(0, Math.min(255, r)), g: Math.max(0, Math.min(255, g)), b: Math.max(0, Math.min(255, b)) };
+            }
+        }
+    }
+
+    return null;
+}
+
+function isDarkVscodeTheme() {
+    const bg = (getComputedStyle(document.body).getPropertyValue('--vscode-editor-background') || '').trim();
+    const rgb = parseCssColorToRgb(bg);
+    if (!rgb) {
+        return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    }
+    const lum = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+    return lum < 0.5;
+}
+
+function getHighlightStyle() {
+    const dark = isDarkVscodeTheme();
+    // User request: dark theme => white, light theme => black.
+    // Keep alpha modest to avoid completely hiding geometry.
+    const strokeCss = dark ? '#ffffff' : '#000000';
+    const fillCss = dark ? 'rgba(255, 255, 255, 0.5)' : 'rgba(0, 0, 0, 0.7)';
+    const gl = dark ? { r: 1.0, g: 1.0, b: 1.0, a: 0.5 } : { r: 0.0, g: 0.0, b: 0.0, a: 0.7 };
+    return { strokeCss, fillCss, gl };
+}
+
 function drawMeasurementOverlay(ctx) {
     if (!ctx) return;
     if (!state.measureEnabled) return;
@@ -413,6 +471,41 @@ export function drawWebGL() {
     if (state.isNegative) {
         state.gl.disable(state.gl.STENCIL_TEST);
     }
+
+    // Highlight overlay (Rust-generated triangles)
+    // Draw AFTER negative/stencil to ensure highlight is visible.
+    if (state.currentEngine === 'webgl' && state.config && state.config.engineType === 'rust') {
+        const buffers = state.highlightBuffers;
+        if (buffers && Array.isArray(buffers) && buffers.length > 0) {
+            const resolutionLocation = state.gl.getUniformLocation(state.glProgram, "u_resolution");
+            const offsetLocation = state.gl.getUniformLocation(state.glProgram, "u_offset");
+            const scaleLocation = state.gl.getUniformLocation(state.glProgram, "u_scale");
+            const flipLocation = state.gl.getUniformLocation(state.glProgram, "u_flip");
+            const rotationLocation = state.gl.getUniformLocation(state.glProgram, "u_rotation");
+            const colorLocation = state.gl.getUniformLocation(state.glProgram, "u_color");
+            const isInstancedLocation = state.gl.getUniformLocation(state.glProgram, "u_isInstanced");
+            const positionLocation = state.gl.getAttribLocation(state.glProgram, "a_position");
+
+            state.gl.useProgram(state.glProgram);
+            state.gl.uniform2f(resolutionLocation, state.gl.canvas.width, state.gl.canvas.height);
+            state.gl.uniform2f(offsetLocation, state.offsetX, state.offsetY);
+            state.gl.uniform1f(scaleLocation, state.scale);
+            state.gl.uniform2f(flipLocation, state.flipState.x, state.flipState.y);
+            state.gl.uniform1f(rotationLocation, state.rotationState * Math.PI / 180);
+            state.gl.uniform1i(isInstancedLocation, 0);
+
+            const h = getHighlightStyle();
+            state.gl.uniform4f(colorLocation, h.gl.r, h.gl.g, h.gl.b, h.gl.a);
+            state.gl.enableVertexAttribArray(positionLocation);
+
+            for (const chunk of buffers) {
+                if (!chunk || !chunk.buffer || !chunk.count) continue;
+                state.gl.bindBuffer(state.gl.ARRAY_BUFFER, chunk.buffer);
+                state.gl.vertexAttribPointer(positionLocation, 2, state.gl.FLOAT, false, 0, 0);
+                state.gl.drawArrays(state.gl.TRIANGLES, 0, chunk.count);
+            }
+        }
+    }
 }
 
 export function drawLabels() {
@@ -421,7 +514,10 @@ export function drawLabels() {
     const ctx = textCanvas.getContext('2d');
     ctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
 
-    if (state.highlightedPolygons.length > 0) {
+    // For WebGL+Rust, highlights are rendered as a WebGL overlay (triangles) to avoid
+    // expensive Path2D work on large selections.
+    const drawHighlightOnCanvas = !(state.currentEngine === 'webgl' && state.config && state.config.engineType === 'rust');
+    if (drawHighlightOnCanvas && state.highlightedPolygons.length > 0) {
         drawHighlights(ctx);
     }
 
@@ -572,9 +668,10 @@ export function drawHighlights(targetCtx) {
     ctxToUse.save();
     applyContextTransform(ctxToUse);
 
-    ctxToUse.strokeStyle = '#00FFFF';
+    const h = getHighlightStyle();
+    ctxToUse.strokeStyle = h.strokeCss;
     ctxToUse.lineWidth = 2 / state.scale;
-    ctxToUse.fillStyle = 'rgba(0, 255, 255, 0.3)';
+    ctxToUse.fillStyle = h.fillCss;
 
     const pathToDraw = state.highlightedPath
         ? state.highlightedPath
