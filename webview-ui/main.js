@@ -18,6 +18,48 @@ import { updateTransform } from './modules/transform.js';
 
 console.log("GDS Preview: Main Script initialized");
 
+function isWebglRustMode() {
+    return state.currentEngine === 'webgl' && state.config && state.config.engineType === 'rust';
+}
+
+function clearHighlightState(reason) {
+    state.highlightedPolygons = [];
+    state.highlightedPath = null;
+    stopHighlightedPathBuild();
+
+    // Clear local WebGL highlight buffers immediately to avoid stale overlays if the
+    // backend is restarting / WS reconnect is delayed.
+    if (state.gl && state.highlightBuffers && Array.isArray(state.highlightBuffers)) {
+        for (const chunk of state.highlightBuffers) {
+            if (chunk && chunk.buffer) {
+                try { state.gl.deleteBuffer(chunk.buffer); } catch (_) { }
+            }
+        }
+    }
+    if (state.gl && state.highlightStagingBuffers && Array.isArray(state.highlightStagingBuffers)) {
+        for (const chunk of state.highlightStagingBuffers) {
+            if (chunk && chunk.buffer) {
+                try { state.gl.deleteBuffer(chunk.buffer); } catch (_) { }
+            }
+        }
+    }
+    state.highlightBuffers = null;
+    state.highlightStagingBuffers = null;
+    state.highlightActiveSeq = 0;
+    state.highlightReceivingSeq = 0;
+
+    // Clear backend-driven highlight overlay in WebGL+Rust mode.
+    if (isWebglRustMode() && state.vscode) {
+        state.highlightClientSeq = (state.highlightClientSeq || 0) + 1;
+        state.vscode.postMessage({
+            command: 'highlightUpdate',
+            clientSeq: state.highlightClientSeq,
+            polyIds: [],
+            reason: reason || 'reload',
+        });
+    }
+}
+
 // Initialize State and Elements
 initializeState();
 
@@ -74,6 +116,8 @@ window.addEventListener('message', event => {
         handleDataUpdate(message.data);
     } else if (message.command === 'initialize') {
         handleEngineChange(message.engine);
+        // Engine reloads should not preserve previous highlight selection.
+        clearHighlightState('initialize');
         handleInitialize(message.data);
     } else if (message.command === 'addLayerChunk') {
         handleAddLayerChunk(message.layerKey, message.data);
@@ -151,9 +195,7 @@ window.addEventListener('message', event => {
     } else if (message.command === 'reset') {
         state.flipState = { x: 1, y: state.currentEngine === 'svg' ? -1 : 1 };
         state.rotationState = 0;
-        state.highlightedPolygons = [];
-        state.highlightedPath = null;
-        stopHighlightedPathBuild();
+        clearHighlightState('reset');
         state.hasUserInteracted = false;
 
         state.measureEnabled = false;
@@ -191,17 +233,6 @@ window.addEventListener('message', event => {
         if (state.currentEngine === 'canvas') requestAnimationFrame(draw);
 
         state.vscode.postMessage({ command: 'reset' });
-
-            // Clear backend-driven highlight overlay in WebGL+Rust mode.
-            if (state.engine === 'rust' && state.renderMode === 'webgl') {
-                state.highlightClientSeq = (state.highlightClientSeq || 0) + 1;
-                state.vscode.postMessage({
-                    command: 'highlightUpdate',
-                    clientSeq: state.highlightClientSeq,
-                    polyIds: [],
-                    reason: 'reset',
-                });
-            }
     } else if (message.command === 'stop') {
         const stoppedHighlightBuild = stopHighlightedPathBuild();
         if (stoppedHighlightBuild) {

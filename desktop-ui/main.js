@@ -1232,6 +1232,12 @@ ipcMain.on('vscode-message', (event, message) => {
              }
              break;
 
+        case 'highlightUpdate':
+             if (view.process && view.process.stdin) {
+                 view.process.stdin.write(JSON.stringify(message) + "\n");
+             }
+             break;
+
         case 'copyToClipboard': {
             const text = typeof message.text === 'string' ? message.text : '';
             const count = typeof message.count === 'number' ? message.count : null;
