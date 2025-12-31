@@ -370,12 +370,13 @@ function pushSnapPolys(layerKey, polys) {
     }
 }
 
-function pushViewportSnapPolys(layerKey, polys) {
+function pushViewportSnapPolys(layerKey, polys, opts) {
     if (!polys || polys.length === 0) return;
     const target = ensureViewportSnapLayer(layerKey);
 
-    // Keep this cache bounded.
-    const MAX_PER_LAYER = 20000;
+    // Keep this cache bounded by default, but allow callers (e.g. box-select backendFinal)
+    // to disable or raise the limit so large selections don't get truncated.
+    const maxPerLayer = (opts && typeof opts.maxPerLayer === 'number') ? opts.maxPerLayer : 20000;
 
     for (const poly of polys) {
         // v2-only: viewportSnap polygons must be Float32Array and carry polyId.
@@ -397,8 +398,8 @@ function pushViewportSnapPolys(layerKey, polys) {
 
         target.push(poly);
 
-        if (target.length > MAX_PER_LAYER) {
-            target.splice(0, target.length - MAX_PER_LAYER);
+        if (maxPerLayer > 0 && target.length > maxPerLayer) {
+            target.splice(0, target.length - maxPerLayer);
         }
     }
 }
@@ -797,7 +798,10 @@ function handleGeometryWsBinary(buffer) {
                 // Box select (viewportSnap) must be v2 so polyId is available for stable merge/toggle.
                 if (isBoxSelect) {
                     if (version !== 2) return;
-                    pushViewportSnapPolys(layerKey, polys);
+                    const isBackendFinal = !!(state.boxSelectPending && state.boxSelectPending.backendFinal);
+                    // backendFinal expects to potentially select >20k polys on a single layer.
+                    // Do not truncate the cache for the active box-select token.
+                    pushViewportSnapPolys(layerKey, polys, isBackendFinal ? { maxPerLayer: 0 } : undefined);
                     if (state.boxSelectPending && state.boxSelectPending.backendFinal) {
                         state.boxSelectPending.receivedPolys = (state.boxSelectPending.receivedPolys || 0) + polys.length;
                     }

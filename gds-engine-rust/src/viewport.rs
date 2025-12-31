@@ -383,10 +383,47 @@ pub fn stream_viewport_snap_polygons(
         ax * by - ay * bx
     }
 
-    fn point_in_convex_quad(p: &Point, q: &[Point; 4]) -> bool {
+    fn order_quad_points(q: &[Point; 4]) -> [Point; 4] {
+        // The incoming quadWorld may be provided in a screen-corner order that,
+        // after transforms (flip/rotate), is not a proper cyclic order in world.
+        // Reorder into a consistent convex cycle by angle-sort around centroid.
+        let cx = (q[0].x + q[1].x + q[2].x + q[3].x) * 0.25;
+        let cy = (q[0].y + q[1].y + q[2].y + q[3].y) * 0.25;
+        let mut pts: Vec<(f64, Point)> = q
+            .iter()
+            .map(|p| ((p.y - cy).atan2(p.x - cx), p.clone()))
+            .collect();
+        pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        [
+            pts[0].1.clone(),
+            pts[1].1.clone(),
+            pts[2].1.clone(),
+            pts[3].1.clone(),
+        ]
+    }
+
+    fn quad_cross_epsilon(q: &[Point; 4]) -> f64 {
+        // Cross products scale with length^2. Use a scale-aware epsilon so that
+        // points extremely close to edges (or numeric noise near axes) don't flip sign.
+        let mut min_x = q[0].x;
+        let mut max_x = q[0].x;
+        let mut min_y = q[0].y;
+        let mut max_y = q[0].y;
+        for p in q.iter().skip(1) {
+            min_x = min_x.min(p.x);
+            max_x = max_x.max(p.x);
+            min_y = min_y.min(p.y);
+            max_y = max_y.max(p.y);
+        }
+        let dx = (max_x - min_x).abs();
+        let dy = (max_y - min_y).abs();
+        let l = dx.max(dy).max(1.0);
+        // Empirically chosen: permissive on boundaries but still rejects clear outsides.
+        1e-10 * l * l
+    }
+
+    fn point_in_convex_quad(p: &Point, q: &[Point; 4], eps: f64) -> bool {
         // Accept either winding by checking if all cross products share the same sign.
-        // Allow a tiny epsilon to avoid rejecting borderline points due to float error.
-        let eps = 1e-12;
         let mut has_pos = false;
         let mut has_neg = false;
         for i in 0..4 {
@@ -408,6 +445,12 @@ pub fn stream_viewport_snap_polygons(
         }
         true
     }
+
+    let quad_ordered: Option<[Point; 4]> = quad_world.as_ref().map(order_quad_points);
+    let quad_eps: f64 = quad_ordered
+        .as_ref()
+        .map(quad_cross_epsilon)
+        .unwrap_or(0.0);
 
     let ordered = crate::instance_order::ordered_instances(instances_map);
     for inst in ordered {
@@ -436,11 +479,11 @@ pub fn stream_viewport_snap_polygons(
                 continue;
             }
 
-            if let Some(q) = &quad_world {
+            if let Some(q) = &quad_ordered {
                 let mut inside = true;
                 for p in &poly.points {
                     let pt = inst.matrix.transform_point(p);
-                    if !point_in_convex_quad(&pt, q) {
+                    if !point_in_convex_quad(&pt, q, quad_eps) {
                         inside = false;
                         break;
                     }
