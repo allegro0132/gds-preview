@@ -63,6 +63,11 @@ body.platform-win32 #tab-bar {
     padding-right: 140px; /* Space for window controls on Windows */
 }
 
+/* Keep Linux desktop layout consistent with Windows */
+body.platform-linux #tab-bar {
+    padding-right: 140px; /* Reserve space for window controls overlay */
+}
+
 #tabs-container {
     display: flex;
     align-items: flex-end;
@@ -73,6 +78,10 @@ body.platform-win32 #tab-bar {
 }
 
 body.platform-win32 #controls-container {
+    order: -1;
+}
+
+body.platform-linux #controls-container {
     order: -1;
 }
 

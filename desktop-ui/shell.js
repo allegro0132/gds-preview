@@ -3,7 +3,7 @@ const tabsContainer = document.getElementById('tabs-container');
 const platform = window.shellAPI.getPlatform();
 document.body.classList.add(`platform-${platform}`);
 
-if (platform === 'win32') {
+if (platform === 'win32' || platform === 'linux') {
     const btnMenu = document.getElementById('btn-menu');
     if (btnMenu) {
         btnMenu.style.display = 'flex';

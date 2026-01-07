@@ -860,7 +860,7 @@ function updateTheme() {
     if (mainWindow) {
         mainWindow.webContents.send('theme-change', theme);
 
-        if (process.platform === 'win32') {
+        if (process.platform === 'win32' || process.platform === 'linux') {
             mainWindow.setTitleBarOverlay({
                 color: theme === 'dark' ? '#252526' : '#f3f3f3',
                 symbolColor: theme === 'dark' ? '#cccccc' : '#616161'
@@ -1014,16 +1014,22 @@ function createWindow() {
     createMenu();
 
     const isWindows = process.platform === 'win32';
+    const isLinux = process.platform === 'linux';
+    const isMac = process.platform === 'darwin';
+    const wantTitleBarOverlay = isWindows || isLinux;
     mainWindow = new BrowserWindow({
         width: 1200,
         height: 800,
-        titleBarStyle: isWindows ? 'hidden' : 'hiddenInset',
-        titleBarOverlay: isWindows ? {
+        // macOS uses hiddenInset so the content sits nicely under the unified toolbar.
+        // For Windows/Linux we use hidden + titleBarOverlay so our custom tab bar occupies
+        // the title bar area (consistent UI across platforms).
+        titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
+        titleBarOverlay: wantTitleBarOverlay ? {
             color: '#252526',
             symbolColor: '#cccccc',
             height: 38
         } : undefined,
-        trafficLightPosition: { x: 10, y: 10 },
+        trafficLightPosition: isMac ? { x: 10, y: 10 } : undefined,
         icon: path.join(__dirname, 'icon.png'),
         webPreferences: {
             preload: path.join(__dirname, 'shell-preload.js'),
